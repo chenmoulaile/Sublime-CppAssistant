@@ -40,27 +40,21 @@ _lint_timers = {}      # view_id -> threading.Timer
 _phantom_sets = {}     # view_id -> PhantomSet
 _diag_store = {}       # view_id -> [str]
 _temp_files = {}       # view_id -> path
+_lint_gen = {}         # view_id -> 代号（丢弃过期诊断结果）
 
 
 # ---------------------------------------------------------------------------
 # 设置
 # ---------------------------------------------------------------------------
 
-def plugin_loaded():
-    global _settings_obj
-    _settings_obj = sublime.load_settings(_SETTINGS)
-    _settings_obj.clear_on_change("cppassistant")
-    _settings_obj.add_on_change("cppassistant", _on_settings_changed)
+def _on_settings_changed():
+    _compiler_cache["done"] = False
+    _compiler_cache["path"] = None
 
 
 def plugin_unloaded():
     if _settings_obj is not None:
         _settings_obj.clear_on_change("cppassistant")
-
-
-def _on_settings_changed():
-    _compiler_cache["done"] = False
-    _compiler_cache["path"] = None
 
 
 def _s(key, default=None):
@@ -96,8 +90,10 @@ _KIND_MAP = {
 def _make_item(d):
     kind = _KIND_MAP.get(d["kind"], _kind_default)()
     insert = d["insert"]
-    multiline = "\n" in insert
-    fmt = (sublime.COMPLETION_FORMAT_SNIPPET if multiline
+    # 含 $ 占位符或多行内容的一律按 snippet 插入，
+    # 否则 ${1:...} 会原样插入且光标停在末尾
+    is_snippet = ("\n" in insert) or ("$" in insert)
+    fmt = (sublime.COMPLETION_FORMAT_SNIPPET if is_snippet
            else sublime.COMPLETION_FORMAT_TEXT)
     details = d.get("detail", "")
     ann = d.get("annotation", "")
@@ -129,7 +125,10 @@ class CaEventListener(sublime_plugin.EventListener):
             # 空前缀且非成员访问时不打扰（Ctrl+Space 也不会刷屏）
             return None
         try:
-            results = ca_engine.analyze(text, off)
+            results = ca_engine.analyze(
+                text, off,
+                cache_key=view.buffer_id(),
+                cache_version=view.change_count())
         except Exception:
             return None
         if not results:
@@ -161,7 +160,7 @@ class CaEventListener(sublime_plugin.EventListener):
         t = _lint_timers.pop(vid, None)
         if t is not None:
             t.cancel()
-        delay = float(_s("lint_debounce", 0.8)) if debounce else 0.0
+        delay = float(_s("lint_debounce", 0.4)) if debounce else 0.0
         if delay <= 0:
             sublime.set_timeout(lambda: run_lint(view), 50)
         else:
@@ -179,12 +178,89 @@ class CaEventListener(sublime_plugin.EventListener):
             t.cancel()
         _phantom_sets.pop(vid, None)
         _diag_store.pop(vid, None)
+        _lint_gen.pop(vid, None)
         tp = _temp_files.pop(vid, None)
         if tp:
             try:
                 os.remove(tp)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# 预编译头（PCH）加速：bits/stdc++.h 的解析结果只算一次
+# ---------------------------------------------------------------------------
+
+_PCH_ROOT = os.path.join(tempfile.gettempdir(), "CppAssistantPCH")
+_PCH_READY = set()     # 已就绪的 pch 签名
+_PCH_BUILDING = set()  # 正在构建中的签名
+_PCH_LOCK = threading.Lock()
+
+PCH_HEADER_TEXT = (
+    "#ifndef CA_ASSISTANT_PCH_H\n"
+    "#define CA_ASSISTANT_PCH_H\n"
+    "#include <bits/stdc++.h>\n"
+    "#endif\n"
+)
+
+
+def _pch_paths(compiler, std):
+    sig = re.sub(r"[^\w]", "_", os.path.normcase(compiler)) + "_" + std
+    d = os.path.join(_PCH_ROOT, sig)
+    hdr = os.path.join(d, "ca_pch.h")
+    return sig, hdr, hdr + ".gch"
+
+
+def _build_pch(compiler, std):
+    """后台线程构建 PCH；完成后加入 _PCH_READY。"""
+    sig, hdr, gch = _pch_paths(compiler, std)
+    with _PCH_LOCK:
+        if sig in _PCH_BUILDING:
+            return
+        _PCH_BUILDING.add(sig)
+    try:
+        if not os.path.isdir(os.path.dirname(hdr)):
+            os.makedirs(os.path.dirname(hdr))
+        with open(hdr, "w", encoding="utf-8") as f:
+            f.write(PCH_HEADER_TEXT)
+        creationflags = 0x08000000 if os.name == "nt" else 0
+        proc = subprocess.Popen(
+            [compiler, "-std=" + str(std), "-x", "c++-header",
+             hdr, "-o", gch],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=creationflags)
+        proc.wait(timeout=180)
+        if proc.returncode == 0 and os.path.isfile(gch):
+            _PCH_READY.add(sig)
+    except Exception:
+        pass
+    finally:
+        with _PCH_LOCK:
+            _PCH_BUILDING.discard(sig)
+
+
+def _warm_pch_async():
+    def worker():
+        compiler = find_compiler()
+        if compiler is None:
+            return
+        std = str(_s("cxx_standard", "c++17"))
+        _, _, gch = _pch_paths(compiler, std)
+        if not os.path.isfile(gch):
+            _build_pch(compiler, std)
+
+    th = threading.Thread(target=worker)
+    th.daemon = True
+    th.start()
+
+
+def plugin_loaded():
+    global _settings_obj
+    _settings_obj = sublime.load_settings(_SETTINGS)
+    _settings_obj.clear_on_change("cppassistant")
+    _settings_obj.add_on_change("cppassistant", _on_settings_changed)
+    if _s("enable_linting", True) and _s("enable_pch", True):
+        sublime.set_timeout(_warm_pch_async, 5000)
 
 
 # ---------------------------------------------------------------------------
@@ -207,12 +283,13 @@ def find_compiler():
     return None
 
 
-def _lint_work(view_id, src, workdir, fname):
+def _lint_work(view_id, src, workdir, fname, gen):
     """工作线程：写临时文件并调用编译器。"""
     compiler = find_compiler()
     if compiler is None:
         diags = _basic_diags(src)
-        sublime.set_timeout(lambda: apply_diagnostics(view_id, diags, True), 0)
+        sublime.set_timeout(
+            lambda: apply_diagnostics(view_id, diags, True, gen), 0)
         return
     base = os.path.basename(fname) if fname else "untitled_%d.cpp" % view_id
     stem = os.path.splitext(base)[0] or "untitled"
@@ -229,6 +306,15 @@ def _lint_work(view_id, src, workdir, fname):
     cmd += [str(a) for a in _s("compiler_extra_args", [])]
     for inc in _s("include_paths", []):
         cmd.append("-I" + str(inc))
+    # 仅当源码确实包含 bits/stdc++.h 时才挂 PCH（避免掩盖漏写头文件的错误）
+    if _s("enable_pch", True) and "bits/stdc++.h" in src:
+        std = str(_s("cxx_standard", "c++17"))
+        sig, hdr, gch = _pch_paths(compiler, std)
+        if os.path.isfile(gch):
+            cmd += ["-include", hdr, "-I", os.path.dirname(hdr)]
+        elif sig not in _PCH_BUILDING:
+            threading.Thread(
+                target=_build_pch, args=(compiler, std), daemon=True).start()
     cmd.append(tmp)
 
     creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
@@ -250,7 +336,8 @@ def _lint_work(view_id, src, workdir, fname):
             if ef != norm:
                 continue
             diags.append(e)
-    sublime.set_timeout(lambda: apply_diagnostics(view_id, diags, False), 0)
+    sublime.set_timeout(
+        lambda: apply_diagnostics(view_id, diags, False, gen), 0)
 
 
 def _decode(b):
@@ -268,7 +355,8 @@ def _basic_diags(src):
     return [{
         "line": ln, "col": cl,
         "sev": sev_map.get(sv, sv),
-        "msg": msg, "zh": msg, "notes": [],
+        "sev_en": "error" if sv == "error" else "warning",
+        "msg": msg, "zh": msg, "ctx": "", "notes": [],
     } for (ln, cl, sv, msg) in problems]
 
 
@@ -284,8 +372,10 @@ def run_lint(view):
         workdir = os.path.dirname(fname)
     else:
         workdir = tempfile.gettempdir()
+    gen = _lint_gen.get(vid, 0) + 1
+    _lint_gen[vid] = gen
     th = threading.Thread(target=_lint_work,
-                          args=(vid, src, workdir, fname))
+                          args=(vid, src, workdir, fname, gen))
     th.daemon = True
     th.start()
 
@@ -301,7 +391,10 @@ _PHANTOM_TMPL = (
 )
 
 
-def apply_diagnostics(view_id, diags, basic_mode):
+def apply_diagnostics(view_id, diags, basic_mode, gen=None):
+    # 只应用最新一次检查的结果，避免旧结果覆盖新状态
+    if gen is not None and gen != _lint_gen.get(view_id):
+        return
     view = _view_by_id(view_id)
     if view is None or not view.is_valid():
         return
@@ -350,10 +443,9 @@ def apply_diagnostics(view_id, diags, basic_mode):
             phantoms.append(sublime.Phantom(
                 region, body, sublime.LAYOUT_BELOW))
         tag = u"[错误]" if is_err else u"[警告]"
-        panel_lines.append(u"%s 第%d行%d列  %s" %
-                           (tag, d["line"], d["col"], text))
-        for note in d.get("notes", [])[:2]:
-            panel_lines.append(u"       " + note)
+        ctx = d.get("ctx") or ""
+        panel_lines.append(u"%s %s第%d行%d列  %s" %
+                           (tag, ctx, d["line"], d["col"], text))
 
     show_basic = bool(_s("show_gutter_marks", False))
     flags = (sublime.DRAW_SQUIGGLY_UNDERLINE | sublime.DRAW_NO_FILL |

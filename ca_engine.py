@@ -5,9 +5,9 @@
 import re
 
 from ca_stdlib_data import (
-    MEMBERS_DB, GENERIC_MEMBERS, STD_FUNCTIONS, GLOBAL_CONSTANTS, STD_TYPES,
+    MEMBERS_DB_FAST, GENERIC_MEMBERS_FAST, STD_ITEMS_ALL,
     KEYWORDS, SNIPPETS, HEADERS, TRANSLATIONS, QUOTE_NORMALIZE, SEVERITY_MAP,
-    _ELEM_RULES,
+    WARNING_FLAG_ZH, _ELEM_RULES,
 )
 
 WORD_TAIL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
@@ -41,7 +41,12 @@ _CTRL_WORDS = set((
 
 def _scan(text):
     """返回 text 末尾的词法状态: dict(block, str, chr, raw)。"""
-    st = {"block": False, "str": False, "chr": False, "raw": None}
+    return _scan_into(
+        {"block": False, "str": False, "chr": False, "raw": None}, text)
+
+
+def _scan_into(st, text):
+    """在给定状态下扫描文本，原地推进 st 并返回。"""
     i, n = 0, len(text)
     while i < n:
         c = text[i]
@@ -199,20 +204,59 @@ def _protected_mask(text):
 # 补全上下文检测
 # ---------------------------------------------------------------------------
 
-def detect_context(text, offset):
+_CLEAN_STATE = {"block": False, "str": False, "chr": False, "raw": None}
+
+_LINESTATE_CACHE = {"key": None, "ver": None, "states": None}
+
+
+def _advance_line(st, line_text):
+    s = {"block": st["block"], "str": st["str"],
+         "chr": st["chr"], "raw": st["raw"]}
+    return _scan_into(s, line_text + "\n")
+
+
+def _linestates(key, ver, text):
+    """每个版本只扫一遍全文，记录每行起始时的词法状态。"""
+    c = _LINESTATE_CACHE
+    if c["key"] == key and c["ver"] == ver and c["states"] is not None:
+        return c["states"]
+    states = [dict(_CLEAN_STATE)]
+    cur = dict(_CLEAN_STATE)
+    for ln in text.split("\n"):
+        cur = _advance_line(cur, ln)
+        states.append(cur)
+    c.update(key=key, ver=ver, states=states)
+    return states
+
+
+def _state_at(text, offset, key, ver):
+    """取光标处的词法状态（缓存命中时接近 O(1)）。"""
+    states = _linestates(key, ver, text)
+    li = text.count("\n", 0, offset)
+    st = states[li] if li < len(states) else _CLEAN_STATE
+    nl = text.rfind("\n", 0, offset)
+    cur = {"block": st["block"], "str": st["str"],
+           "chr": st["chr"], "raw": st["raw"]}
+    return _scan_into(cur, text[nl + 1:offset])
+
+
+def detect_context(text, offset, cache_key=None, cache_version=None):
     """返回 (kind, prefix, accessor, receiver, extra)
 
     kind: comment | string | preproc | include | code
     """
-    head = text[max(0, offset - 120000):offset]
-    st = _scan(head)
+    if cache_key is not None:
+        st = _state_at(text, offset, cache_key, cache_version)
+    else:
+        st = _scan(text[max(0, offset - 60000):offset])
     if st["raw"] or st["str"] or st["chr"]:
         return ("string", "", "none", "", None)
     if st["block"]:
         return ("comment", "", "none", "", None)
 
-    nl = head.rfind("\n")
-    line = head[nl + 1:]
+    tail = text[max(0, offset - 800):offset]
+    nl = tail.rfind("\n")
+    line = tail[nl + 1:] if nl != -1 else tail
     ls = line.lstrip()
     if ls.startswith("#"):
         m = re.match(r"[ \t]*#[ \t]*include[ \t]*([<\"])?", line[:len(line)])
@@ -220,9 +264,9 @@ def detect_context(text, offset):
             return ("include", "", "none", "", m.group(1))
         return ("preproc", "", "none", "", None)
 
-    m = WORD_TAIL_RE.search(head)
+    m = WORD_TAIL_RE.search(tail)
     prefix = m.group(0) if m else ""
-    before = head[:m.start()] if m else head
+    before = tail[:m.start()] if m else tail
     bs = before.rstrip()
     if bs.endswith("->"):
         accessor, left = "arrow", bs[:-2]
@@ -416,45 +460,64 @@ def _score(name, prefix):
     return 999
 
 
-def analyze(text, offset):
-    """返回补全条目列表: [{trigger, insert, annotation, kind, detail}]"""
-    ctx = detect_context(text, offset)
+# 分析结果缓存：同一视图未修改期间复用环境与用户符号扫描
+_ANALYSIS_CACHE = {"key": None, "ver": None, "env": None, "syms": None}
+
+
+def _analysis(text, key, ver):
+    c = _ANALYSIS_CACHE
+    if c["key"] == key and c["ver"] == ver and c["env"] is not None:
+        return c["env"], c["syms"]
+    env = build_env(text)
+    syms = user_symbols(text)
+    c.update(key=key, ver=ver, env=env, syms=syms)
+    return env, syms
+
+
+def analyze(text, offset, cache_key=None, cache_version=None):
+    """返回补全条目列表: [{trigger, insert, annotation, kind, detail}]
+
+    cache_key/cache_version（如 buffer_id / change_count）用于跨按键
+    复用声明扫描结果，避免每次输入都全量解析。
+    """
+    ctx = detect_context(text, offset, cache_key, cache_version)
     kind = ctx[0]
     if kind in ("comment", "string", "preproc"):
         return []
     if kind == "include":
-        return [{"trigger": h, "insert": h, "annotation": "头文件",
+        return [{"trigger": h, "insert": h, "annotation": u"头文件",
                  "kind": "t", "detail": "#include"} for h in HEADERS]
 
     prefix, accessor, receiver = ctx[1], ctx[2], ctx[3]
-    env = build_env(text)
-    raw_items = []  # (trigger, insert, annotation, kind_code, wants_std)
+
+    if cache_key is not None:
+        env, syms = _analysis(text, cache_key, cache_version)
+    else:
+        env, syms = build_env(text), user_symbols(text)
 
     if accessor in ("dot", "arrow"):
+        raw_items = []          # (trigger, insert, ann, kind, want_std)
         key = _resolve_receiver(env, receiver, accessor)
-        members = MEMBERS_DB.get(key) if key else None
+        members = MEMBERS_DB_FAST.get(key) if key else None
         if members is None:
-            members = [] if key else GENERIC_MEMBERS
-        for comp, ann, kd in members:
-            name = comp.split("(")[0]
-            raw_items.append((name, comp, ann or "成员", kd, False))
+            members = [] if key else GENERIC_MEMBERS_FAST
+        for it in members:
+            raw_items.append((it["trigger"], it["insert"],
+                              it["annotation"], it["kind"], False))
     elif accessor == "scope":
-        if receiver == "std" or receiver == "":
-            for comp, ann, kd, want in (STD_FUNCTIONS + STD_TYPES +
-                                        GLOBAL_CONSTANTS):
-                name = comp.split("(")[0]
-                raw_items.append((name, comp, ann or "", kd, False))
-    else:  # none
+        raw_items = [(it["trigger"], it["insert"], it["annotation"],
+                      it["kind"], False) for it in STD_ITEMS_ALL]
+    else:
+        raw_items = []
         for trig, body, desc, kd in SNIPPETS:
             raw_items.append((trig, body, desc, kd, False))
         for kw in KEYWORDS:
-            raw_items.append((kw, kw, "关键字", "k", False))
-        for name, desc in user_symbols(text).items():
+            raw_items.append((kw, kw, u"关键字", "k", False))
+        for name, desc in syms.items():
             raw_items.append((name, name, desc, "u", False))
-        for comp, ann, kd, want in (STD_FUNCTIONS + STD_TYPES +
-                                    GLOBAL_CONSTANTS):
-            name = comp.split("(")[0]
-            raw_items.append((name, comp, ann or "", kd, want))
+        for it in STD_ITEMS_ALL:
+            raw_items.append((it["trigger"], it["insert"], it["annotation"],
+                              it["kind"], it["want_std"]))
 
     already_std = (accessor == "scope" and receiver == "std")
     need_prefix = not env["using_std"]
@@ -463,9 +526,7 @@ def analyze(text, offset):
     seen = set()
     for trigger, insert, ann, kd, want_std in raw_items:
         sc = _score(trigger, prefix)
-        if sc >= 999:
-            continue
-        if trigger in seen:
+        if sc >= 999 or trigger in seen:
             continue
         seen.add(trigger)
         if want_std and need_prefix and not already_std:
@@ -589,6 +650,22 @@ def find_definitions_in_files(symbol, file_paths, depth_limit=3):
 _DIAG_RE = re.compile(
     r"^(.+?):(\d+):(?:(\d+):)?[ \t]*(fatal error|error|warning|note):[ \t]*(.*)$")
 
+# gcc/clang 的上下文行: "xxx.cpp: In function 'int main()':"
+_CTX_RE = re.compile(
+    r"^.*?:[ \t]*In (function|constructor|destructor|member function|"
+    r"static member function|lambda function)[ \t]+'(.*?)':[ \t]*$")
+_CTX_ZH = {
+    "function": u"函数",
+    "constructor": u"构造函数",
+    "destructor": u"析构函数",
+    "member function": u"成员函数",
+    "static member function": u"静态成员函数",
+    "lambda function": u"lambda 函数",
+}
+_IN_FILE_RE = re.compile(r"^In file included from (.+?):(\d+)")
+
+_WARN_FLAG_RE = re.compile(r"\s*\[-W([\w-]+)\]")
+
 
 def translate_message(msg):
     msg = msg.strip()
@@ -599,24 +676,41 @@ def translate_message(msg):
             msg = pat.sub(rep, msg)
         except Exception:
             pass
-    return msg
+    # 警告旗标 [-Wxxx] -> 中文标签
+    flags = _WARN_FLAG_RE.findall(msg)
+    if flags:
+        msg = _WARN_FLAG_RE.sub("", msg)
+        tags = []
+        for f in flags:
+            zh = WARNING_FLAG_ZH.get("-W" + f)
+            if zh and zh not in tags and zh not in msg:
+                tags.append(zh)
+        if tags:
+            msg = msg + u"（%s）" % u"、".join(tags)
+    return re.sub(r"\s{2,}", " ", msg).strip()
 
 
 def parse_compiler_output(output):
-    """解析 g++/clang++ 诊断输出 -> [dict(file,line,col,sev,msg,zh,notes)]"""
+    """解析 g++/clang++ 诊断输出 -> [dict(file,line,col,sev,msg,zh,ctx)]"""
     output = output.replace("\r\n", "\n").replace("\r", "\n")
     entries = []
+    pending_ctx = ""
     for line in output.split("\n"):
         if not line.strip():
             continue
+        cm = _CTX_RE.match(line)
+        if cm:
+            kind_zh = _CTX_ZH.get(cm.group(1), u"函数")
+            pending_ctx = u"在%s '%s' 中：" % (kind_zh, cm.group(2))
+            continue
+        im = _IN_FILE_RE.match(line)
+        if im:
+            pending_ctx = u"（由 %s 第 %s 行包含引入）" % (
+                os_path_basename(im.group(1)), im.group(2))
+            continue
         m = _DIAG_RE.match(line)
         if not m:
-            if entries and (line.startswith((" ", "\t")) or True):
-                prev = entries[-1]
-                stripped = line.strip()
-                if stripped and not stripped.startswith("|") \
-                        and not stripped.startswith("^"):
-                    prev["notes"].append(stripped)
+            # 其余零散行（源码回显等）不进入面板
             continue
         entries.append({
             "file": m.group(1),
@@ -626,9 +720,15 @@ def parse_compiler_output(output):
             "sev_en": m.group(4),
             "msg": m.group(5).strip(),
             "zh": translate_message(m.group(5)),
+            "ctx": pending_ctx,
             "notes": [],
         })
+        pending_ctx = ""
     return entries
+
+
+def os_path_basename(path):
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
 
 
 # ---------------------------------------------------------------------------

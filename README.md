@@ -20,10 +20,12 @@
 ### 2. 实时语法检查（报错信息中文化）
 - 后台调用 `g++ -fsyntax-only` 或 `clang++ -fsyntax-only`（自动在 PATH 中查找），
   波浪线标注错误位置，行下方显示中文幽灵提示，状态栏统计 `✖ 错误 ⚠ 警告`
-- 内置 125 条 GCC 报错翻译规则，例如：
+- 内置 136 条 GCC/Clang 报错翻译规则，例如：
   - `expected ';' before 'vector'` → 在 'vector' 之前缺少 ',' 或 ';'
-  - `'x' was not declared in this scope` → 标识符 'x' 未在此作用域中声明(检查拼写/是否漏了头文件)
+  - `'x' was not declared in this scope` → 标识符 'x' 未在此作用域中声明(检查拼写或是否漏了头文件)
   - `did you mean 'hello'?` → 你是不是想写 'hello'？
+- **PCH 预编译头加速**：启动后自动在后台构建 `bits/stdc++.h` 缓存，
+  之后含该头文件的检查耗时约从 1.6s 降至 0.35s（约 4~5 倍）
 - 找不到编译器时自动退化为**基础检查**：括号配平、全角标点检测、未闭合字符串/注释
 
 ### 3. F12 跳转定义
@@ -70,7 +72,8 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | --- | --- | --- |
 | `enable_completions` | `true` | 智能补全开关 |
 | `enable_linting` | `true` | 实时语法检查开关 |
-| `lint_debounce` | `0.8` | 停止输入多少秒后开始检查 |
+| `lint_debounce` | `0.4` | 停止输入多少秒后开始检查 |
+| `enable_pch` | `true` | PCH 预编译头加速（bits/stdc++.h） |
 | `show_phantoms` | `true` | 错误行下方显示中文提示条 |
 | `cxx_standard` | `"c++17"` | 语法检查使用的标准 |
 | `compiler_path` | `""` | 编译器路径，留空自动查找 g++ / clang++ |

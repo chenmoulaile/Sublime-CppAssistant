@@ -687,5 +687,74 @@ for _pat, _rep in _TRANSLATION_SRC:
     except Exception:
         pass
 
+# clang++ 常见报错风格补充
+_CLANG_EXTRA = [
+    (r"use of undeclared identifier '(.+?)'",
+     r"未声明的标识符 '\g<1>'(检查拼写或是否漏了头文件)"),
+    (r"no matching member function for call to '(.+?)'",
+     r"调用成员函数 '\g<1>' 时没有匹配的重载"),
+    (r"member reference type '(.+?)' is not a pointer",
+     r"成员访问类型 '\g<1>' 不是指针，应使用 '.' 而不是 '->'"),
+    (r"member reference type '(.+?)' is a pointer; did you mean to use '->'\?",
+     r"'\g<1>' 是指针，应使用 '->' 而不是 '.'"),
+    (r"expected '\)'", u"缺少右括号 ')'"),
+    (r"expected '\}'", u"缺少右花括号 '}'"),
+    (r"expected '\{'", u"缺少左花括号 '{'"),
+    (r"expected expression", u"此处应为表达式"),
+    (r"expected a type", u"此处应为类型名"),
+    (r"too many arguments provided to function-like macro invocation",
+     u"类函数宏调用时实参过多"),
+]
+for _pat, _rep in _CLANG_EXTRA:
+    try:
+        TRANSLATIONS.append((_re.compile(_pat, _re.I | _re.S), _rep))
+    except Exception:
+        pass
+
+# 编译器警告旗标 -> 中文标签（显示时替换形如 [-Wunused-variable] 的尾巴）
+WARNING_FLAG_ZH = {
+    "-Wunused-variable": u"未使用变量",
+    "-Wunused-but-set-variable": u"已赋值但未读取",
+    "-Wunused-parameter": u"未使用参数",
+    "-Wunused-function": u"未使用函数",
+    "-Wunused-value": u"无效运算",
+    "-Wdiv-by-zero": u"除数为零",
+    "-Wsign-compare": u"有符号/无符号比较",
+    "-Wreturn-type": u"返回类型问题",
+    "-Wparentheses": u"建议加括号",
+    "-Wuninitialized": u"可能未初始化",
+    "-Wmaybe-uninitialized": u"可能未初始化",
+    "-Woverflow": u"整数溢出",
+    "-Wnarrowing": u"隐式收窄转换",
+    "-Wreorder": u"成员初始化顺序与声明不一致",
+    "-Wwrite-strings": u"字符串常量写入风险",
+    "-Wformat": u"printf 参数不匹配",
+    "-Wswitch": u"switch 未覆盖所有枚举值",
+}
+
 # 引号统一替换表(gcc 高版本会用弯引号)
 QUOTE_NORMALIZE = ((u"\u2018", "'"), (u"\u2019", "'"), (u"\u201c", '"'), (u"\u201d", '"'))
+
+# --------------------------------------------------------------------------
+# 预计算补全条目（避免每次按键重复解析元组）
+# --------------------------------------------------------------------------
+
+
+def _entry(comp, ann, kind, want_std=False):
+    return {
+        "trigger": comp.split("(")[0],
+        "insert": comp,
+        "annotation": ann or "",
+        "kind": kind,
+        "want_std": want_std,
+    }
+
+
+MEMBERS_DB_FAST = dict(
+    (key, [_entry(c, a, k) for (c, a, k) in members])
+    for key, members in MEMBERS_DB.items()
+)
+GENERIC_MEMBERS_FAST = [_entry(c, a, k) for (c, a, k) in GENERIC_MEMBERS]
+
+_STD_COMBINED = STD_FUNCTIONS + STD_TYPES + GLOBAL_CONSTANTS
+STD_ITEMS_ALL = [_entry(c, a, k, w) for (c, a, k, w) in _STD_COMBINED]
