@@ -1,0 +1,20 @@
+[
+    { "keys": ["f12"], "command": "ca_goto_definition",
+        "context": [
+            { "key": "selector", "operator": "equal",
+              "operand": "source.c++, source.c" }
+        ]
+    },
+    { "keys": ["shift+alt+f"], "command": "ca_format_document",
+        "context": [
+            { "key": "selector", "operator": "equal",
+              "operand": "source.c++, source.c" }
+        ]
+    },
+    { "keys": ["ctrl+alt+d"], "command": "ca_show_diagnostics",
+        "context": [
+            { "key": "selector", "operator": "equal",
+              "operand": "source.c++, source.c" }
+        ]
+    }
+]

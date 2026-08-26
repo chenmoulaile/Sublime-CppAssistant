@@ -1,0 +1,33 @@
+{
+    // ================= 补全 =================
+    // 是否启用智能补全（自动识别 using namespace std; 并补 std:: 前缀）
+    "enable_completions": true,
+
+    // ================= 语法检查 =================
+    // 实时语法检查总开关
+    "enable_linting": true,
+    // 停止输入多少秒后开始检查
+    "lint_debounce": 0.8,
+    // 编译器单次检查超时（秒）
+    "lint_timeout": 12,
+    // 在错误行下方显示中文幽灵提示条
+    "show_phantoms": true,
+    // C++ 标准
+    "cxx_standard": "c++17",
+    // 编译器可执行文件路径；留空则自动在 PATH 中查找 g++、clang++
+    "compiler_path": "",
+    // 额外传给编译器的参数，如 ["-I", "D:/libs/include"]
+    "compiler_extra_args": [],
+    // 额外头文件搜索目录（同时用于 F12 跨文件跳转）
+    "include_paths": [],
+
+    // ================= 格式化（jiangly 码风）=================
+    // 缩进宽度（兜底格式化器使用；clang-format 由 style 控制）
+    "indent_width": 4,
+    // 保存时自动格式化整个文档
+    "format_on_save": false,
+    // clang-format 路径；留空自动在 PATH 查找。找不到时使用内置兜底格式化器
+    "clang_format_path": "",
+    // jiangly 码风 clang-format 配置：4 空格缩进、K&R 大括号、宽行不折行
+    "clang_format_style": "{ BasedOnStyle: Google, IndentWidth: 4, ColumnLimit: 100, AccessModifierOffset: -4, DerivePointerAlignment: false, PointerAlignment: Left, AllowShortIfStatementsOnASingleLine: false, AllowShortLoopsOnASingleLine: false, AllowShortCaseLabelsOnASingleLine: false, AllowShortFunctionsOnASingleLine: Inline, SortIncludes: Never, FixNamespaceComments: false, AlignConsecutiveAssignments: false, AlignConsecutiveDeclarations: false, AlignTrailingComments: false, InsertBraces: false }"
+}
