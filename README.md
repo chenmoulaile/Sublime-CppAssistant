@@ -80,7 +80,12 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 配置
 
-菜单 `Preferences → Package Settings → CppAssistant → Settings`（或直接编辑 `CppAssistant.sublime-settings`）：
+三种方式打开设置：
+1. 菜单 `Preferences → Package Settings → CppAssistant → Settings`
+2. 命令面板搜索 `CppAssistant: 打开设置`
+3. 直接编辑 `CppAssistant.sublime-settings`
+
+> 新增菜单项需要重启 Sublime Text 后才会显示。
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |

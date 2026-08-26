@@ -664,7 +664,7 @@ _CTX_ZH = {
 }
 _IN_FILE_RE = re.compile(r"^In file included from (.+?):(\d+)")
 
-_WARN_FLAG_RE = re.compile(r"\s*\[-W([\w-]+)\]")
+_WARN_FLAG_RE = re.compile(r"\s*\[-W([\w-]+)=?\]")
 
 
 def translate_message(msg):
@@ -676,12 +676,13 @@ def translate_message(msg):
             msg = pat.sub(rep, msg)
         except Exception:
             pass
-    # 警告旗标 [-Wxxx] -> 中文标签
+    # 警告旗标 [-Wxxx] / [-Wxxx=] -> 中文标签
     flags = _WARN_FLAG_RE.findall(msg)
     if flags:
         msg = _WARN_FLAG_RE.sub("", msg)
         tags = []
         for f in flags:
+            f = f.rstrip("=")
             zh = WARNING_FLAG_ZH.get("-W" + f)
             if zh and zh not in tags and zh not in msg:
                 tags.append(zh)
