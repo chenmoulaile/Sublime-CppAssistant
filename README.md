@@ -17,15 +17,19 @@
 - 输入 `#include <` 或 `#include "` 弹出头文件列表
 - 代码片段：`us` → `using namespace std;`，`inc` → 万能头，`fastio`、`mainf`、`solvef`
 
-### 2. 实时语法检查（报错信息中文化）
-- 后台调用 `g++ -fsyntax-only` 或 `clang++ -fsyntax-only`（自动在 PATH 中查找），
-  波浪线标注错误位置，行下方显示中文幽灵提示，状态栏统计 `✖ 错误 ⚠ 警告`
+### 2. 实时语法检查（报错信息全中文，三级加速）
+- **第一级 · 即时基础检查**（毫秒级）：纯 Python 词法扫描，输入过程中实时检测
+  括号配平、全角标点、未闭合字符串/注释，不必等编译器
+- **第二级 · 编译器完整检查**：后台调用 `g++ -fsyntax-only` 或 `clang++ -fsyntax-only`
+  （自动在 PATH 中查找），波浪线标注错误位置，行下方显示中文幽灵提示，
+  状态栏统计 `✖ 错误 ⚠ 警告`；新一次检查开始时立即终止过期进程，绝不排队堆积
+- **第三级 · 结果缓存**：文本与设置未变时直接复用上次诊断，零延迟刷新
 - 内置 136 条 GCC/Clang 报错翻译规则，例如：
   - `expected ';' before 'vector'` → 在 'vector' 之前缺少 ',' 或 ';'
   - `'x' was not declared in this scope` → 标识符 'x' 未在此作用域中声明(检查拼写或是否漏了头文件)
   - `did you mean 'hello'?` → 你是不是想写 'hello'？
 - **PCH 预编译头加速**：启动后自动在后台构建 `bits/stdc++.h` 缓存，
-  之后含该头文件的检查耗时约从 1.6s 降至 0.35s（约 4~5 倍）
+  之后含该头文件的检查耗时约从 1.2s 降至 0.33s（约 4 倍）
 - 找不到编译器时自动退化为**基础检查**：括号配平、全角标点检测、未闭合字符串/注释
 
 ### 3. F12 跳转定义
@@ -72,10 +76,12 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | --- | --- | --- |
 | `enable_completions` | `true` | 智能补全开关 |
 | `enable_linting` | `true` | 实时语法检查开关 |
-| `lint_debounce` | `0.4` | 停止输入多少秒后开始检查 |
+| `instant_basic_check` | `true` | 即时基础检查（毫秒级括号/全角标点/字符串检测） |
+| `lint_debounce` | `0.4` | 停止输入多少秒后开始编译器完整检查 |
+| `lint_timeout` | `12` | 编译器单次检查超时（秒），超时不清空已有标记 |
 | `enable_pch` | `true` | PCH 预编译头加速（bits/stdc++.h） |
 | `show_phantoms` | `true` | 错误行下方显示中文提示条 |
-| `cxx_standard` | `"c++17"` | 语法检查使用的标准 |
+| `cxx_standard` | `"c++17"` | 语法检查使用的标准（本机默认配置为 c++23） |
 | `compiler_path` | `""` | 编译器路径，留空自动查找 g++ / clang++ |
 | `compiler_extra_args` | `[]` | 额外编译参数 |
 | `include_paths` | `[]` | 额外头文件目录（同时用于跳转定义） |
@@ -83,9 +89,30 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `clang_format_path` | `""` | clang-format 路径，留空自动查找 |
 | `indent_width` | `4` | 兜底格式化器缩进宽度 |
 
+## 更新日志
+
+### v1.2.0
+- 语法检查三级加速：即时基础检查（毫秒级）+ 过期进程立即终止 + 内容哈希结果缓存
+- PCH 预热提前至启动后 1.2 秒，首次检查即享加速
+- 检查期间状态栏显示"正在语法检查…"；超时不再清空既有标记
+- 全部提示信息中文化；新增 `.no-sublime-package` 保证多模块包以目录形式安装
+
+### v1.1.0
+- 片段式补全、全中文诊断、16 倍补全缓存、PCH 检查加速
+
+### v1.0.0
+- 首发：C++ 智能补全、中文语法检查、F12 跳转定义、jiangly 码风格式化
+
 ## 常见问题
 
-- **状态栏一直显示“✖ 无语法错误”但不检查？** 未找到编译器且基础检查无异常。
+- **Package Control 里搜不到 / Add Repository 下载失败？**
+  官方频道收录审核中，审核期间请用上方"添加仓库"或手动方式；
+  若 GitHub 网络不通，可用方式二/三（镜像加速下载 ZIP 后解压）。
+- **和 LSP-clangd 比速度如何？** 打字过程中的结构性错误（括号、全角标点、
+  未闭合字符串）由即时基础检查在毫秒级给出，比任何 LSP 都快；
+  完整语义检查配合 PCH 与结果缓存，常规竞赛规模代码约 0.3s 内刷新，
+  且不会像冷启动的 clangd 那样长时间无响应。
+- **状态栏一直显示"✖ 无语法错误"但不检查？** 未找到编译器且基础检查无异常。
   安装 [MinGW-w64](https://www.mingw-w64.org/) 或 LLVM 并加入 PATH，或把完整路径填入 `compiler_path`。
 - **F12 没反应？** 可能被其他包或 User 键位设置占用，检查 `Preferences → Key Bindings`。
 - **格式化没变化？** 未安装 clang-format 时使用保守的内置格式化器，只做安全子集的整理。

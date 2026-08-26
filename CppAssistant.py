@@ -4,8 +4,13 @@
 功能：
   1. 智能代码补全：STL 函数/容器成员，自动识别 using namespace std;
      未声明时自动补 std:: 前缀，已声明则只给裸名。
-  2. 实时语法检查：调用 g++/clang++ -fsyntax-only，报错信息翻译成中文，
-     波浪线标注 + 行内幽灵提示 + 状态栏统计；无编译器时退化为括号配平检查。
+  2. 实时语法检查（三级加速）：
+     a. 即时基础检查 —— 纯 Python 词法扫描，毫秒级反馈括号配平、
+        全角标点、未闭合字符串等问题；
+     b. 编译器检查 —— g++/clang++ -fsyntax-only + PCH 预编译头，
+        新输入到来时立刻终止过期进程，绝不排队堆积；
+     c. 结果缓存 —— 文本与设置未变时直接复用上次诊断，零延迟刷新。
+     报错信息全部翻译成中文：波浪线标注 + 行内幽灵提示 + 状态栏统计。
   3. F12 跳转定义：本文件 -> 已打开文件 -> 本地头文件递归搜索。
   4. jiangly 码风格式化：优先 clang-format（内置 jiangly 风格配置），
      无 clang-format 时使用内置兜底格式化器。
@@ -19,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import zlib
 
 import sublime
 import sublime_plugin
@@ -36,11 +42,16 @@ _compiler_cache = {"path": None, "done": False}
 CPP_SCOPE = "source.c++, source.c"
 
 # 视图相关运行时状态 -------------------------------------------------------
-_lint_timers = {}      # view_id -> threading.Timer
+_lint_timers = {}      # view_id -> threading.Timer（编译器检查防抖）
+_basic_timers = {}     # view_id -> threading.Timer（即时基础检查微防抖）
 _phantom_sets = {}     # view_id -> PhantomSet
 _diag_store = {}       # view_id -> [str]
-_temp_files = {}       # view_id -> path
-_lint_gen = {}         # view_id -> 代号（丢弃过期诊断结果）
+_temp_files = {}       # view_id -> [path]
+_lint_gen = {}         # view_id -> 代号（丢弃过期编译器结果）
+_basic_gen = {}        # view_id -> 代号（丢弃过期基础检查结果）
+_lint_procs = {}       # view_id -> 运行中的编译器进程（被取代时立刻终止）
+_lint_state = {}       # view_id -> {"compiler": [...], "basic": [...]}
+_LINT_CACHE = {}       # view_id -> (缓存键, 诊断)；文本与设置未变则零延迟复用
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +61,7 @@ _lint_gen = {}         # view_id -> 代号（丢弃过期诊断结果）
 def _on_settings_changed():
     _compiler_cache["done"] = False
     _compiler_cache["path"] = None
+    _LINT_CACHE.clear()
 
 
 def plugin_unloaded():
@@ -157,6 +169,18 @@ class CaEventListener(sublime_plugin.EventListener):
         if not _s("enable_linting", True):
             return
         vid = view.id()
+        # 第一级：即时基础检查（毫秒级，不等编译器）
+        if _s("instant_basic_check", True):
+            bt = _basic_timers.pop(vid, None)
+            if bt is not None:
+                bt.cancel()
+            btmr = threading.Timer(
+                0.06, lambda: sublime.set_timeout(
+                    lambda: run_basic_check(view), 0))
+            btmr.daemon = True
+            btmr.start()
+            _basic_timers[vid] = btmr
+        # 第二级：编译器完整检查（防抖）
         t = _lint_timers.pop(vid, None)
         if t is not None:
             t.cancel()
@@ -173,14 +197,23 @@ class CaEventListener(sublime_plugin.EventListener):
 
     def on_close(self, view):
         vid = view.id()
-        t = _lint_timers.pop(vid, None)
-        if t is not None:
-            t.cancel()
+        for timers in (_lint_timers, _basic_timers):
+            t = timers.pop(vid, None)
+            if t is not None:
+                t.cancel()
+        proc = _lint_procs.pop(vid, None)
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         _phantom_sets.pop(vid, None)
         _diag_store.pop(vid, None)
         _lint_gen.pop(vid, None)
-        tp = _temp_files.pop(vid, None)
-        if tp:
+        _basic_gen.pop(vid, None)
+        _lint_state.pop(vid, None)
+        _LINT_CACHE.pop(vid, None)
+        for tp in _temp_files.pop(vid, []):
             try:
                 os.remove(tp)
             except OSError:
@@ -260,7 +293,8 @@ def plugin_loaded():
     _settings_obj.clear_on_change("cppassistant")
     _settings_obj.add_on_change("cppassistant", _on_settings_changed)
     if _s("enable_linting", True) and _s("enable_pch", True):
-        sublime.set_timeout(_warm_pch_async, 5000)
+        # 尽早后台预热 PCH，让首次编译器检查就享受加速
+        sublime.set_timeout(_warm_pch_async, 1200)
 
 
 # ---------------------------------------------------------------------------
@@ -283,18 +317,52 @@ def find_compiler():
     return None
 
 
-def _lint_work(view_id, src, workdir, fname, gen):
-    """工作线程：写临时文件并调用编译器。"""
+def _cleanup_temps(view_id, keep_last=1):
+    """清理本视图残留的临时文件，只保留最近 keep_last 个。"""
+    paths = _temp_files.get(view_id) or []
+    if len(paths) <= keep_last:
+        return
+    for tp in paths[:-keep_last]:
+        try:
+            os.remove(tp)
+        except OSError:
+            pass
+    _temp_files[view_id] = paths[-keep_last:]
+
+
+def _settings_sig(compiler):
+    """影响诊断结果的设置签名，用于结果缓存失效判断。"""
+    return (str(_s("cxx_standard", "c++17")),
+            repr(_s("compiler_extra_args", [])),
+            repr(_s("include_paths", [])),
+            bool(_s("enable_pch", True)),
+            compiler or "")
+
+
+def _lint_work(view_id, src, workdir, fname, gen, ckey):
+    """工作线程：写临时文件并调用编译器（被新请求取代时会被立刻终止）。"""
     compiler = find_compiler()
     if compiler is None:
-        diags = _basic_diags(src)
-        sublime.set_timeout(
-            lambda: apply_diagnostics(view_id, diags, True, gen), 0)
+        # 无编译器：退化为纯 Python 基础检查，同样享受缓存
+        diags = _basic_diags(ca_engine.basic_checks(src))
+        for d in diags:
+            d["tier"] = "compiler"
+
+        def done_nc():
+            if gen != _lint_gen.get(view_id):
+                return
+            st = _lint_state.setdefault(view_id, {})
+            st["compiler"] = diags
+            _LINT_CACHE[view_id] = (ckey, diags)
+            render_diagnostics(view_id)
+
+        sublime.set_timeout(done_nc, 0)
         return
     base = os.path.basename(fname) if fname else "untitled_%d.cpp" % view_id
     stem = os.path.splitext(base)[0] or "untitled"
-    tmp = os.path.join(workdir, "_ca_lint_%d_%s.cpp" % (view_id, stem))
-    _temp_files[view_id] = tmp
+    # 每代使用独立临时文件，避免与被终止的旧进程产生写入竞争
+    tmp = os.path.join(workdir, "_ca_lint_%d_%s_%d.cpp" % (view_id, stem, gen))
+    _temp_files.setdefault(view_id, []).append(tmp)
     try:
         with open(tmp, "wb") as f:
             f.write(src.encode("utf-8"))
@@ -318,26 +386,51 @@ def _lint_work(view_id, src, workdir, fname, gen):
     cmd.append(tmp)
 
     creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    proc = None
+    out = None
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL,
                                 cwd=workdir, creationflags=creationflags)
+        _lint_procs[view_id] = proc
         out, _ = proc.communicate(timeout=float(_s("lint_timeout", 12)))
     except Exception:
-        diags = []
-    else:
-        text = _decode(out)
-        entries = ca_engine.parse_compiler_output(text)
-        norm = os.path.normcase(os.path.normpath(tmp))
-        diags = []
-        for e in entries:
-            ef = os.path.normcase(os.path.normpath(e["file"]))
-            if ef != norm:
-                continue
-            diags.append(e)
-    sublime.set_timeout(
-        lambda: apply_diagnostics(view_id, diags, False, gen), 0)
+        out = None
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    finally:
+        if _lint_procs.get(view_id) is proc:
+            _lint_procs.pop(view_id, None)
+
+    if out is None:
+        # 超时或被新检查取代：保留旧标记，不清屏
+        _cleanup_temps(view_id)
+        return
+    text = _decode(out)
+    entries = ca_engine.parse_compiler_output(text)
+    norm = os.path.normcase(os.path.normpath(tmp))
+    diags = []
+    for e in entries:
+        ef = os.path.normcase(os.path.normpath(e["file"]))
+        if ef != norm:
+            continue
+        e["tier"] = "compiler"
+        diags.append(e)
+
+    def done():
+        if gen != _lint_gen.get(view_id):
+            return
+        st = _lint_state.setdefault(view_id, {})
+        st["compiler"] = diags
+        _LINT_CACHE[view_id] = (ckey, diags)
+        render_diagnostics(view_id)
+
+    sublime.set_timeout(done, 0)
+    _cleanup_temps(view_id)
 
 
 def _decode(b):
@@ -349,19 +442,56 @@ def _decode(b):
     return b.decode("utf-8", "replace")
 
 
-def _basic_diags(src):
-    problems = ca_engine.basic_checks(src)
+def _basic_diags(problems):
+    """把 basic_checks 的输出包装为统一诊断结构（tier=basic）。"""
     sev_map = {"error": u"错误", "warning": u"警告"}
     return [{
         "line": ln, "col": cl,
         "sev": sev_map.get(sv, sv),
         "sev_en": "error" if sv == "error" else "warning",
         "msg": msg, "zh": msg, "ctx": "", "notes": [],
+        "tier": "basic",
     } for (ln, cl, sv, msg) in problems]
 
 
-def run_lint(view):
+def run_basic_check(view):
+    """第一级即时检查：纯 Python 词法扫描，毫秒级反馈结构性问题。"""
     if not view.is_valid() or not _is_cpp(view):
+        return
+    if not _s("enable_linting", True) or not _s("instant_basic_check", True):
+        return
+    vid = view.id()
+    gen = _basic_gen.get(vid, 0) + 1
+    _basic_gen[vid] = gen
+    size = view.size()
+    src = view.substr(sublime.Region(0, min(size, 300000)))
+
+    def worker():
+        try:
+            problems = ca_engine.basic_checks(src)
+        except Exception:
+            return
+        diags = _basic_diags(problems)
+
+        def done():
+            if not view.is_valid() or _basic_gen.get(vid) != gen:
+                return
+            st = _lint_state.setdefault(vid, {})
+            st["basic"] = diags
+            render_diagnostics(vid)
+
+        sublime.set_timeout(done, 0)
+
+    th = threading.Thread(target=worker)
+    th.daemon = True
+    th.start()
+
+
+def run_lint(view):
+    """第二级编译器完整检查：带结果缓存与过期进程终止。"""
+    if not view.is_valid() or not _is_cpp(view):
+        return
+    if not _s("enable_linting", True):
         return
     vid = view.id()
     src = view.substr(sublime.Region(0, view.size()))
@@ -372,10 +502,29 @@ def run_lint(view):
         workdir = os.path.dirname(fname)
     else:
         workdir = tempfile.gettempdir()
+    compiler = find_compiler()
+    ckey = (zlib.crc32(src.encode("utf-8")), len(src),
+            _settings_sig(compiler))
+    st = _lint_state.setdefault(vid, {})
+    cached = _LINT_CACHE.get(vid)
+    if cached and cached[0] == ckey:
+        # 文本与设置都没变：直接复用上次结果，零延迟
+        st["compiler"] = cached[1]
+        render_diagnostics(vid)
+        return
     gen = _lint_gen.get(vid, 0) + 1
     _lint_gen[vid] = gen
+    old = _lint_procs.pop(vid, None)
+    if old is not None:
+        # 立刻终止过期进程，保证最新输入无需排队等待旧检查
+        try:
+            old.kill()
+        except Exception:
+            pass
+    if compiler is not None:
+        view.set_status("ca_diag", u"\u23f3 正在语法检查…")
     th = threading.Thread(target=_lint_work,
-                          args=(vid, src, workdir, fname, gen))
+                          args=(vid, src, workdir, fname, gen, ckey))
     th.daemon = True
     th.start()
 
@@ -391,15 +540,20 @@ _PHANTOM_TMPL = (
 )
 
 
-def apply_diagnostics(view_id, diags, basic_mode, gen=None):
-    # 只应用最新一次检查的结果，避免旧结果覆盖新状态
-    if gen is not None and gen != _lint_gen.get(view_id):
-        return
+def render_diagnostics(view_id):
+    """合并两级检查结果并渲染：编译器结果按行优先，基础检查补充其余行。"""
     view = _view_by_id(view_id)
     if view is None or not view.is_valid():
         return
     if not _is_cpp(view):
         return
+
+    st = _lint_state.get(view_id, {})
+    comp = st.get("compiler") or []
+    comp_lines = set(d["line"] for d in comp)
+    basic = [d for d in (st.get("basic") or [])
+             if d["line"] not in comp_lines]
+    diags = sorted(comp + basic, key=lambda x: (x["line"], x["col"]))
 
     err_regions = []
     warn_regions = []
@@ -408,7 +562,7 @@ def apply_diagnostics(view_id, diags, basic_mode, gen=None):
     n_err = n_warn = 0
     max_pt = view.size()
 
-    for d in sorted(diags, key=lambda x: (x["line"], x["col"])):
+    for d in diags:
         ln = max(int(d["line"]) - 1, 0)
         col = max(int(d["col"]) - 1, 0)
         try:
@@ -434,8 +588,8 @@ def apply_diagnostics(view_id, diags, basic_mode, gen=None):
             n_warn += 1
 
         text = d["zh"] if d.get("zh") else d["msg"]
-        if basic_mode:
-            text = u"[基础检查] " + text
+        if d.get("tier") == "basic":
+            text = u"[即时检查] " + text
         icon = u"\u2716" if is_err else u"\u26a0"
         color = "redish" if is_err else "yellowish"
         if _s("show_phantoms", True) and len(phantoms) < 40:
@@ -447,7 +601,6 @@ def apply_diagnostics(view_id, diags, basic_mode, gen=None):
         panel_lines.append(u"%s %s第%d行%d列  %s" %
                            (tag, ctx, d["line"], d["col"], text))
 
-    show_basic = bool(_s("show_gutter_marks", False))
     flags = (sublime.DRAW_SQUIGGLY_UNDERLINE | sublime.DRAW_NO_FILL |
              sublime.DRAW_NO_OUTLINE)
     view.erase_regions("ca_errors")
@@ -471,8 +624,10 @@ def apply_diagnostics(view_id, diags, basic_mode, gen=None):
     if n_err or n_warn:
         view.set_status("ca_diag",
                         u"\u2716 %d 错误  \u26a0 %d 警告" % (n_err, n_warn))
-    else:
+    elif comp or st.get("basic"):
         view.set_status("ca_diag", u"\u2714 无语法错误")
+    else:
+        view.set_status("ca_diag", "")
 
     _diag_store[view.id()] = panel_lines
 
@@ -560,17 +715,17 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
                 out, err = None, b"timeout/error"
             if out is not None and proc.returncode == 0:
                 new_text = _decode(out)
-                engine_name = "clang-format"
+                engine_name = u"clang-format 引擎"
             elif err:
-                print("[CppAssistant] clang-format 失败:",
+                print("[CppAssistant] clang-format 调用失败:",
                       _decode(err).strip())
         if new_text is None:
             width = int(_s("indent_width", 4))
             new_text = ca_engine.format_code(src, width)
-            engine_name = u"内置兜底格式化器"
+            engine_name = u"内置兜底格式化引擎"
 
         if new_text == src:
-            view.set_status("ca_fmt", u"格式无变化")
+            view.set_status("ca_fmt", u"格式无变化，已是 jiangly 码风")
             return
         anchor_row = view.rowcol(view.sel()[0].begin())[0]
         view.run_command("ca_format_apply", {"text": new_text})
