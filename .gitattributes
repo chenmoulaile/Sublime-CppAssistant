@@ -1,2 +1,6 @@
 ﻿* text=auto eol=lf
 *.png binary
+
+# 打包为 .sublime-package 时排除非运行文件
+.gitattributes export-ignore
+.gitignore export-ignore

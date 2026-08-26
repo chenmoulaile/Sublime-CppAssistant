@@ -1,0 +1,27 @@
+[
+	{
+		"caption": "Preferences",
+		"menu": [
+			{
+				"caption": "Package Settings",
+				"menu": [
+					{
+						"caption": "CppAssistant",
+						"menu": [
+							{
+								"caption": "Settings",
+								"command": "open_file",
+								"args": { "file": "${packages}/CppAssistant/CppAssistant.sublime-settings" }
+							},
+							{
+								"caption": "README（使用说明）",
+								"command": "open_file",
+								"args": { "file": "${packages}/CppAssistant/README.md" }
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+]

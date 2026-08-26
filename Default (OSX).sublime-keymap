@@ -1,20 +1,37 @@
 [
-    { "keys": ["f12"], "command": "ca_goto_definition",
-        "context": [
-            { "key": "selector", "operator": "equal",
-              "operand": "source.c++, source.c" }
-        ]
-    },
-    { "keys": ["shift+alt+f"], "command": "ca_format_document",
-        "context": [
-            { "key": "selector", "operator": "equal",
-              "operand": "source.c++, source.c" }
-        ]
-    },
-    { "keys": ["ctrl+alt+d"], "command": "ca_show_diagnostics",
-        "context": [
-            { "key": "selector", "operator": "equal",
-              "operand": "source.c++, source.c" }
-        ]
-    }
+	/*
+	CppAssistant 默认不注册任何快捷键（避免覆盖其他包的键位）。
+
+	如需快捷键，请把下面条目复制到菜单 Preferences → Key Bindings
+	打开的 User 键位文件中；或直接取消下面各行的注释。
+	所有命令也可在命令面板中搜索 "CppAssistant:" 使用。
+
+	{
+		"keys": ["f12"], "command": "ca_goto_definition",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			  "operand": "source.c++, source.c" }
+		]
+	},
+	跳转到定义：仅 C/C++ 生效；会覆盖内置 F12 的 goto_definition，
+	本地找不到定义时本插件会自动回退到内置符号索引。
+
+	{
+		"keys": ["shift+alt+f"], "command": "ca_format_document",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			  "operand": "source.c++, source.c" }
+		]
+	},
+	按 jiangly 码风格式化整个文档。
+
+	{
+		"keys": ["ctrl+alt+d"], "command": "ca_show_diagnostics",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			  "operand": "source.c++, source.c" }
+		]
+	},
+	打开中文语法诊断面板。
+	*/
 ]

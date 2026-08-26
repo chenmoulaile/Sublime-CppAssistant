@@ -58,19 +58,23 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 ### 方式三：手动下载
 下载本仓库 ZIP，解压到 Packages 目录下并重命名为 `CppAssistant`，重启 Sublime Text。
 
-## 快捷键（仅 C/C++ 文件生效）
+## 快捷键（可选，默认不注册）
 
-| 按键 | 功能 |
+为避免覆盖其他包的键位，本插件**默认不绑定任何快捷键**，全部命令可在命令面板搜索 `CppAssistant:` 使用：
+
+| 命令 | 功能 |
 | --- | --- |
-| `F12` | 跳转到定义 |
-| `Shift+Alt+F` / `Shift+Alt+L` | 按 jiangly 码风格式化整个文档 |
-| `Ctrl+Alt+D` | 打开中文语法诊断面板 |
+| `CppAssistant: 跳转到定义` | 光标符号跳转到定义（本地找不到时回退内置索引） |
+| `CppAssistant: 按 jiangly 码风格式化文档` | 整个文档格式化（也可开启 `format_on_save`） |
+| `CppAssistant: 显示语法诊断面板` | 中文语法诊断列表 |
 
-命令面板中同样提供以上三条命令（前缀 `CppAssistant:`）。
+如需快捷键，把 `Default (Windows).sublime-keymap` 中注释掉的条目复制到
+`Preferences → Key Bindings` 的 User 文件即可，推荐键位：
+`F12` 跳转定义 · `Shift+Alt+F` 格式化 · `Ctrl+Alt+D` 诊断面板。
 
 ## 配置
 
-菜单 `Preferences → Package Settings → CppAssistant`（或直接编辑 `CppAssistant.sublime-settings`）：
+菜单 `Preferences → Package Settings → CppAssistant → Settings`（或直接编辑 `CppAssistant.sublime-settings`）：
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -114,7 +118,8 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
   且不会像冷启动的 clangd 那样长时间无响应。
 - **状态栏一直显示"✖ 无语法错误"但不检查？** 未找到编译器且基础检查无异常。
   安装 [MinGW-w64](https://www.mingw-w64.org/) 或 LLVM 并加入 PATH，或把完整路径填入 `compiler_path`。
-- **F12 没反应？** 可能被其他包或 User 键位设置占用，检查 `Preferences → Key Bindings`。
+- **F12 没反应？** 默认未注册快捷键（避免与其他包冲突）。用命令面板 `CppAssistant: 跳转到定义`，
+  或按上方"快捷键"一节把 F12 条目加进 User 键位。
 - **格式化没变化？** 未安装 clang-format 时使用保守的内置格式化器，只做安全子集的整理。
 
 ## License
