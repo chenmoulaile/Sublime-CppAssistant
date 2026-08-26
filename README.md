@@ -44,9 +44,15 @@
 ## 安装
 
 ### 方式一：Package Control（推荐）
+本插件已提交官方频道收录审核（[sublimehq/package_control_channel#9536](https://github.com/sublimehq/package_control_channel/pull/9536)），
+合并后即可直接：`Ctrl+Shift+P` → **Package Control: Install Package** → 搜索 **CppAssistant**。
+
+审核期间可用添加仓库方式：
 1. `Ctrl+Shift+P` → **Package Control: Add Repository**
 2. 输入：`https://github.com/chenmoulaile/Sublime-CppAssistant`
 3. `Ctrl+Shift+P` → **Package Control: Install Package** → 选择 **CppAssistant**
+
+> 若 Add Repository 下载失败（GitHub 网络原因），请用方式二/三。
 
 ### 方式二：git clone
 ```bash
