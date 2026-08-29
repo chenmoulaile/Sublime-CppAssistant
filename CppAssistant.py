@@ -29,11 +29,8 @@ import zlib
 import sublime
 import sublime_plugin
 
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-if PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, PLUGIN_DIR)
-
-import ca_engine  # noqa: E402
+# Use relative import for local modules (avoids sys.path modification)
+from . import ca_engine  # noqa: E402
 
 _SETTINGS = "CppAssistant.sublime-settings"
 _settings_obj = None
@@ -256,6 +253,7 @@ def _build_pch(compiler, std):
             os.makedirs(os.path.dirname(hdr))
         with open(hdr, "w", encoding="utf-8") as f:
             f.write(PCH_HEADER_TEXT)
+        # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
         creationflags = 0x08000000 if os.name == "nt" else 0
         proc = subprocess.Popen(
             [compiler, "-std=" + str(std), "-x", "c++-header",
@@ -385,7 +383,8 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
                 target=_build_pch, args=(compiler, std), daemon=True).start()
     cmd.append(tmp)
 
-    creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
+    creationflags = 0x08000000 if os.name == "nt" else 0
     proc = None
     out = None
     try:
@@ -703,6 +702,7 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
         cf = _find_clang_format()
         if cf is not None:
             style = _s("clang_format_style", CLANG_FORMAT_STYLE_DEFAULT)
+            # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
             creationflags = 0x08000000 if os.name == "nt" else 0
             try:
                 proc = subprocess.Popen(

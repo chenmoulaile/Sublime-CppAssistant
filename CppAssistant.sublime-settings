@@ -1,23 +1,23 @@
 {
     // ================= 补全 =================
     // 是否启用智能补全（自动识别 using namespace std; 并补 std:: 前缀）
-    "enable_completions": true,
+    "enable_completions": false,
 
     // ================= 语法检查 =================
     // 实时语法检查总开关
-    "enable_linting": true,
+    "enable_linting": false,
     // 即时基础检查：纯 Python 毫秒级检测括号配平、全角标点、
     // 未闭合字符串/注释，输入时立即提示，无需等待编译器
-    "instant_basic_check": true,
+    "instant_basic_check": false,
     // 停止输入多少秒后开始编译器完整检查（配合 PCH 与结果缓存，通常 1 秒内刷新）
-    "lint_debounce": 0.4,
+    "lint_debounce": 0.2,
     // 编译器单次检查超时（秒）；超时不会清空已有标记
     "lint_timeout": 12,
     // 预编译头加速：首次检查前后台构建 bits/stdc++.h 的缓存，
     // 之后包含该头文件的检查速度提升约 4~5 倍（约 1.2s -> 0.33s）
-    "enable_pch": true,
+    "enable_pch": false,
     // 在错误行下方显示中文幽灵提示条
-    "show_phantoms": true,
+    "show_phantoms": false,
     // C++ 标准
     "cxx_standard": "c++23",
     // 编译器可执行文件路径；留空则自动在 PATH 中查找 g++、clang++

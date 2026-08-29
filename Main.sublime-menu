@@ -1,13 +1,13 @@
 [
 	{
 		"caption": "Preferences",
-		"menu": [
+		"children": [
 			{
 				"caption": "Package Settings",
-				"menu": [
+				"children": [
 					{
 						"caption": "CppAssistant",
-						"menu": [
+						"children": [
 							{
 								"caption": "Settings",
 								"command": "open_file",
