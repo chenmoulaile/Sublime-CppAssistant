@@ -2,6 +2,9 @@
 	{ "caption": "CppAssistant: 按 jiangly 码风格式化文档", "command": "ca_format_document" },
 	{ "caption": "CppAssistant: 跳转到定义", "command": "ca_goto_definition" },
 	{ "caption": "CppAssistant: 显示语法诊断面板", "command": "ca_show_diagnostics" },
+	{ "caption": "CppAssistant: 切换诊断语言为中文 (zh)", "command": "ca_set_display_language", "args": { "lang": "zh" } },
+	{ "caption": "CppAssistant: 切换诊断语言为英文 (en)", "command": "ca_set_display_language", "args": { "lang": "en" } },
+	{ "caption": "CppAssistant: 切换诊断语言为中英双语 (both)", "command": "ca_set_display_language", "args": { "lang": "both" } },
 	{ "caption": "首选项: CppAssistant 设置", "command": "edit_settings",
 	  "args": {
 		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",

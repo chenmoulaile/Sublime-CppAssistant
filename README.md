@@ -115,7 +115,8 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `lint_debounce` | `0.4` | 停止输入多少秒后开始编译器完整检查 |
 | `lint_timeout` | `12` | 编译器单次检查超时（秒），超时不清空已有标记 |
 | `enable_pch` | `true` | PCH 预编译头加速（bits/stdc++.h） |
-| `show_phantoms` | `true` | 错误行下方显示中文提示条 |
+| `show_phantoms` | `true` | 错误行下方显示提示条 |
+| `display_language` | `"zh"` | 诊断信息显示语言: `zh` 仅中文 / `en` 仅英文 / `both` 中英双语 |
 | `cxx_standard` | `"c++17"` | 语法检查使用的标准（本机默认配置为 c++23） |
 | `compiler_path` | `""` | 编译器路径，留空自动查找 g++ / clang++ |
 | `compiler_extra_args` | `[]` | 额外编译参数 |
@@ -123,6 +124,36 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `format_on_save` | `false` | 保存时自动格式化 |
 | `clang_format_path` | `""` | clang-format 路径，留空自动查找 |
 | `indent_width` | `4` | 兜底格式化器缩进宽度 |
+
+## 诊断显示语言
+
+支持 **中文 / 英文 / 中英双语** 三种模式，可通过以下任一方式切换：
+
+1. **命令面板** 搜索 `CppAssistant: 切换诊断语言为 ...`
+2. **菜单** `Preferences → Package Settings → CppAssistant → 诊断显示语言`
+3. **手动编辑** `Packages/User/CppAssistant.sublime-settings` 里的 `display_language` 字段：
+   ```json
+   {
+       "display_language": "zh"     // 仅中文 (默认)
+       // "display_language": "en"   // 仅英文
+       // "display_language": "both" // 中英双语, 形如 "use of foo（未声明的标识符 'foo'）"
+   }
+   ```
+
+切换后即时生效（自动失效诊断缓存并重渲染当前文件的所有诊断）。状态栏、诊断面板、幽灵提示条中的提示文字会同步切换。
+
+### 翻译覆盖范围
+
+诊断翻译表覆盖 280+ 条常见 gcc / clang 诊断消息，包括：
+
+- **编译错误**：`expected ';' before`、`use of undeclared identifier`、`no matching function for call to`、`redefinition of`、`is not a class template`、`undefined reference to`、`fatal error: ... No such file or directory` ...
+- **C++ 标准相关**：`explicit object member function only available with '-std=c++23' or '-std=gnu++23'`、`is a C++23 extension`、`only available in C++17 or later` ...
+- **模板相关**：`template argument deduction failed`、`too many/few template arguments for class template`、`specialization after instantiation` ...
+- **constexpr/lambda/虚函数**：覆盖 `marked 'override' but does not override`、`non-constexpr function cannot be used in this constant expression`、`virtual function has non-virtual destructor` ...
+- **警告旗标**：覆盖 270+ 条 `-Wxxx` 旗标（`-Wc++23-extensions`、`-Wsign-compare`、`-Wformat`、`-Wdeprecated-declarations`、`-Warray-bounds`、`-Wclass-memaccess` ...），旗标名称会自动翻译为中文显示在诊断末尾，例如 `[-Wunused-variable]` → `（未使用变量）`
+- **内存/运行时错误**（来自 ASan/Valgrind）：`segmentation fault`、`use-after-free`、`stack smashing detected`、`memory leak` ...
+
+英文模式下会保留 `gcc/clang` 原始报错信息，方便复制搜索；中文模式适合日常学习；双语模式适合教学/对比。
 
 ## 更新日志
 
@@ -138,6 +169,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 - 预计算 `KEYWORDS_SET/HEADERS_SET/SNIPPETS_BY_TRIG` 用于 O(1) 查找
 - 默认开启所有功能（补全、语法检查、即时基础检查、PCH、幽灵提示）
 - **菜单重构**：参考 LSP / SublimeAStyleFormatter 模式，`Main.sublime-menu` 改为完整标准结构（mnemonic / id / Settings-Default / Settings-User / Key Bindings-Default / Key Bindings-User）
+- **完全汉化 + 诊断语言切换**：诊断翻译表扩充至 280+ 条，覆盖 C++23/20/17/14/11 标准相关错误（`[-Wc++23-extensions]`、`[-Wgnu++23]` 等）、模板推导失败、constexpr 违例、lambda 捕获问题、虚函数/override 错误、内存错误等。警告旗标翻译扩充至 270+ 条。新增 `display_language` 设置项支持 **中文（默认）/ 英文 / 中英双语** 三种模式，可通过命令面板 `CppAssistant: 切换诊断语言为...` 或菜单 `首选项 → Package Settings → CppAssistant → 诊断显示语言` 切换，状态栏/幽灵提示/诊断面板同步更新
 
 ### v1.2.3
 - 修复所有 Package Control 审查警告：sys.path、CREATE_NO_WINDOW 注释、keymap 重命名、edit_settings 命令、菜单子项、移除 Preferences.sublime-settings

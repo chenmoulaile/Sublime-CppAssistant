@@ -321,7 +321,19 @@ def _settings_sig(compiler):
             repr(_s("include_paths", [])),
             bool(_s("enable_pch", True)),
             bool(_s("show_phantoms", True)),
+            str(_s("display_language", "zh")),
             compiler or "")
+
+
+def _display_language():
+    """读取用户设置的诊断显示语言。
+
+    合法值: 'zh' (中文, 默认), 'en' (英文), 'both' (双语)
+    """
+    v = str(_s("display_language", "zh")).lower().strip()
+    if v in ("zh", "en", "both"):
+        return v
+    return "zh"
 
 
 def _lint_work(view_id, src, workdir, fname, gen, ckey):
@@ -406,7 +418,7 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
         # 超时或被新检查取代：保留旧标记，不清屏
         return
     text = _decode(out)
-    entries = ca_engine.parse_compiler_output(text)
+    entries = ca_engine.parse_compiler_output(text, _display_language())
     diags = []
     for e in entries:
         e["tier"] = "compiler"
@@ -434,14 +446,19 @@ def _decode(b):
 
 def _basic_diags(problems):
     """把 basic_checks 的输出包装为统一诊断结构（tier=basic）。"""
-    sev_map = {"error": u"错误", "warning": u"警告"}
-    return [{
-        "line": ln, "col": cl,
-        "sev": sev_map.get(sv, sv),
-        "sev_en": "error" if sv == "error" else "warning",
-        "msg": msg, "zh": msg, "ctx": "", "notes": [],
-        "tier": "basic",
-    } for (ln, cl, sv, msg) in problems]
+    lang = _display_language()
+    out = []
+    for (ln, cl, sv, msg) in problems:
+        # 基础检查消息已是中文，但 sev 标签需按语言处理
+        sev_en = "error" if sv == "error" else "warning"
+        out.append({
+            "line": ln, "col": cl,
+            "sev": ca_engine.severity_label(sev_en, lang),
+            "sev_en": sev_en,
+            "msg": msg, "zh": msg, "text": msg, "ctx": "", "notes": [],
+            "tier": "basic",
+        })
+    return out
 
 
 def run_basic_check(view):
@@ -518,7 +535,13 @@ def run_lint(view):
         except Exception:
             pass
     if compiler is not None:
-        view.set_status("ca_diag", u"\u23f3 正在语法检查…")
+        lang = _display_language()
+        if lang == "en":
+            view.set_status("ca_diag", u"\u23f3 linting...")
+        elif lang == "both":
+            view.set_status("ca_diag", u"\u23f3 正在语法检查(linting)...")
+        else:
+            view.set_status("ca_diag", u"\u23f3 正在语法检查…")
     th = threading.Thread(target=_lint_work,
                           args=(vid, src, workdir, fname, gen, ckey))
     th.daemon = True
@@ -575,7 +598,7 @@ def render_diagnostics(view_id):
         if end == pt:
             end = min(pt + 1, max_pt)
         region = sublime.Region(pt, end)
-        is_err = (d.get("sev_en") == "error") or (u"错误" in d.get("sev", ""))
+        is_err = (d.get("sev_en") == "error")
         if is_err:
             err_regions.append(region)
             n_err += 1
@@ -583,16 +606,30 @@ def render_diagnostics(view_id):
             warn_regions.append(region)
             n_warn += 1
 
-        text = d["zh"] if d.get("zh") else d["msg"]
+        # 按用户语言偏好选择显示文本
+        text = d.get("text") or (d.get("zh") if d.get("zh") else d.get("msg", ""))
         if d.get("tier") == "basic":
-            text = u"[即时检查] " + text
+            # 即时检查消息前面标记
+            if _display_language() == "en":
+                text = "[instant] " + text
+            elif _display_language() == "both":
+                text = "[instant / 即时检查] " + text
+            else:
+                text = "[即时检查] " + text
         icon = u"\u2716" if is_err else u"\u26a0"
         color = "redish" if is_err else "yellowish"
         if _s("show_phantoms", True) and len(phantoms) < 40:
             body = _PHANTOM_TMPL.format(color=color, icon=icon, text=text)
             phantoms.append(sublime.Phantom(
                 region, body, sublime.LAYOUT_BELOW))
-        tag = u"[错误]" if is_err else u"[警告]"
+        # 面板输出与状态栏标签
+        sev = d.get("sev", "")
+        if _display_language() == "en":
+            tag = "[error]" if is_err else "[warning]"
+        elif _display_language() == "both":
+            tag = "[error / 错误]" if is_err else "[warning / 警告]"
+        else:
+            tag = "[错误]" if is_err else "[警告]"
         ctx = d.get("ctx") or ""
         panel_lines.append(u"%s %s第%d行%d列  %s" %
                            (tag, ctx, d["line"], d["col"], text))
@@ -618,10 +655,24 @@ def render_diagnostics(view_id):
         ps.update(phantoms)
 
     if n_err or n_warn:
-        view.set_status("ca_diag",
-                        u"\u2716 %d 错误  \u26a0 %d 警告" % (n_err, n_warn))
+        lang = _display_language()
+        if lang == "en":
+            view.set_status("ca_diag",
+                            u"\u2716 %d error  \u26a0 %d warning" % (n_err, n_warn))
+        elif lang == "both":
+            view.set_status("ca_diag",
+                            u"\u2716 %d 错误(error)  \u26a0 %d 警告(warning)" % (n_err, n_warn))
+        else:
+            view.set_status("ca_diag",
+                            u"\u2716 %d 错误  \u26a0 %d 警告" % (n_err, n_warn))
     elif comp or st.get("basic"):
-        view.set_status("ca_diag", u"\u2714 无语法错误")
+        lang = _display_language()
+        if lang == "en":
+            view.set_status("ca_diag", u"\u2714 no syntax errors")
+        elif lang == "both":
+            view.set_status("ca_diag", u"\u2714 无语法错误(no errors)")
+        else:
+            view.set_status("ca_diag", u"\u2714 无语法错误")
     else:
         view.set_status("ca_diag", "")
 
@@ -634,6 +685,47 @@ def _view_by_id(vid):
             if v.id() == vid:
                 return v
     return None
+
+
+# ---------------------------------------------------------------------------
+# 语言切换命令
+# ---------------------------------------------------------------------------
+
+class CaSetDisplayLanguageCommand(sublime_plugin.ApplicationCommand):
+    """通过命令面板或菜单项直接设置 display_language。
+
+    行为：直接改写 User/CppAssistant.sublime-settings 里的 display_language 字段。
+    设置变更会触发 _on_settings_changed，自动清空诊断缓存并重渲染。
+    """
+
+    def run(self, lang):
+        if lang not in ("zh", "en", "both"):
+            sublime.status_message("[CppAssistant] 非法语言: %s" % lang)
+            return
+        path = os.path.join(sublime.packages_path(), "User",
+                            "CppAssistant.sublime-settings")
+        data = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = sublime.decode_value(f.read()) or {}
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        old = data.get("display_language", "zh")
+        if old == lang:
+            return
+        data["display_language"] = lang
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(sublime.encode_value(data, True))
+        except Exception as e:
+            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
+            return
+        if _display_language() == lang:
+            label = {"zh": "中文", "en": "English", "both": "中英双语"}.get(lang)
+            sublime.status_message("[CppAssistant] 诊断显示语言已切换: %s" % label)
 
 
 class CaPanelClearCommand(sublime_plugin.TextCommand):

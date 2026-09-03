@@ -33,6 +33,32 @@
 							},
 							{ "caption": "-" },
 							{
+								"caption": "诊断显示语言 (display_language)",
+								"id": "cppassistant-language",
+								"children":
+								[
+									{
+										"caption": "中文 (zh) - 仅显示中文",
+										"command": "ca_set_display_language",
+										"args": { "lang": "zh" },
+										"checkbox": true
+									},
+									{
+										"caption": "English (en) - 仅显示英文原文",
+										"command": "ca_set_display_language",
+										"args": { "lang": "en" },
+										"checkbox": true
+									},
+									{
+										"caption": "中英双语 (both) - 英文在前中文在后",
+										"command": "ca_set_display_language",
+										"args": { "lang": "both" },
+										"checkbox": true
+									}
+								]
+							},
+							{ "caption": "-" },
+							{
 								"caption": "Key Bindings – Default",
 								"command": "open_file",
 								"args": {

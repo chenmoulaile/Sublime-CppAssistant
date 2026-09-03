@@ -766,9 +766,16 @@ _WARN_FLAG_RE = re.compile(r"\s*\[-W([\w-]+)=?\]")
 
 
 def translate_message(msg):
-    msg = msg.strip()
+    """对单行编译器消息做中文翻译。
+
+    返回 (en_normalized, zh): 处理了引号归一化、警告旗标提取的英文原串与中文译文。
+    调用方根据 display_language 决定显示哪一个或两个都显示。
+    """
+    en = msg.strip()
+    # 引号归一化（英文与中文同时使用）
     for a, b in QUOTE_NORMALIZE:
-        msg = msg.replace(a, b)
+        en = en.replace(a, b)
+    msg = en
     for pat, rep in TRANSLATIONS:
         try:
             msg = pat.sub(rep, msg)
@@ -786,11 +793,67 @@ def translate_message(msg):
                 tags.append(zh)
         if tags:
             msg = msg + u"（%s）" % u"、".join(tags)
-    return re.sub(r"\s{2,}", " ", msg).strip()
+    zh = re.sub(r"\s{2,}", " ", msg).strip()
+    en = re.sub(r"\s{2,}", " ", en).strip()
+    return en, zh
 
 
-def parse_compiler_output(output):
-    """解析 g++/clang++ 诊断输出 -> [dict(file,line,col,sev,msg,zh,ctx)]"""
+# 严重程度标签中英文双语（用户切换语言时使用）
+SEVERITY_LABELS = {
+    "error": {"en": "error", "zh": "错误"},
+    "fatal error": {"en": "fatal error", "zh": "致命错误"},
+    "warning": {"en": "warning", "zh": "警告"},
+    "note": {"en": "note", "zh": "提示"},
+}
+
+
+def severity_label(sev_en, lang):
+    """根据 lang (zh/en/both) 返回严重程度的中英文标签。
+
+    - zh -> 仅中文:  "错误"
+    - en -> 仅英文:  "error"
+    - both -> 双语:  "error / 错误"
+    - 其它/非法 -> 退化为中文
+    """
+    info = SEVERITY_LABELS.get(sev_en)
+    if info is None:
+        return sev_en
+    if lang == "en":
+        return info["en"]
+    if lang == "both":
+        return "%s / %s" % (info["en"], info["zh"])
+    return info["zh"]
+
+
+def format_message(en, zh, lang):
+    """根据 lang 返回最终显示的诊断文本。
+
+    - zh -> 仅中文:  zh
+    - en -> 仅英文:  en
+    - both -> 双语:  "en(中文)"  若中英文相同则仅显示一次
+    - 其它/非法 -> 退化为中文
+    """
+    en = (en or "").strip()
+    zh = (zh or "").strip()
+    if not en:
+        return zh
+    if not zh or en == zh:
+        return en
+    if lang == "en":
+        return en
+    if lang == "both":
+        return "%s（%s）" % (en, zh)
+    return zh
+
+
+def parse_compiler_output(output, display_language="zh"):
+    """解析 g++/clang++ 诊断输出 -> [dict(file,line,col,sev,msg,zh,text,ctx)]
+
+    display_language:
+      "zh"  -> text 字段为中文
+      "en"  -> text 字段为英文
+      "both" -> text 字段为 "en（中文）" 双语
+    """
     output = output.replace("\r\n", "\n").replace("\r", "\n")
     entries = []
     pending_ctx = ""
@@ -810,14 +873,17 @@ def parse_compiler_output(output):
         m = _DIAG_RE.match(line)
         if not m:
             continue
+        en, zh = translate_message(m.group(5))
+        text = format_message(en, zh, display_language)
         entries.append({
             "file": m.group(1),
             "line": int(m.group(2)),
             "col": int(m.group(3)) if m.group(3) else 1,
-            "sev": SEVERITY_MAP.get(m.group(4), m.group(4)),
             "sev_en": m.group(4),
-            "msg": m.group(5).strip(),
-            "zh": translate_message(m.group(5)),
+            "sev": severity_label(m.group(4), display_language),
+            "msg": en,
+            "zh": zh,
+            "text": text,
             "ctx": pending_ctx,
             "notes": [],
         })

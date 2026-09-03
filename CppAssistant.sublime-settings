@@ -21,8 +21,14 @@
     "enable_pch": true,
     // 在错误行下方显示中文幽灵提示条
     "show_phantoms": true,
+    // 诊断信息显示语言:
+    //   "zh"   仅中文 (默认, 推荐)
+    //   "en"   仅英文 (保留 gcc/clang 原始信息, 适合阅读英文资料/搜索原报错的场景)
+    //   "both" 双语 (英文在前中文在后, 适合教学/对比学习)
+    // 切换语言后即时生效(设置变更时自动清空诊断结果缓存)
+    "display_language": "zh",
     // C++ 标准
-    "cxx_standard": "c++17",
+    "cxx_standard": "c++23",
     // 编译器可执行文件路径；留空则自动在 PATH 中查找 g++、clang++
     "compiler_path": "",
     // 额外传给编译器的参数，如 ["-I", "D:/libs/include"]
