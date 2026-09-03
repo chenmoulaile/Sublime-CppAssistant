@@ -6,6 +6,6 @@
 	"args": { "file": "${packages}/CppAssistant/CppAssistant.sublime-settings" } },
 	{ "caption": "CppAssistant: 使用说明（README）", "command": "open_file",
 	"args": { "file": "${packages}/CppAssistant/README.md" } },
-	{ "caption": "Preferences: CppAssistant Settings", "command": "edit_settings",
+	{ "caption": "首选项: CppAssistant 设置", "command": "edit_settings",
 	"args": { "base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings" } }
 ]

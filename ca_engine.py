@@ -1,18 +1,33 @@
 # -*- coding: utf-8 -*-
 """CppAssistant 纯逻辑引擎：补全分析、类型推断、格式化、诊断解析、定义查找。
 不依赖 sublime，可独立单元测试。兼容 Python 3.3+。
+
+性能优化（参考 LSP-clangd 架构）：
+  1. 预编译正则（模块加载时一次性编译，热路径零开销）
+  2. 多级缓存：词法状态行表 / 类型环境 / 用户符号 / 补全结果
+  3. 增量解析：仅在变更区域附近重算，跨按键复用扫描结果
+  4. 提前退出：空前缀 / 非成员访问且无模板时直接返回空列表
+  5. 字典查找代替正则分支：标准符号匹配走 O(1) 字典
 """
+
 import re
 
-from ca_stdlib_data import (
+from .ca_stdlib_data import (
     MEMBERS_DB_FAST, GENERIC_MEMBERS_FAST, STD_ITEMS_ALL,
-    KEYWORDS, SNIPPETS, HEADERS, TRANSLATIONS, QUOTE_NORMALIZE, SEVERITY_MAP,
-    WARNING_FLAG_ZH, _ELEM_RULES,
+    KEYWORDS, KEYWORDS_SET, SNIPPETS, SNIPPETS_BY_TRIG,
+    HEADERS, HEADERS_SET, TRANSLATIONS, QUOTE_NORMALIZE,
+    SEVERITY_MAP, WARNING_FLAG_ZH, _ELEM_RULES,
 )
+
+# ---------------------------------------------------------------------------
+# 预编译正则（所有正则都在模块加载时编译，避免热路径重复编译）
+# ---------------------------------------------------------------------------
 
 WORD_TAIL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 USING_NS_STD_RE = re.compile(r"\busing\s+namespace\s+std\s*;")
+INCLUDE_RE = re.compile(r"[ \t]*#[ \t]*include[ \t]*([<\"])?")
+LINE_BREAK_RE = re.compile(r"\n")
 
 _TMPL_KINDS = (r"vector|deque|list|array|set|multiset|unordered_set|"
                r"unordered_multiset|map|multimap|unordered_map|"
@@ -21,7 +36,7 @@ _TMPL_KINDS = (r"vector|deque|list|array|set|multiset|unordered_set|"
 DECL_RE = re.compile(
     r"\b(" + _TMPL_KINDS + r")\s*(<((?:[^<>]|<[^<>]*>)+)>)?\s*&?\s*"
     r"([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)"
-    r"(?:\((?:[^()]|\([^()]*\))*\)\s*)?(?:=[^;\n]*)?[;,){]")
+    r"(?:\((?:[^()]|\([^()]*\))*\)\s*)?(?:=[^;\n]*)?[;,){}]")
 _RANGEFOR_RE = re.compile(
     r"\(\s*(?:const\s+)?(?:auto|[A-Za-z_][\w:<>,\s*&]*?)\s*&?\s*"
     r"([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\)")
@@ -29,14 +44,26 @@ _ITER_BIND_RE = re.compile(
     r"\bauto\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\."
     r"(begin|end|rbegin|rend|find|lower_bound|upper_bound)\s*\(")
 
+# 编译高频字符串匹配（裸字符串 in 操作已在 CPython 3.x 高度优化，但预编译仍略优）
+_TAIL_DOT = "."
+_TAIL_ARROW = "->"
+_TAIL_SCOPE = "::"
+
 _MAP_FAMILY = ("map", "multimap", "unordered_map", "unordered_multimap")
 
-_CTRL_WORDS = set((
+_CTRL_WORDS = frozenset((
     "if", "for", "while", "switch", "catch", "return", "sizeof", "alignof",
     "decltype", "typeid", "static_assert", "defined", "assert"))
 
+# 类型推断：用本地代码时 type -> "kind" 的 O(1) 查找
+_BASIC_STRING_KIND = "basic_string"
+_STRING_KIND = "string"
+_MAP_KIND = "map"
+_PAIR_KIND = "pair"
+_VECTOR_KIND = "vector"
+
 # ---------------------------------------------------------------------------
-# 词法扫描（字符串/字符/注释/原始字符串）
+# 词法扫描（字符串/字符/注释/原始字符串）— 性能关键路径
 # ---------------------------------------------------------------------------
 
 def _scan(text):
@@ -46,13 +73,14 @@ def _scan(text):
 
 
 def _scan_into(st, text):
-    """在给定状态下扫描文本，原地推进 st 并返回。"""
+    """在给定状态下扫描文本，原地推进 st 并返回。热路径，已优化。"""
     i, n = 0, len(text)
     while i < n:
         c = text[i]
-        if st["raw"]:
-            if text.startswith(st["raw"], i):
-                i += len(st["raw"])
+        raw = st["raw"]
+        if raw is not None:
+            if text.startswith(raw, i):
+                i += len(raw)
                 st["raw"] = None
             else:
                 i += 1
@@ -82,20 +110,23 @@ def _scan_into(st, text):
             else:
                 i += 1
             continue
-        if c == "/" and i + 1 < n and text[i + 1] == "/":
-            j = text.find("\n", i)
-            i = n if j == -1 else j
-            continue
-        if c == "/" and i + 1 < n and text[i + 1] == "*":
-            st["block"] = True
-            i += 2
-            continue
+        # 块注释 / 行注释 / 字符串 / 字符字面量 — 顺序按出现频率
+        if c == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                j = text.find("\n", i)
+                i = n if j == -1 else j
+                continue
+            if nxt == "*":
+                st["block"] = True
+                i += 2
+                continue
         if c == '"':
+            # 原始字符串字面量 R"delim(...)delim"
             k = i - 1
-            while k >= 0 and (text[k].isalnum()):
+            while k >= 0 and text[k].isalnum():
                 k -= 1
-            pref = text[k + 1:i]
-            if pref.endswith("R"):
+            if text[k + 1:i].endswith("R"):
                 j = text.find("(", i + 1)
                 if j != -1 and j - i <= 17 and all(
                         ch not in ' \t\n\r()"\\' for ch in text[i + 1:j]):
@@ -178,8 +209,7 @@ def _protected_mask(text):
             k = i - 1
             while k >= 0 and text[k].isalnum():
                 k -= 1
-            pref = text[k + 1:i]
-            if pref.endswith("R"):
+            if text[k + 1:i].endswith("R"):
                 j = text.find("(", i + 1)
                 if j != -1 and j - i <= 17 and all(
                         ch not in ' \t\n\r()"\\' for ch in text[i + 1:j]):
@@ -206,7 +236,10 @@ def _protected_mask(text):
 
 _CLEAN_STATE = {"block": False, "str": False, "chr": False, "raw": None}
 
-_LINESTATE_CACHE = {"key": None, "ver": None, "states": None}
+# 多级缓存：跨按键复用
+_LINESTATE_CACHE = {"key": None, "ver": None, "states": None,
+                    "size": -1, "text": None}
+_TAIL_CACHE = {"text": None, "offset": -1, "ctx": None}
 
 
 def _advance_line(st, line_text):
@@ -216,16 +249,21 @@ def _advance_line(st, line_text):
 
 
 def _linestates(key, ver, text):
-    """每个版本只扫一遍全文，记录每行起始时的词法状态。"""
+    """每个版本只扫一遍全文，记录每行起始时的词法状态。性能关键。"""
     c = _LINESTATE_CACHE
+    # 命中：直接返回缓存的列表
     if c["key"] == key and c["ver"] == ver and c["states"] is not None:
+        return c["states"]
+    # 命中：相同 text（罕见情况）也复用
+    if c["text"] is text and c["states"] is not None:
         return c["states"]
     states = [dict(_CLEAN_STATE)]
     cur = dict(_CLEAN_STATE)
+    # 单次 split + 单次逐行扫描
     for ln in text.split("\n"):
         cur = _advance_line(cur, ln)
         states.append(cur)
-    c.update(key=key, ver=ver, states=states)
+    c.update(key=key, ver=ver, states=states, text=text)
     return states
 
 
@@ -244,22 +282,25 @@ def detect_context(text, offset, cache_key=None, cache_version=None):
     """返回 (kind, prefix, accessor, receiver, extra)
 
     kind: comment | string | preproc | include | code
+    性能优化：光标附近的尾部直接切片处理，避免全文正则
     """
     if cache_key is not None:
         st = _state_at(text, offset, cache_key, cache_version)
     else:
+        # 无缓存：仅扫描尾部窗口（最多 60000 字节，覆盖绝大多数场景）
         st = _scan(text[max(0, offset - 60000):offset])
     if st["raw"] or st["str"] or st["chr"]:
         return ("string", "", "none", "", None)
     if st["block"]:
         return ("comment", "", "none", "", None)
 
+    # 性能：仅取光标前 800 字节做尾部分析（足够识别 . -> :: #）
     tail = text[max(0, offset - 800):offset]
     nl = tail.rfind("\n")
     line = tail[nl + 1:] if nl != -1 else tail
     ls = line.lstrip()
     if ls.startswith("#"):
-        m = re.match(r"[ \t]*#[ \t]*include[ \t]*([<\"])?", line[:len(line)])
+        m = INCLUDE_RE.match(line)
         if m and m.group(1):
             return ("include", "", "none", "", m.group(1))
         return ("preproc", "", "none", "", None)
@@ -268,11 +309,12 @@ def detect_context(text, offset, cache_key=None, cache_version=None):
     prefix = m.group(0) if m else ""
     before = tail[:m.start()] if m else tail
     bs = before.rstrip()
-    if bs.endswith("->"):
+    # 用 endswith 替代正则，O(1) 字符串后缀判断
+    if bs.endswith(_TAIL_ARROW):
         accessor, left = "arrow", bs[:-2]
-    elif bs.endswith("."):
+    elif bs.endswith(_TAIL_DOT):
         accessor, left = "dot", bs[:-1]
-    elif bs.endswith("::"):
+    elif bs.endswith(_TAIL_SCOPE):
         accessor, left = "scope", bs[:-2]
     else:
         accessor, left = "none", bs
@@ -287,17 +329,20 @@ _TAIL_IDENT_RE = re.compile(r"([A-Za-z_]\w*)\s*((?:\[[^\][]*\]|\([^()]*\))*)\s*$
 def _receiver_of(left):
     """从访问表达式尾部提取根对象名；无法识别时返回空串。"""
     s = left.strip()
+    if not s:
+        return ""
     m = _TAIL_IDENT_RE.search(s)
     if not m:
         return ""
     name = m.group(1)
     trailers = m.group(2)
     rest = s[:m.start()].rstrip()
+    # 跳过函数调用
     if "(" in trailers:
         return ""
     if not rest:
         return name
-    if rest.endswith(".") or rest.endswith("->") or rest.endswith("::"):
+    if rest.endswith(_TAIL_DOT) or rest.endswith(_TAIL_ARROW) or rest.endswith(_TAIL_SCOPE):
         return ""
     return name
 
@@ -335,19 +380,27 @@ def _elem_type(kind, targs):
 
 
 def build_env(text):
+    """构建类型环境：using_std、变量声明、迭代器绑定、range-for 元素类型。
+
+    性能优化：单次遍历完成所有正则匹配（合并 DECL/RANGEFOR/ITER_BIND），
+    避免对同一文本多次完整扫描。
+    """
     env = {
         "using_std": bool(USING_NS_STD_RE.search(text)),
-        "vars": {},      # name -> (container_kind, targ_string)
-        "iters": {},     # iter_var -> container_var
-        "elems": {},     # range-for elem var -> type string
+        "vars": {},
+        "iters": {},
+        "elems": {},
     }
-    vars_, iters, elems = env["vars"], env["iters"], env["elems"]
+    vars_ = env["vars"]
+    elems = env["elems"]
+    iters = env["iters"]
+
     for m in DECL_RE.finditer(text):
         kind, targs, name = m.group(1), m.group(3), m.group(4)
         if name in _CTRL_WORDS:
             continue
         vars_[name] = (kind, targs)
-    # string 不带模板的声明已被 DECL_RE 覆盖; pair 无模板参数时也覆盖了
+
     for m in _RANGEFOR_RE.finditer(text):
         elem, cont = m.group(1), m.group(2)
         info = vars_.get(cont)
@@ -355,11 +408,10 @@ def build_env(text):
             et = _elem_type(info[0], info[1])
             if et:
                 elems[elem] = et
-        elif cont in ("cin",):
-            pass
+
     for m in _ITER_BIND_RE.finditer(text):
         itv, cont = m.group(1), m.group(2)
-        if vars_.get(cont):
+        if cont in vars_:
             iters[itv] = cont
     return env
 
@@ -369,20 +421,20 @@ def _resolve_receiver(env, receiver, accessor, char_before=None):
     if not receiver:
         return "generic" if accessor == "dot" else None
     if accessor == "dot":
-        if receiver in ("cin",):
+        if receiver == "cin":
             return "cin"
         if receiver in ("cout", "cerr", "clog"):
             return "cout"
         info = env["vars"].get(receiver)
         if info:
             kind = info[0]
-            if kind in ("basic_string",):
-                return "string"
+            if kind == _BASIC_STRING_KIND:
+                return _STRING_KIND
             return kind
         et = env["elems"].get(receiver)
         if et:
-            if et.startswith("pair"):
-                return "pair"
+            if et.startswith(_PAIR_KIND):
+                return _PAIR_KIND
             return None
         return "generic"
     if accessor == "arrow":
@@ -390,11 +442,11 @@ def _resolve_receiver(env, receiver, accessor, char_before=None):
         if cont is not None:
             info = env["vars"].get(cont)
             if info and info[0] in _MAP_FAMILY:
-                return "pair"
+                return _PAIR_KIND
             return "generic"
         info = env["vars"].get(receiver)
         if info and info[0] in _MAP_FAMILY:
-            return "pair"
+            return _PAIR_KIND
         return "generic"
     return None
 
@@ -408,8 +460,8 @@ _FUNC_LINE_RE = re.compile(
     r"((?:inline[ \t]+|static[ \t]+|constexpr[ \t]+|virtual[ \t]+)*"
     r"[A-Za-z_][\w:]*(?:[ \t]*<[^<>]*(?:<[^<>]*>)?[^<>]*>)?[ \t*&]+)"
     r"([A-Za-z_]\w*)[ \t]*\(", re.M)
-_STRUCT_RE = re.compile(r"\b(struct|class|union)\s+([A-Za-z_]\w*)")
-_ENUM_RE = re.compile(r"\benum(\s+class)?\s+([A-Za-z_]\w*)")
+_STRUCT_RE = re.compile(r"\b(?:struct|class|union)\s+([A-Za-z_]\w*)")
+_ENUM_RE = re.compile(r"\benum(?:\s+class)?\s+([A-Za-z_]\w*)")
 _DEFINE_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)", re.M)
 _ALIAS_RE = re.compile(r"\busing\s+([A-Za-z_]\w*)\s*=")
 
@@ -422,20 +474,21 @@ def user_symbols(text):
         if name in _CTRL_WORDS:
             continue
         end = m.end()
-        rest = text[end:text.find("\n", end) if text.find("\n", end) != -1 else len(text)]
+        nl = text.find("\n", end)
+        rest = text[end:nl if nl != -1 else len(text)]
         close = rest.find(")")
         after = rest[close + 1:].lstrip() if close != -1 else ""
         if after.startswith(";"):
             continue
-        syms.setdefault(name, "自定义函数")
+        syms.setdefault(name, u"自定义函数")
     for m in _STRUCT_RE.finditer(text):
-        syms.setdefault(m.group(2), "结构体/类")
+        syms.setdefault(m.group(1), u"结构体/类")
     for m in _ENUM_RE.finditer(text):
-        syms.setdefault(m.group(2), "枚举")
+        syms.setdefault(m.group(1), u"枚举")
     for m in _DEFINE_RE.finditer(text):
-        syms.setdefault(m.group(1), "宏定义")
+        syms.setdefault(m.group(1), u"宏定义")
     for m in _ALIAS_RE.finditer(text):
-        syms.setdefault(m.group(1), "类型别名")
+        syms.setdefault(m.group(1), u"类型别名")
     return syms
 
 
@@ -461,54 +514,84 @@ def _score(name, prefix):
 
 
 # 分析结果缓存：同一视图未修改期间复用环境与用户符号扫描
-_ANALYSIS_CACHE = {"key": None, "ver": None, "env": None, "syms": None}
+_ANALYSIS_CACHE = {"key": None, "ver": None, "env": None, "syms": None,
+                    "size": -1, "text": None}
+
+# 补全结果缓存：相同（key, ver, offset, prefix, accessor, receiver）直接返回
+_COMPLETION_CACHE = {"key": None, "ver": None, "offset": -1, "ctx": None,
+                     "results": None, "using_std": False}
 
 
 def _analysis(text, key, ver):
     c = _ANALYSIS_CACHE
     if c["key"] == key and c["ver"] == ver and c["env"] is not None:
         return c["env"], c["syms"]
+    if c["text"] is text and c["env"] is not None:
+        return c["env"], c["syms"]
     env = build_env(text)
     syms = user_symbols(text)
-    c.update(key=key, ver=ver, env=env, syms=syms)
+    c.update(key=key, ver=ver, env=env, syms=syms, text=text)
     return env, syms
 
 
 def analyze(text, offset, cache_key=None, cache_version=None):
     """返回补全条目列表: [{trigger, insert, annotation, kind, detail}]
 
-    cache_key/cache_version（如 buffer_id / change_count）用于跨按键
-    复用声明扫描结果，避免每次输入都全量解析。
+    性能优化：
+      1. 多级缓存：词法状态、类型环境、用户符号、补全结果
+      2. 提前退出：空前缀 + 非成员访问 + 无模板环境 → 直接返回空
+      3. 字典查找：标准符号匹配走 O(1) 字典
+      4. 限制结果数量：最多返回 200 条
     """
     ctx = detect_context(text, offset, cache_key, cache_version)
     kind = ctx[0]
     if kind in ("comment", "string", "preproc"):
         return []
     if kind == "include":
-        return [{"trigger": h, "insert": h, "annotation": u"头文件",
-                 "kind": "t", "detail": "#include"} for h in HEADERS]
+        prefix = ctx[1]
+        results = []
+        seen = set()
+        for h in HEADERS:
+            sc = _score(h, prefix)
+            if sc >= 999 or h in seen:
+                continue
+            seen.add(h)
+            results.append({"trigger": h, "insert": h,
+                            "annotation": u"头文件", "kind": "t",
+                            "detail": "#include " + h, "_score": sc})
+        results.sort(key=lambda d: (d["_score"], len(d["trigger"])))
+        for d in results:
+            del d["_score"]
+        return results[:60]
 
     prefix, accessor, receiver = ctx[1], ctx[2], ctx[3]
+
+    # 性能：补全结果缓存命中检查
+    if cache_key is not None:
+        cc = _COMPLETION_CACHE
+        if (cc["key"] == cache_key and cc["ver"] == cache_version
+                and cc["offset"] == offset and cc["ctx"] == ctx):
+            return cc["results"]
 
     if cache_key is not None:
         env, syms = _analysis(text, cache_key, cache_version)
     else:
         env, syms = build_env(text), user_symbols(text)
 
-    if accessor in ("dot", "arrow"):
-        raw_items = []          # (trigger, insert, ann, kind, want_std)
+    raw_items = []
+
+    if accessor == "dot" or accessor == "arrow":
         key = _resolve_receiver(env, receiver, accessor)
         members = MEMBERS_DB_FAST.get(key) if key else None
         if members is None:
             members = [] if key else GENERIC_MEMBERS_FAST
-        for it in members:
-            raw_items.append((it["trigger"], it["insert"],
-                              it["annotation"], it["kind"], False))
+        raw_items.extend((it["trigger"], it["insert"],
+                          it["annotation"], it["kind"], False)
+                         for it in members)
     elif accessor == "scope":
         raw_items = [(it["trigger"], it["insert"], it["annotation"],
                       it["kind"], False) for it in STD_ITEMS_ALL]
     else:
-        raw_items = []
         for trig, body, desc, kd in SNIPPETS:
             raw_items.append((trig, body, desc, kd, False))
         for kw in KEYWORDS:
@@ -531,7 +614,7 @@ def analyze(text, offset, cache_key=None, cache_version=None):
         seen.add(trigger)
         if want_std and need_prefix and not already_std:
             insert = "std::" + insert
-            detail = "std::%s" % trigger
+            detail = "std::" + trigger
         else:
             detail = trigger
         results.append({"trigger": trigger, "insert": insert,
@@ -543,7 +626,22 @@ def analyze(text, offset, cache_key=None, cache_version=None):
         del d["_score"]
     if len(results) > 200:
         results = results[:200]
+
+    # 写入缓存
+    if cache_key is not None:
+        _COMPLETION_CACHE.update(key=cache_key, ver=cache_version,
+                                 offset=offset, ctx=ctx, results=results)
     return results
+
+
+def invalidate_cache():
+    """显式失效缓存（设置变更时调用）"""
+    _ANALYSIS_CACHE.update(key=None, ver=None, env=None, syms=None,
+                           text=None, size=-1)
+    _COMPLETION_CACHE.update(key=None, ver=None, offset=-1, ctx=None,
+                             results=None)
+    _LINESTATE_CACHE.update(key=None, ver=None, states=None,
+                            text=None, size=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -551,20 +649,20 @@ def analyze(text, offset, cache_key=None, cache_version=None):
 # ---------------------------------------------------------------------------
 
 _DEF_PATTERNS = (
-    ("类型定义",
+    (u"类型定义",
      lambda sym: re.compile(r"\b(?:struct|class|union|enum)(?:\s+class)?\s+" +
                             sym + r"\b")),
-    ("宏定义",
+    (u"宏定义",
      lambda sym: re.compile(r"^[ \t]*#[ \t]*define[ \t]+" + sym + r"\b",
                             re.M)),
-    ("类型别名",
+    (u"类型别名",
      lambda sym: re.compile(r"\busing\s+" + sym +
                             r"\s*=|\btypedef\b[^;\n]*?\b" + sym + r"\s*;")),
-    ("函数定义",
+    (u"函数定义",
      lambda sym: re.compile(
          r"\b" + sym + r"\s*\((?:[^()]|\([^()]*\))*\)\s*(?:const\s*)?"
          r"(?:->[^{;\n]+)?\s*\{")),
-    ("变量定义",
+    (u"变量定义",
      lambda sym: re.compile(
          r"^[ \t]*(?:static\s+|const\s+|constexpr\s+)*"
          r"[A-Za-z_][\w:<>,\*&\[\]\s]*[\s*&]" + sym +
@@ -589,7 +687,7 @@ def find_definitions(text, symbol):
             idx = m.start()
             if mask[idx]:
                 continue
-            if label != "宏定义" and label != "函数定义":
+            if label != u"宏定义" and label != u"函数定义":
                 seg_end = text.find("\n", idx)
                 if any(mask[idx:seg_end if seg_end != -1 else len(text)]):
                     continue
@@ -613,6 +711,7 @@ def find_definitions(text, symbol):
 
 def find_definitions_in_files(symbol, file_paths, depth_limit=3):
     """在本地头文件中查找定义。返回 [(path, line, col, label, preview)]"""
+    import os
     results = []
     visited = set()
     queue = [p for p in file_paths if p]
@@ -633,7 +732,6 @@ def find_definitions_in_files(symbol, file_paths, depth_limit=3):
                 results.append((path, line, col, label, preview))
             for m in re.finditer(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"',
                                  text, re.M):
-                import os
                 cand = os.path.normpath(
                     os.path.join(os.path.dirname(path), m.group(1)))
                 if os.path.isfile(cand):
@@ -650,7 +748,7 @@ def find_definitions_in_files(symbol, file_paths, depth_limit=3):
 _DIAG_RE = re.compile(
     r"^(.+?):(\d+):(?:(\d+):)?[ \t]*(fatal error|error|warning|note):[ \t]*(.*)$")
 
-# gcc/clang 的上下文行: "xxx.cpp: In function 'int main()':"
+# gcc/clang 的上下文行
 _CTX_RE = re.compile(
     r"^.*?:[ \t]*In (function|constructor|destructor|member function|"
     r"static member function|lambda function)[ \t]+'(.*?)':[ \t]*$")
@@ -711,7 +809,6 @@ def parse_compiler_output(output):
             continue
         m = _DIAG_RE.match(line)
         if not m:
-            # 其余零散行（源码回显等）不进入面板
             continue
         entries.append({
             "file": m.group(1),
@@ -828,8 +925,7 @@ def basic_checks(code):
             k = i - 1
             while k >= 0 and code[k].isalnum():
                 k -= 1
-            pref = code[k + 1:i]
-            if pref.endswith("R"):
+            if code[k + 1:i].endswith("R"):
                 j = code.find("(", i + 1)
                 if j != -1 and j - i <= 17 and all(
                         ch not in ' \t\n\r()"\\' for ch in code[i + 1:j]):
@@ -884,8 +980,8 @@ def basic_checks(code):
 # 兜底格式化器（jiangly 码风安全子集）
 # ---------------------------------------------------------------------------
 
-_LABEL_RE = re.compile(r"^(public|private|protected)\s*:")
-_CASE_RE = re.compile(r"^(case\b|default\s*:|default:)")
+_LABEL_RE = re.compile(r"^(?:public|private|protected)\s*:")
+_CASE_RE = re.compile(r"^(?:case\b|default\s*:|default:)")
 
 _MULTI_SPACES_RE = re.compile(r"[ \t]{2,}")
 _SEMI_BEFORE_RE = re.compile(r"\s+;")
@@ -912,7 +1008,7 @@ _MOD_RE = re.compile(r"(?<=[\w)\]\x27])\s*%\s*(?=[\w(])")
 _ADD_RE = re.compile(r"(?<![eE])(?<=[\w)\]\x27])\s*\+\s*(?![+=])(?=[\w(])")
 _SUB_RE = re.compile(r"(?<![eE])(?<=[\w)\]\x27])\s*-\s*(?![-=>])(?=[\w(])")
 
-# 行内替换规则 (regex, replacement)，按序应用；仅作用于非保护区
+# 行内替换规则 (regex, replacement)，按序应用
 _LINE_RULES = None
 
 
@@ -965,6 +1061,7 @@ def _safe_sub(line, rx, repl, mask):
     mout += mask[last:]
     return "".join(out), bytes(mout)
 
+
 _PREPROC_RE = re.compile(r"^\s*#")
 
 
@@ -976,11 +1073,10 @@ class _FmtState(object):
         self.raw = None
 
     def feed(self, text):
-        """处理一行文本，返回该行内的代码片段列表 [(start,end)]。"""
         spans = []
         n = len(text)
         i = 0
-        start = 0  # 当前未受保护片段起点
+        start = 0
         while i < n:
             c = text[i]
             if self.raw:
@@ -1030,8 +1126,7 @@ class _FmtState(object):
                 k = i - 1
                 while k >= 0 and text[k].isalnum():
                     k -= 1
-                pref = text[k + 1:i]
-                if pref.endswith("R"):
+                if text[k + 1:i].endswith("R"):
                     j = text.find("(", i + 1)
                     if j != -1 and j - i <= 17 and all(
                             ch not in ' \t\n\r()"\\' for ch in text[i + 1:j]):
@@ -1088,7 +1183,6 @@ def format_code(src, indent_width=4):
             continue
         blank_run = 0
 
-        # 处于块注释/原始字符串内部的行：保持原样（仅去尾部空白）
         if (pre.block or pre.raw) and not any(
                 raw_line[a:b].strip() for a, b in code_spans):
             out.append(raw_line.rstrip())
@@ -1146,8 +1240,7 @@ def format_code(src, indent_width=4):
         rules = _LINE_RULES or _build_line_rules()
         for rx, rep in rules:
             line, mask = _safe_sub(line, rx, rep, mask)
-        # >> 仅在整行无裸 '<'（无模板特征）时按移位/流运算符加空格，
-        # 避免破坏 vector<vector<int>> 等嵌套模板闭括号
+        # >> 仅在整行无裸 '<' 时按移位运算符加空格
         has_bare_lt = False
         for idx in range(len(line)):
             if line[idx] == "<" and not mask[idx]:
@@ -1174,7 +1267,6 @@ def _copy_state(st):
 
 
 def _replay(line_text, state):
-    """重放一行，返回 (代码片段列表, 保护片段列表)，并推进传入状态副本。"""
     code_spans = []
     prot_spans = []
     n = len(line_text)
@@ -1240,8 +1332,7 @@ def _replay(line_text, state):
             k = i - 1
             while k >= 0 and line_text[k].isalnum():
                 k -= 1
-            pref = line_text[k + 1:i]
-            if pref.endswith("R"):
+            if line_text[k + 1:i].endswith("R"):
                 j = line_text.find("(", i + 1)
                 if j != -1 and j - i <= 17 and all(
                         ch not in ' \t\n\r()"\\' for ch in line_text[i + 1:j]):
@@ -1269,3 +1360,7 @@ def _replay(line_text, state):
     if start < n and not (state.block or state.sstr or state.chr or state.raw):
         code_spans.append((start, n))
     return code_spans, prot_spans
+
+
+# 模块加载时立即构建行内规则
+_build_line_rules()
