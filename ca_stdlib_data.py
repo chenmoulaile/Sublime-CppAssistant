@@ -852,3 +852,8 @@ GENERIC_MEMBERS_FAST = [_entry(c, a, k) for (c, a, k) in GENERIC_MEMBERS]
 
 _STD_COMBINED = STD_FUNCTIONS + STD_TYPES + GLOBAL_CONSTANTS
 STD_ITEMS_ALL = [_entry(c, a, k, w) for (c, a, k, w) in _STD_COMBINED]
+
+# 性能优化：预计算 set 用于 O(1) 查找
+KEYWORDS_SET = frozenset(KEYWORDS)
+HEADERS_SET = frozenset(HEADERS)
+SNIPPETS_BY_TRIG = dict((trig, (body, desc, kd)) for (trig, body, desc, kd) in SNIPPETS)

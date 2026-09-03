@@ -1,4 +1,7 @@
 ﻿__pycache__/
 *.pyc
-*.sublime-workspace
+*.pyo
+*.swp
+*.swo
 .DS_Store
+Thumbs.db
