@@ -100,12 +100,12 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 配置
 
-三种方式打开设置：
-1. 菜单 `Preferences → Package Settings → CppAssistant → Settings`
-2. 命令面板搜索 `CppAssistant: 打开设置`
-3. 直接编辑 `CppAssistant.sublime-settings`
+打开设置的方式：
+1. 菜单 `Preferences → Package Settings → CppAssistant` 下选择 `Settings – Default`（默认设置）/ `Settings – User`（用户设置）/ `Key Bindings – User`（用户快捷键）
+2. 命令面板搜索 `首选项: CppAssistant 设置` / `首选项: CppAssistant 快捷键`
+3. 直接编辑 `Packages/User/CppAssistant.sublime-settings`
 
-> 新增菜单项需要重启 Sublime Text 后才会显示。
+> 用户设置会覆盖默认设置，无需修改默认文件。
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -137,6 +137,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 - **全面汉化**：所有用户可见提示（状态栏、菜单、命令、诊断、警告旗标）全中文
 - 预计算 `KEYWORDS_SET/HEADERS_SET/SNIPPETS_BY_TRIG` 用于 O(1) 查找
 - 默认开启所有功能（补全、语法检查、即时基础检查、PCH、幽灵提示）
+- **菜单重构**：参考 LSP / SublimeAStyleFormatter 模式，`Main.sublime-menu` 改为完整标准结构（mnemonic / id / Settings-Default / Settings-User / Key Bindings-Default / Key Bindings-User）
 
 ### v1.2.3
 - 修复所有 Package Control 审查警告：sys.path、CREATE_NO_WINDOW 注释、keymap 重命名、edit_settings 命令、菜单子项、移除 Preferences.sublime-settings

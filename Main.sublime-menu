@@ -1,22 +1,67 @@
 [
 	{
-		"caption": "Preferences",
-		"children": [
+		"caption": "首选项",
+		"mnemonic": "n",
+		"id": "preferences",
+		"children":
+		[
 			{
 				"caption": "Package Settings",
-				"children": [
+				"mnemonic": "P",
+				"id": "package-settings",
+				"children":
+				[
 					{
 						"caption": "CppAssistant",
-						"children": [
+						"id": "cppassistant-settings",
+						"children":
+						[
 							{
-								"caption": "Settings",
+								"caption": "Settings – Default",
 								"command": "open_file",
-								"args": { "file": "${packages}/CppAssistant/CppAssistant.sublime-settings" }
+								"args": {
+									"file": "${packages}/CppAssistant/CppAssistant.sublime-settings"
+								}
+							},
+							{
+								"caption": "Settings – User",
+								"command": "edit_settings",
+								"args": {
+									"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+									"default": "{\n\t$0\n}\n"
+								}
+							},
+							{ "caption": "-" },
+							{
+								"caption": "Key Bindings – Default",
+								"command": "open_file",
+								"args": {
+									"file": "${packages}/CppAssistant/Example.sublime-keymap"
+								}
+							},
+							{
+								"caption": "Key Bindings – User",
+								"command": "edit_settings",
+								"args": {
+									"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
+									"user_file": "${packages}/User/Default (${platform}).sublime-keymap",
+									"default": "[\n\t$0\n]\n"
+								}
+							},
+							{ "caption": "-" },
+							{
+								"caption": "命令面板（Commands）",
+								"command": "open_file",
+								"args": {
+									"file": "${packages}/CppAssistant/CppAssistant.sublime-commands"
+								}
 							},
 							{
 								"caption": "README（使用说明）",
 								"command": "open_file",
-								"args": { "file": "${packages}/CppAssistant/README.md" }
+								"args": {
+									"file": "${packages}/CppAssistant/README.md"
+								}
 							}
 						]
 					}

@@ -2,10 +2,17 @@
 	{ "caption": "CppAssistant: 按 jiangly 码风格式化文档", "command": "ca_format_document" },
 	{ "caption": "CppAssistant: 跳转到定义", "command": "ca_goto_definition" },
 	{ "caption": "CppAssistant: 显示语法诊断面板", "command": "ca_show_diagnostics" },
-	{ "caption": "CppAssistant: 打开设置", "command": "open_file",
-	"args": { "file": "${packages}/CppAssistant/CppAssistant.sublime-settings" } },
-	{ "caption": "CppAssistant: 使用说明（README）", "command": "open_file",
-	"args": { "file": "${packages}/CppAssistant/README.md" } },
 	{ "caption": "首选项: CppAssistant 设置", "command": "edit_settings",
-	"args": { "base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings" } }
+	  "args": {
+		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+		"default": "{\n\t$0\n}\n"
+	  }
+	},
+	{ "caption": "首选项: CppAssistant 快捷键", "command": "edit_settings",
+	  "args": {
+		"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
+		"user_file": "${packages}/User/Default (${platform}).sublime-keymap",
+		"default": "[\n\t$0\n]\n"
+	  }
+	}
 ]
