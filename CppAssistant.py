@@ -174,7 +174,7 @@ class CaEventListener(sublime_plugin.EventListener):
             if bt is not None:
                 bt.cancel()
             btmr = threading.Timer(
-                0.06, lambda: sublime.set_timeout(
+                0.02, lambda: sublime.set_timeout(
                     lambda: run_basic_check(view), 0))
             btmr.daemon = True
             btmr.start()
@@ -183,7 +183,7 @@ class CaEventListener(sublime_plugin.EventListener):
         t = _lint_timers.pop(vid, None)
         if t is not None:
             t.cancel()
-        delay = float(_s("lint_debounce", 0.4)) if debounce else 0.0
+        delay = float(_s("lint_debounce", 0.1)) if debounce else 0.0
         if delay <= 0:
             sublime.set_timeout(lambda: run_lint(view), 50)
         else:
@@ -356,6 +356,7 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
                 return
             st = _lint_state.setdefault(view_id, {})
             st["compiler"] = diags
+            st["compiler_src_hash"] = zlib.crc32(src.encode("utf-8"))
             _LINT_CACHE[view_id] = (ckey, diags)
             render_diagnostics(view_id)
 
@@ -429,6 +430,7 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
             return
         st = _lint_state.setdefault(view_id, {})
         st["compiler"] = diags
+        st["compiler_src_hash"] = zlib.crc32(src.encode("utf-8"))
         _LINT_CACHE[view_id] = (ckey, diags)
         render_diagnostics(view_id)
 
@@ -472,6 +474,7 @@ def run_basic_check(view):
     _basic_gen[vid] = gen
     size = view.size()
     src = view.substr(sublime.Region(0, min(size, 300000)))
+    src_hash = zlib.crc32(src.encode("utf-8"))
 
     def worker():
         try:
@@ -484,7 +487,16 @@ def run_basic_check(view):
             if not view.is_valid() or _basic_gen.get(vid) != gen:
                 return
             st = _lint_state.setdefault(vid, {})
+            # 关键修复：源文本已变, 立即清空过时的编译器诊断,
+            # 避免删除错误行后还要等 1s 才消除标记
+            comp = st.get("compiler")
+            if comp:
+                last_hash = st.get("compiler_src_hash")
+                if last_hash != src_hash:
+                    st["compiler"] = []
+                    st["compiler_src_hash"] = src_hash
             st["basic"] = diags
+            st["basic_src_hash"] = src_hash
             render_diagnostics(vid)
 
         sublime.set_timeout(done, 0)
@@ -854,48 +866,79 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
             view.set_status("ca_goto", u"光标处不是有效的标识符")
             return
 
-        text = view.substr(sublime.Region(0, view.size()))
+        # 优先取整段文本（不超 800KB），便于在全文搜索定义
+        size = view.size()
+        if size > 800000:
+            text = view.substr(sublime.Region(0, 800000))
+        else:
+            text = view.substr(sublime.Region(0, size))
         fname = view.file_name()
-
-        candidates = []
-        for _, line, col, label, preview in \
-                ca_engine.find_definitions(text, symbol):
-            candidates.append((view.id(), fname, line, col, label, preview))
-
         cur_vid = view.id()
+
+        # 收集其它已打开视图的文本
+        all_views_text = []
         for v in window.views():
             if v.id() == cur_vid or not _is_cpp(v):
                 continue
-            vtext = v.substr(sublime.Region(0, v.size()))
-            for _, line, col, label, preview in \
-                    ca_engine.find_definitions(vtext, symbol):
-                candidates.append((v.id(), v.file_name(), line, col,
-                                   label, preview))
+            vsize = v.size()
+            if vsize > 800000:
+                vtext = v.substr(sublime.Region(0, 800000))
+            else:
+                vtext = v.substr(sublime.Region(0, vsize))
+            all_views_text.append((vtext, v.id(), v.file_name()))
 
-        if fname:
-            heads = []
-            try:
-                with open(fname, "rb") as f:
-                    head_txt = f.read().decode("utf-8", "replace")
-            except OSError:
-                head_txt = ""
-            base = os.path.dirname(fname)
-            for m in re.finditer(
-                    r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', head_txt, re.M):
-                rel = m.group(1).replace("/", os.sep)
-                heads.append(os.path.normpath(os.path.join(base, rel)))
-            for inc in _s("include_paths", []):
-                heads.append(str(inc))
-            file_hits = ca_engine.find_definitions_in_files(symbol, heads)
-            for path, line, col, label, preview in file_hits:
-                candidates.append((None, path, line, col, label, preview))
+        # include 搜索路径: 用户设置 + 编译器 include 路径
+        inc_paths = list(_s("include_paths", []))
+        # 尝试从编译器获取默认 include 路径
+        try:
+            comp = find_compiler()
+            if comp:
+                # 调用 `compiler -E -x c++ - -v </dev/null` 获取 include 路径较慢,
+                # 这里退化为加入几个常见位置
+                if "cl" in comp.lower():
+                    # MSVC: 用户已在 include_paths 配置
+                    pass
+                else:
+                    # g++/clang++ 默认搜索路径可附加 bits/ 头
+                    pass
+        except Exception:
+            pass
 
-        # 去重
+        # 用高级查找函数（包含 std 库 fallback）
+        candidates_raw = ca_engine.goto_definition_advanced(
+            symbol, text, view, inc_paths, all_views_text)
+
+        # 转换为内部 candidate 格式
+        candidates = []
+        for prio, src, line, col, label, detail_or_preview, extra in candidates_raw:
+            if src in ("local", "open", "file"):
+                # 真实文件位置
+                if src == "open":
+                    vid = (extra or {}).get("vid")
+                    path = (extra or {}).get("path")
+                elif src == "file":
+                    path = (extra or {}).get("path")
+                    vid = None
+                else:  # local
+                    vid = cur_vid
+                    path = fname
+                candidates.append((vid, path, line, col, label,
+                                   detail_or_preview, src, prio))
+            elif src == "system_header_path":
+                # 实际存在的系统头文件路径
+                path = (extra or {}).get("path")
+                candidates.append((None, path, line, col, label,
+                                   detail_or_preview, src, prio))
+            else:  # std_symbol / std_header
+                path = (extra or {}).get("path")
+                candidates.append((None, path, line, col, label,
+                                   detail_or_preview, src, prio))
+
+        # 去重（同 file:line:col）
         dedup = set()
         uniq = []
         for c in candidates:
-            key = (os.path.normcase(c[1]) if c[1] else c[0],
-                   c[2], c[3])
+            key = (os.path.normcase(c[1]) if c[1] else c[0], c[2], c[3])
             if key in dedup:
                 continue
             dedup.add(key)
@@ -905,11 +948,12 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
         if not candidates:
             window.run_command("goto_definition")
             view.set_status("ca_goto",
-                            u"本地未找到 '%s' 的定义，已尝试内置符号索引" % symbol)
+                            u"未找到 '%s' 的定义（包括本地与标准库）" % symbol)
             return
 
         def jump(idx):
-            vid, path, line, col, _, _ = candidates[idx]
+            vid, path, line, col, label, preview, src, _ = candidates[idx]
+            # 1. 其它已打开视图
             if vid is not None and vid != cur_vid:
                 tv = _view_by_id(vid)
                 if tv is not None:
@@ -919,28 +963,49 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
                     tv.sel().add(sublime.Region(pt, pt))
                     tv.show_at_center(pt)
                 return
-            target_path = path or fname
-            if target_path:
-                window.open_file("%s:%d:%d" % (target_path, line, col + 1),
-                                 sublime.ENCODED_POSITION)
-            else:
-                pt = view.text_point(line - 1, col)
-                view.sel().clear()
-                view.sel().add(sublime.Region(pt, pt))
-                view.show_at_center(pt)
+            # 2. 文件路径（本地头或系统头） -> open_file
+            if path:
+                try:
+                    window.open_file("%s:%d:%d" % (path, line, col + 1),
+                                     sublime.ENCODED_POSITION)
+                except Exception:
+                    view.set_status("ca_goto",
+                                    u"无法打开 '%s'" % path)
+                return
+            # 3. 标准库符号提示（无路径可打开）
+            if src in ("std_symbol", "std_header"):
+                hdr = None
+                for c2 in candidates:
+                    _, _, _, _, _, _, s2, _ = c2
+                    if s2 == src:
+                        hdr = c2
+                        break
+                return
 
         if len(candidates) == 1:
             jump(0)
-            view.set_status("ca_goto", u"跳转到 '%s' (%s)" %
-                            (symbol, candidates[0][3]))
+            c = candidates[0]
+            src_label = {
+                "local": u"本文件", "open": u"已打开文件",
+                "file": u"本地头", "std_symbol": u"标准库",
+                "std_header": u"系统头", "system_header_path": u"系统头"
+            }.get(c[6], c[6])
+            view.set_status("ca_goto",
+                            u"跳转到 '%s' (%s)" % (symbol, src_label))
             return
 
         shown = []
-        for path, line, col, label, preview in candidates:
-            where = os.path.basename(path) if path else view.file_name()
-            if where is None:
+        for vid, path, line, col, label, preview, src, prio in candidates:
+            src_label = {
+                "local": u"本文件", "open": u"已打开文件",
+                "file": u"本地头", "std_symbol": u"标准库",
+                "std_header": u"系统头", "system_header_path": u"系统头"
+            }.get(src, src)
+            if path:
+                where = os.path.basename(path)
+            else:
                 where = u"<未保存>"
-            shown.append([u"%s  ·  %s:%d" % (label, where, line),
+            shown.append([u"%s · %s · %s:%d" % (label, src_label, where, line),
                           preview])
 
         def on_done(idx):

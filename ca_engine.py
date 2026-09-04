@@ -17,6 +17,7 @@ from .ca_stdlib_data import (
     KEYWORDS, KEYWORDS_SET, SNIPPETS, SNIPPETS_BY_TRIG,
     HEADERS, HEADERS_SET, TRANSLATIONS, QUOTE_NORMALIZE,
     SEVERITY_MAP, WARNING_FLAG_ZH, _ELEM_RULES,
+    STD_SYMBOL_HEADER, STD_HEADERS_SET,
 )
 
 # ---------------------------------------------------------------------------
@@ -738,6 +739,156 @@ def find_definitions_in_files(symbol, file_paths, depth_limit=3):
                     nextq.append(cand)
         queue = nextq
         depth += 1
+    return results
+
+
+# ---------------------------------------------------------------------------
+# 标准库符号 fallback (LSP-style: 找不到本地定义时回退到 std 头文件)
+# ---------------------------------------------------------------------------
+
+# 系统头文件实际路径搜索（用于 F12 跳转后用 ST 打开真实文件）
+def find_system_header(header_name, include_paths=None):
+    """在 -I 搜索路径下查找系统头文件的实际路径。
+
+    返回绝对路径或 None。
+    - header_name 不含尖括号，如 'vector'、'bits/stdc++.h'
+    - include_paths 是 -I 列表
+    """
+    import os
+    if not header_name:
+        return None
+    candidates = []
+    for root in (include_paths or []):
+        if not root:
+            continue
+        try:
+            cand = os.path.join(root, header_name)
+            if os.path.isfile(cand):
+                candidates.append(cand)
+        except Exception:
+            continue
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def find_definition_std_fallback(symbol, include_paths=None):
+    """对 std 命名空间下的符号做头文件 fallback。
+
+    返回 [dict] 列表（候选），每个元素含：
+      - kind: 'std_symbol' / 'std_header' / 'system_header_path'
+      - label: 简短中文标签
+      - header: 头文件名（不含尖括号）
+      - path: 实际文件路径（仅 system_header_path）
+      - detail: 描述行
+    """
+    import os
+    results = []
+    if not symbol:
+        return results
+
+    # 1. 符号本身是已知标准头文件？ (光标停在 #include <xxx> 上)
+    if symbol in STD_HEADERS_SET:
+        path = find_system_header(symbol, include_paths)
+        results.append({
+            "kind": "std_header",
+            "label": u"系统头文件",
+            "header": symbol,
+            "path": path,
+            "detail": u"标准库头文件 <%s>，位于编译器 include 路径" % symbol,
+        })
+        return results
+
+    # 2. 符号在已知 std 符号表里？
+    info = STD_SYMBOL_HEADER.get(symbol)
+    if info:
+        header, sym_kind = info
+        path = find_system_header(header, include_paths)
+        results.append({
+            "kind": "std_symbol",
+            "label": u"标准库%s" % sym_kind,
+            "header": header,
+            "path": path,
+            "detail": u"std::%s 定义于 <%s> 系统头文件中(可考虑 #include <%s>)" % (
+                symbol, header, header),
+        })
+        return results
+
+    # 3. 通用提示
+    return results
+
+
+def goto_definition_advanced(symbol, view_text, view, include_paths=None,
+                              all_views_text=None):
+    """F12 跳转定义 - 多源合并查找。
+
+    按以下顺序返回候选：
+      1. 当前文件中的定义
+      2. 已打开文件中的定义
+      3. 本地头文件（递归 #include "..."）中的定义
+      4. 标准库符号 fallback（std 命名空间下的类型/函数）
+      5. 已知系统头文件本身
+
+    返回 [(priority, src, line, col, label, preview_or_detail, extra)]
+    src: 'local' | 'open' | 'file' | 'std_symbol' | 'std_header'
+    extra: dict, 可能含 'path' 字段用于打开系统头文件
+    """
+    import os
+    import re as _re
+    results = []
+
+    # 1. 当前文件
+    for line, col, label, preview in (
+        (l, c, lab, p) for _, l, c, lab, p in find_definitions(view_text, symbol)
+    ):
+        results.append((0, "local", line, col, label, preview, None))
+
+    # 2. 已打开文件
+    if all_views_text:
+        for vtext, vid, vfname in all_views_text:
+            if vtext is view_text:
+                continue
+            for line, col, label, preview in find_definitions(vtext, symbol):
+                results.append((1, "open", line, col, label, preview,
+                                {"vid": vid, "path": vfname}))
+
+    # 3. 本地头文件（递归 include）
+    fname = view.file_name()
+    if fname:
+        heads = []
+        try:
+            head_text = view_text
+            for m in _re.finditer(
+                    r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"',
+                    head_text, _re.M):
+                rel = m.group(1).replace("/", os.sep)
+                heads.append(os.path.normpath(
+                    os.path.join(os.path.dirname(fname), rel)))
+        except Exception:
+            pass
+        for inc in (include_paths or []):
+            if inc:
+                heads.append(str(inc))
+        for path, line, col, label, preview in find_definitions_in_files(
+                symbol, heads):
+            results.append((2, "file", line, col, label, preview, {"path": path}))
+
+    # 4. 标准库 fallback
+    std_hits = find_definition_std_fallback(symbol, include_paths)
+    for hit in std_hits:
+        # 优先看是否能找到系统头文件路径
+        if hit.get("path"):
+            results.append((3, "system_header_path", 1, 0,
+                            hit["label"] + " (文件路径)",
+                            hit["detail"],
+                            {"path": hit["path"]}))
+        # 标准符号提示
+        results.append((3, hit["kind"], 1, 0,
+                        hit["label"],
+                        hit["detail"],
+                        {"path": hit.get("path"),
+                         "header": hit.get("header")}))
+
     return results
 
 
