@@ -112,7 +112,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `enable_completions` | `true` | 智能补全开关 |
 | `enable_linting` | `true` | 实时语法检查开关 |
 | `instant_basic_check` | `true` | 即时基础检查（毫秒级括号/全角标点/字符串检测） |
-| `lint_debounce` | `0.4` | 停止输入多少秒后开始编译器完整检查 |
+| `lint_debounce` | `0.1` | 停止输入多少秒后开始编译器完整检查（删除错误行后基本即时清除） |
 | `lint_timeout` | `12` | 编译器单次检查超时（秒），超时不清空已有标记 |
 | `enable_pch` | `true` | PCH 预编译头加速（bits/stdc++.h） |
 | `show_phantoms` | `true` | 错误行下方显示提示条 |
@@ -164,12 +164,13 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 - **PCH 直接挂载**：使用 `-include ca_pch.h` 命令行选项，避免 `-I` 路径污染
 - **预编译正则**：所有正则模块加载时编译，热路径零开销
 - **字典代替正则分支**：标准符号匹配走 O(1) 字典查找
-- **缓存失效机制**：设置变更时自动失效所有缓存，保证结果一致性
-- **全面汉化**：所有用户可见提示（状态栏、菜单、命令、诊断、警告旗标）全中文
+- **完全汉化 + 诊断语言切换**：诊断翻译表扩充至 280+ 条，覆盖 C++23/20/17/14/11 标准相关错误（`[-Wc++23-extensions]`、`[-Wgnu++23]` 等）、模板推导失败、constexpr 违例、lambda 捕获问题、虚函数/override 错误、内存错误等。警告旗标翻译扩充至 270+ 条。新增 `display_language` 设置项支持 **中文（默认）/ 英文 / 中英双语** 三种模式
+- **F12 跳转定义支持标准库 fallback**：内置 496 条 std 符号 → 头文件映射表，覆盖 STL 容器/算法/IO/智能指针/线程/random/chrono/filesystem/format 等所有标准库符号。当 `F12` 找不到本地定义时，自动提示 `std::vector 定义于 <vector> 系统头文件中`，光标停在 `#include <bits/stdc++.h>` 上时显示 `标准库头文件 <bits/stdc++.h>`。若在 `include_paths` 配置了编译器系统头文件路径，可直接打开真实系统头文件
+- **删除错误行即时响应**：`lint_debounce` 默认 0.4s → 0.1s，基础检查 0.06s → 0.02s。同时实现"源 hash 不一致时立即清空旧编译器诊断"机制，用户删除错误行后 0.02s 内消除标记（之前需要 ~1s），响应速度提升 50×
+- 缓存失效机制：设置变更时自动失效所有缓存，保证结果一致性
 - 预计算 `KEYWORDS_SET/HEADERS_SET/SNIPPETS_BY_TRIG` 用于 O(1) 查找
 - 默认开启所有功能（补全、语法检查、即时基础检查、PCH、幽灵提示）
 - **菜单重构**：参考 LSP / SublimeAStyleFormatter 模式，`Main.sublime-menu` 改为完整标准结构（mnemonic / id / Settings-Default / Settings-User / Key Bindings-Default / Key Bindings-User）
-- **完全汉化 + 诊断语言切换**：诊断翻译表扩充至 280+ 条，覆盖 C++23/20/17/14/11 标准相关错误（`[-Wc++23-extensions]`、`[-Wgnu++23]` 等）、模板推导失败、constexpr 违例、lambda 捕获问题、虚函数/override 错误、内存错误等。警告旗标翻译扩充至 270+ 条。新增 `display_language` 设置项支持 **中文（默认）/ 英文 / 中英双语** 三种模式，可通过命令面板 `CppAssistant: 切换诊断语言为...` 或菜单 `首选项 → Package Settings → CppAssistant → 诊断显示语言` 切换，状态栏/幽灵提示/诊断面板同步更新
 
 ### v1.2.3
 - 修复所有 Package Control 审查警告：sys.path、CREATE_NO_WINDOW 注释、keymap 重命名、edit_settings 命令、菜单子项、移除 Preferences.sublime-settings
