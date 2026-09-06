@@ -78,6 +78,22 @@ def _s(key, default=None):
     return _settings_obj.get(key, default)
 
 
+# 控制台日志限频：同一位置最多打印 3 次，避免每敲一键刷屏
+_log_counts = {}
+
+
+def _log_error(where, exc):
+    """把被兜底捕获的异常打到 Sublime 控制台（View → Show Console），
+    避免插件出错时完全黑箱。同一位置最多记录 3 次。"""
+    n = _log_counts.get(where, 0)
+    if n < 3:
+        _log_counts[where] = n + 1
+        import traceback
+        print("[CppAssistant] %s 出错%s: %r" % (
+            where, ("（该位置继续出错将不再打印）" if n == 2 else ""), exc))
+        traceback.print_exc()
+
+
 def _is_cpp(view):
     return view.score_selector(0, CPP_SCOPE) > 0
 
@@ -143,12 +159,19 @@ class CaEventListener(sublime_plugin.EventListener):
                 cache_key=view.buffer_id(),
                 cache_version=view.change_count(),
                 clangd_style=clangd_style)
-        except Exception:
+        except Exception as e:
+            _log_error("补全引擎", e)
             return None
         if not results:
             return None
         items = [_make_item(d) for d in results]
-        # 不抑制 ST 自身的单词补全，与本地变量补全共存
+        if clangd_style:
+            # 与 LSP-clangd 相同：压制 Sublime 内置的单词补全，
+            # 弹窗中只显示按语义排序的候选，避免同前缀的普通单词
+            # 把 is_sorted / stable_sort 这类语义候选挤出可视区域
+            return sublime.CompletionList(
+                items, sublime.INHIBIT_WORD_COMPLETIONS)
+        # 基础模式：与内置单词补全共存，行为最接近原生
         return sublime.CompletionList(items, 0)
 
     # ---- 语法检查触发 ----
@@ -236,11 +259,59 @@ PCH_HEADER_TEXT = (
 )
 
 
+_compiler_version_cache = {}
+
+
+def _compiler_version(compiler):
+    """编译器版本号（如 '15.2.0'），用于 PCH 签名。
+
+    .gch 与编译器构建版本严格绑定：MSYS2/Homebrew 滚动升级 g++ 后，
+    旧 .gch 会报 "not compatible with this GCC"，若签名不含版本号，
+    插件会继续挂载坏 PCH 导致语法检查静默失效。缓存一次，几乎零开销。
+    """
+    v = _compiler_version_cache.get(compiler)
+    if v is not None:
+        return v
+    ver = "unknown"
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        proc = subprocess.Popen(
+            [compiler, "-dumpfullversion"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=creationflags)
+        out, _ = proc.communicate(timeout=10)
+        if proc.returncode == 0 and out:
+            ver = out.decode("utf-8", "replace").strip() or "unknown"
+    except Exception as e:
+        _log_error("编译器版本查询", e)
+    _compiler_version_cache[compiler] = ver
+    return ver
+
+
 def _pch_paths(compiler, std):
-    sig = re.sub(r"[^\w]", "_", os.path.normcase(compiler)) + "_" + std
+    sig = (re.sub(r"[^\w]", "_", os.path.normcase(compiler))
+           + "_" + re.sub(r"[^\w]", "_", _compiler_version(compiler))
+           + "_" + std)
     d = os.path.join(_PCH_ROOT, sig)
     hdr = os.path.join(d, "ca_pch.h")
     return sig, hdr, hdr + ".gch"
+
+
+def _sweep_old_pch(keep_sig):
+    """删除 _PCH_ROOT 下除 keep_sig 外的旧缓存目录（编译器升级后
+    旧 .gch 单个可达 150MB，必须清理）。"""
+    try:
+        for name in os.listdir(_PCH_ROOT):
+            if name == keep_sig:
+                continue
+            p = os.path.join(_PCH_ROOT, name)
+            try:
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _build_pch(compiler, std):
@@ -266,8 +337,9 @@ def _build_pch(compiler, std):
         proc.wait(timeout=180)
         if proc.returncode == 0 and os.path.isfile(gch):
             _PCH_READY.add(sig)
-    except Exception:
-        pass
+            _sweep_old_pch(sig)
+    except Exception as e:
+        _log_error("PCH 构建", e)
     finally:
         with _PCH_LOCK:
             _PCH_BUILDING.discard(sig)
@@ -340,6 +412,47 @@ def _display_language():
     return "zh"
 
 
+def _compile_with_cmd(cmd, src, workdir, view_id):
+    """执行一次编译器调用，返回合并的 stdout/stderr 字节串或 None（超时/被取代）。"""
+    # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
+    # would otherwise flash for a split second when launching g++/clang++
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    proc = None
+    out = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
+            cwd=workdir, creationflags=creationflags)
+        _lint_procs[view_id] = proc
+        try:
+            out, _ = proc.communicate(
+                input=src.encode("utf-8"),
+                timeout=float(_s("lint_timeout", 12)))
+        except Exception:
+            # 超时或进程被新检查取代：终止本次进程
+            out = None
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+    except Exception as e:
+        _log_error("编译器启动", e)
+        out = None
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    finally:
+        if _lint_procs.get(view_id) is proc:
+            _lint_procs.pop(view_id, None)
+    return out
+
+
 def _lint_work(view_id, src, workdir, fname, gen, ckey):
     """工作线程：通过 stdin 传递源码调用编译器（被新请求取代时会被立刻终止）。
 
@@ -374,51 +487,46 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
     for inc in _s("include_paths", []):
         cmd.append("-I" + str(inc))
     # PCH 加速：使用 -include 直接挂载
+    pch_hdr = pch_gch = None
     if _s("enable_pch", True) and "bits/stdc++.h" in src:
         std = str(_s("cxx_standard", "c++17"))
         sig, hdr, gch = _pch_paths(compiler, std)
         if os.path.isfile(gch):
             cmd += ["-include", hdr]
+            pch_hdr, pch_gch = hdr, gch
         elif sig not in _PCH_BUILDING:
             threading.Thread(
                 target=_build_pch, args=(compiler, std), daemon=True).start()
     # 关键：通过 - 指定从 stdin 读取源码（不创建任何 .cpp 临时文件）
     cmd.append("-")
 
-    # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
-    # would otherwise flash for a split second when launching g++/clang++
-    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    proc = None
-    out = None
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
-            cwd=workdir, creationflags=creationflags)
-        _lint_procs[view_id] = proc
-        try:
-            out, _ = proc.communicate(
-                input=src.encode("utf-8"),
-                timeout=float(_s("lint_timeout", 12)))
-        except Exception:
-            out = None
-            if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-    except Exception:
-        out = None
-        if proc is not None:
+    out = _compile_with_cmd(cmd, src, workdir, view_id)
+
+    # 陈旧 PCH 自愈：编译器升级（MSYS2 pacman -Syu 等）后旧 .gch 不再
+    # 兼容，g++ 会输出 "not compatible with this GCC" 之类的 cc1plus
+    # 错误且不带 file:line，诊断解析器接不住 → 语法检查静默失效。
+    # 检测到即删除坏缓存、后台重建，并立即用无 PCH 命令重试本次检查。
+    if out is not None and pch_gch is not None:
+        text = _decode(out)
+        if ("ca_pch.h" in text and "error" in text) or \
+                "not compatible" in text or \
+                "one or both PCHs" in text:
             try:
-                proc.kill()
-            except Exception:
+                os.remove(pch_gch)
+                if pch_hdr and os.path.isfile(pch_hdr):
+                    os.remove(pch_hdr)
+            except OSError:
                 pass
-    finally:
-        if _lint_procs.get(view_id) is proc:
-            _lint_procs.pop(view_id, None)
+            _PCH_READY.discard(
+                _pch_paths(compiler, str(_s("cxx_standard", "c++17")))[0])
+            std = str(_s("cxx_standard", "c++17"))
+            threading.Thread(
+                target=_build_pch, args=(compiler, std), daemon=True).start()
+            cmd_nopch = [c for c in cmd]
+            if "-include" in cmd_nopch:
+                i = cmd_nopch.index("-include")
+                del cmd_nopch[i:i + 2]
+            out = _compile_with_cmd(cmd_nopch, src, workdir, view_id)
 
     if out is None:
         # 超时或被新检查取代：保留旧标记，不清屏
@@ -484,7 +592,8 @@ def run_basic_check(view):
     def worker():
         try:
             problems = ca_engine.basic_checks(src)
-        except Exception:
+        except Exception as e:
+            _log_error("基础检查", e)
             return
         diags = _basic_diags(problems)
 

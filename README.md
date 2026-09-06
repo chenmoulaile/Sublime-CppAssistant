@@ -28,7 +28,7 @@
 ### 1. 智能代码补全
 - 内置 129 个 STL 函数与 31 类容器成员数据库（算法/容器/流/cmath/cctype/内建函数…）
 - **两种补全模式可切换**（`enable_clangd_style_completion`，默认 LSP-clangd 风格）：
-  - **LSP-clangd 风格**（默认）：所有以当前前缀开头、属于当前作用域（容器/算法/全局）的补全立即弹出；同时允许子串/子序列模糊匹配作为兜底，输入习惯宽松时很顺手。
+  - **LSP-clangd 风格**（默认）：所有以当前前缀开头、属于当前作用域（容器/算法/全局）的补全立即弹出；同时允许子串/子序列模糊匹配作为兜底，输入习惯宽松时很顺手。并且与 LSP-clangd 相同，自动**压制 Sublime 内置的普通单词补全**，弹窗纯净、语义候选置顶。
   - **严格前缀基础模式**：只保留严格前缀匹配（大小写不敏感），过滤掉所有模糊/子串/子序列结果，行为最简洁最可预测，最接近 Sublime 内置单词补全。
   - 切换方式：命令面板 `CppAssistant: 切换补全模式为 ...` / 菜单 `Preferences → Package Settings → CppAssistant → 补全模式` / 手动改 `enable_clangd_style_completion`
 - 自动识别 `using namespace std;`：
@@ -162,6 +162,12 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 更新日志
 
+### v1.3.3
+- **补全弹窗现在与 LSP-clangd 完全一致**：LSP-clangd 风格模式下传入 `INHIBIT_WORD_COMPLETIONS`，压制 Sublime 内置的普通单词补全，弹窗只保留按语义排序的候选——不再出现同前缀的普通单词把 `is_sorted` / `stable_sort` 等语义候选挤出可视区、"快打完整个词才看到想要的"的问题
+- **PCH 签名加入编译器版本号**：MSYS2 / Homebrew 升级 g++ 后旧 `.gch` 不再兼容，过去会导致语法检查静默失效；现在版本变化自动重建，并自动清理升级遗留的旧缓存目录（每个可达 150MB）
+- **陈旧 PCH 自愈**：即使检测到运行时 PCH 不兼容错误（"not compatible with this GCC" 等），也会立刻删除坏缓存、后台重建，并用无 PCH 命令重试本次检查，语法检查不再静默失效
+- **拒绝黑箱失败**：补全引擎 / 基础检查 / 编译器启动的异常现在会打印到 Sublime 控制台（`View → Show Console`，同一位置限打 3 次），出错可查
+
 ### v1.3.2
 - 移除 `.no-sublime-package`：本插件无任何需要解压目录才可用的资源（无捆绑可执行文件、无 `__file__` 路径依赖，PCH 写入系统临时目录，相对导入在 `.sublime-package` 压缩包内同样工作），以默认压缩包形式安装，消除 Package Control 审查警告
 
@@ -206,6 +212,10 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 常见问题
 
+- **刚更新/重装插件后补全和语法检查突然没反应？**
+  Sublime 对插件的热重载在文件快速变动时可能进入半死状态（事件监听器失效）。
+  **重启一次 Sublime Text 即可恢复**；若仍异常，`View → Show Console` 里查看
+  `[CppAssistant]` 开头的报错并发给作者。
 - **Package Control 里搜不到 / Add Repository 下载失败？**
   官方频道收录审核中，审核期间请用上方"添加仓库"或手动方式；
   若 GitHub 网络不通，可用方式二/三（镜像加速下载 ZIP 后解压）。
