@@ -5,10 +5,25 @@
 	{ "caption": "CppAssistant: 切换诊断语言为中文 (zh)", "command": "ca_set_display_language", "args": { "lang": "zh" } },
 	{ "caption": "CppAssistant: 切换诊断语言为英文 (en)", "command": "ca_set_display_language", "args": { "lang": "en" } },
 	{ "caption": "CppAssistant: 切换诊断语言为中英双语 (both)", "command": "ca_set_display_language", "args": { "lang": "both" } },
+	{ "caption": "CppAssistant: 切换补全模式为 LSP-clangd 风格 (clangd)", "command": "ca_set_completion_mode", "args": { "mode": "clangd" } },
+	{ "caption": "CppAssistant: 切换补全模式为严格前缀基础模式 (basic)", "command": "ca_set_completion_mode", "args": { "mode": "basic" } },
+	{ "caption": "Preferences: CppAssistant Settings", "command": "edit_settings",
+	  "args": {
+		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+		"default": "{\n\t$0\n}\n"
+	  }
+	},
 	{ "caption": "首选项: CppAssistant 设置", "command": "edit_settings",
 	  "args": {
 		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
 		"default": "{\n\t$0\n}\n"
+	  }
+	},
+	{ "caption": "Preferences: CppAssistant Key Bindings", "command": "edit_settings",
+	  "args": {
+		"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
+		"user_file": "${packages}/User/Default (${platform}).sublime-keymap",
+		"default": "[\n\t$0\n]\n"
 	  }
 	},
 	{ "caption": "首选项: CppAssistant 快捷键", "command": "edit_settings",

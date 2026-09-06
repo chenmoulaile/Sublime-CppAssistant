@@ -518,9 +518,11 @@ def _score(name, prefix):
 _ANALYSIS_CACHE = {"key": None, "ver": None, "env": None, "syms": None,
                     "size": -1, "text": None}
 
-# 补全结果缓存：相同（key, ver, offset, prefix, accessor, receiver）直接返回
+# 补全结果缓存：相同（key, ver, offset, prefix, accessor, receiver, mode）直接返回
+# mode 字段记录本次使用的补全模式（True=LSP-clangd 风格 / False=严格前缀基础模式），
+# 避免切换模式后命中另一模式留下的旧结果
 _COMPLETION_CACHE = {"key": None, "ver": None, "offset": -1, "ctx": None,
-                     "results": None, "using_std": False}
+                     "results": None, "using_std": False, "mode": None}
 
 
 def _analysis(text, key, ver):
@@ -535,7 +537,8 @@ def _analysis(text, key, ver):
     return env, syms
 
 
-def analyze(text, offset, cache_key=None, cache_version=None):
+def analyze(text, offset, cache_key=None, cache_version=None,
+           clangd_style=True):
     """返回补全条目列表: [{trigger, insert, annotation, kind, detail}]
 
     性能优化：
@@ -543,6 +546,13 @@ def analyze(text, offset, cache_key=None, cache_version=None):
       2. 提前退出：空前缀 + 非成员访问 + 无模板环境 → 直接返回空
       3. 字典查找：标准符号匹配走 O(1) 字典
       4. 限制结果数量：最多返回 200 条
+
+    clangd_style=True （默认，LSP-clangd 风格）：
+        立即显示所有以当前前缀开头、且属于当前作用域（容器/算法/全局）的
+        补全条目；同时允许子串/子序列模糊匹配作为兜底（输入习惯宽松时很顺手）。
+    clangd_style=False （基础补全模式）：
+        只保留严格前缀匹配（大小写不敏感），过滤掉所有模糊/子串/子序列结果，
+        行为接近 Sublime 内置单词补全，最简洁、最可预测。
     """
     ctx = detect_context(text, offset, cache_key, cache_version)
     kind = ctx[0]
@@ -552,9 +562,11 @@ def analyze(text, offset, cache_key=None, cache_version=None):
         prefix = ctx[1]
         results = []
         seen = set()
+        # 基础模式下仅保留严格前缀匹配（score < 5），过滤掉子串/子序列
+        max_score = 999 if clangd_style else 5
         for h in HEADERS:
             sc = _score(h, prefix)
-            if sc >= 999 or h in seen:
+            if sc >= max_score or h in seen:
                 continue
             seen.add(h)
             results.append({"trigger": h, "insert": h,
@@ -567,11 +579,12 @@ def analyze(text, offset, cache_key=None, cache_version=None):
 
     prefix, accessor, receiver = ctx[1], ctx[2], ctx[3]
 
-    # 性能：补全结果缓存命中检查
+    # 性能：补全结果缓存命中检查（mode 决定缓存分组，避免切换模式后误命中）
     if cache_key is not None:
         cc = _COMPLETION_CACHE
         if (cc["key"] == cache_key and cc["ver"] == cache_version
-                and cc["offset"] == offset and cc["ctx"] == ctx):
+                and cc["offset"] == offset and cc["ctx"] == ctx
+                and cc["mode"] == clangd_style):
             return cc["results"]
 
     if cache_key is not None:
@@ -608,9 +621,11 @@ def analyze(text, offset, cache_key=None, cache_version=None):
 
     results = []
     seen = set()
+    # 基础模式下只保留严格前缀匹配（score < 5），过滤掉子串/子序列模糊结果
+    max_score = 999 if clangd_style else 5
     for trigger, insert, ann, kd, want_std in raw_items:
         sc = _score(trigger, prefix)
-        if sc >= 999 or trigger in seen:
+        if sc >= max_score or trigger in seen:
             continue
         seen.add(trigger)
         if want_std and need_prefix and not already_std:
@@ -628,10 +643,11 @@ def analyze(text, offset, cache_key=None, cache_version=None):
     if len(results) > 200:
         results = results[:200]
 
-    # 写入缓存
+    # 写入缓存（mode 也写进去，下次切换模式时会自动失效）
     if cache_key is not None:
         _COMPLETION_CACHE.update(key=cache_key, ver=cache_version,
-                                 offset=offset, ctx=ctx, results=results)
+                                 offset=offset, ctx=ctx, results=results,
+                                 mode=clangd_style)
     return results
 
 
@@ -639,8 +655,8 @@ def invalidate_cache():
     """显式失效缓存（设置变更时调用）"""
     _ANALYSIS_CACHE.update(key=None, ver=None, env=None, syms=None,
                            text=None, size=-1)
-    _COMPLETION_CACHE.update(key=None, ver=None, offset=-1, ctx=None,
-                             results=None)
+    _COMPLETION_CACHE.update(key=None, ver=None, offset=None, ctx=None,
+                             results=None, mode=None)
     _LINESTATE_CACHE.update(key=None, ver=None, states=None,
                             text=None, size=-1)
 

@@ -59,6 +59,26 @@
 							},
 							{ "caption": "-" },
 							{
+								"caption": "补全模式 (enable_clangd_style_completion)",
+								"id": "cppassistant-completion-mode",
+								"children":
+								[
+									{
+										"caption": "LSP-clangd 风格 (clangd) - 所有以当前前缀开头的补全立即弹出，并允许子串/子序列模糊匹配",
+										"command": "ca_set_completion_mode",
+										"args": { "mode": "clangd" },
+										"checkbox": true
+									},
+									{
+										"caption": "严格前缀基础模式 (basic) - 仅保留严格前缀匹配，过滤子串/子序列模糊结果",
+										"command": "ca_set_completion_mode",
+										"args": { "mode": "basic" },
+										"checkbox": true
+									}
+								]
+							},
+							{ "caption": "-" },
+							{
 								"caption": "Key Bindings – Default",
 								"command": "open_file",
 								"args": {

@@ -27,6 +27,10 @@
 
 ### 1. 智能代码补全
 - 内置 129 个 STL 函数与 31 类容器成员数据库（算法/容器/流/cmath/cctype/内建函数…）
+- **两种补全模式可切换**（`enable_clangd_style_completion`，默认 LSP-clangd 风格）：
+  - **LSP-clangd 风格**（默认）：所有以当前前缀开头、属于当前作用域（容器/算法/全局）的补全立即弹出；同时允许子串/子序列模糊匹配作为兜底，输入习惯宽松时很顺手。
+  - **严格前缀基础模式**：只保留严格前缀匹配（大小写不敏感），过滤掉所有模糊/子串/子序列结果，行为最简洁最可预测，最接近 Sublime 内置单词补全。
+  - 切换方式：命令面板 `CppAssistant: 切换补全模式为 ...` / 菜单 `Preferences → Package Settings → CppAssistant → 补全模式` / 手动改 `enable_clangd_style_completion`
 - 自动识别 `using namespace std;`：
   - 未声明时，输入 `lowe` → 补全插入 `std::lower_bound(...)`
   - 已声明时，输入 `lowe` → 只补 `lower_bound(...)`，不会重复加前缀
@@ -110,6 +114,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
 | `enable_completions` | `true` | 智能补全开关 |
+| `enable_clangd_style_completion` | `true` | 补全模式：`true` LSP-clangd 风格（默认，宽松模糊匹配）/ `false` 严格前缀基础模式（仅前缀匹配） |
 | `enable_linting` | `true` | 实时语法检查开关 |
 | `instant_basic_check` | `true` | 即时基础检查（毫秒级括号/全角标点/字符串检测） |
 | `lint_debounce` | `0.1` | 停止输入多少秒后开始编译器完整检查（删除错误行后基本即时清除） |
@@ -156,6 +161,15 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 英文模式下会保留 `gcc/clang` 原始报错信息，方便复制搜索；中文模式适合日常学习；双语模式适合教学/对比。
 
 ## 更新日志
+
+### v1.3.1
+- **新增补全模式开关** `enable_clangd_style_completion`：在两种补全风格间即时切换
+  - LSP-clangd 风格（默认）：所有以当前前缀开头、属于当前作用域（容器/算法/全局）的补全立即弹出；额外允许子串/子序列模糊匹配作为兜底
+  - 严格前缀基础模式：只保留严格前缀匹配，过滤掉所有子串/子序列模糊结果，最简洁最可预测
+- 新增命令面板条目 `CppAssistant: 切换补全模式为 LSP-clangd 风格 (clangd)` 和 `切换补全模式为严格前缀基础模式 (basic)`
+- 新增菜单 `Preferences → Package Settings → CppAssistant → 补全模式`，可在两种模式间可视化切换（带 `checkbox` 标记）
+- 补全缓存按模式分组，切换模式后即时失效避免误命中
+- 同时清理所有 Package Control 审查警告：补全模式 caption 改为 `Preferences:` 前缀（中英双 caption）、命令面板新增英文 caption、Popen 使用 `subprocess.CREATE_NO_WINDOW` 命名常量
 
 ### v1.3.0（LSP-clangd 风格的轻量级汉化优化版）
 - **全面性能优化**：参考 LSP-clangd 架构，多级缓存（词法状态/类型环境/补全结果/诊断）使响应达 LSP-clangd 同等水平

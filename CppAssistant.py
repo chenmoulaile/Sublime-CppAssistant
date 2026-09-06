@@ -135,11 +135,14 @@ class CaEventListener(sublime_plugin.EventListener):
         text = view.substr(sublime.Region(0, min(size, cap)))
         if off > len(text):
             return None
+        # 补全模式：true=LSP-clangd 风格（默认）；false=严格前缀基础模式
+        clangd_style = bool(_s("enable_clangd_style_completion", True))
         try:
             results = ca_engine.analyze(
                 text, off,
                 cache_key=view.buffer_id(),
-                cache_version=view.change_count())
+                cache_version=view.change_count(),
+                clangd_style=clangd_style)
         except Exception:
             return None
         if not results:
@@ -252,8 +255,9 @@ def _build_pch(compiler, std):
             os.makedirs(os.path.dirname(hdr))
         with open(hdr, "w", encoding="utf-8") as f:
             f.write(PCH_HEADER_TEXT)
-        # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
-        creationflags = 0x08000000 if os.name == "nt" else 0
+        # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
+        # would otherwise flash for a split second when launching g++/clang++
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         proc = subprocess.Popen(
             [compiler, "-std=" + str(std), "-x", "c++-header",
              hdr, "-o", gch],
@@ -381,8 +385,9 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
     # 关键：通过 - 指定从 stdin 读取源码（不创建任何 .cpp 临时文件）
     cmd.append("-")
 
-    # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
-    creationflags = 0x08000000 if os.name == "nt" else 0
+    # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
+    # would otherwise flash for a split second when launching g++/clang++
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     proc = None
     out = None
     try:
@@ -740,6 +745,53 @@ class CaSetDisplayLanguageCommand(sublime_plugin.ApplicationCommand):
             sublime.status_message("[CppAssistant] 诊断显示语言已切换: %s" % label)
 
 
+class CaSetCompletionModeCommand(sublime_plugin.ApplicationCommand):
+    """通过命令面板或菜单项直接切换补全模式。
+
+    模式说明：
+      - clangd   （LSP-clangd 风格，默认）：所有以当前前缀开头、属于当前作用域
+                的补全立即弹出；额外允许子串/子序列模糊匹配。
+      - basic    （严格前缀基础模式）：只保留严格前缀匹配，过滤掉所有
+                子串/子序列模糊结果，行为最简洁最可预测。
+
+    行为：直接改写 User/CppAssistant.sublime-settings 里的
+    enable_clangd_style_completion 字段。设置变更会触发 _on_settings_changed，
+    自动清空补全/诊断缓存并立即生效。
+    """
+
+    def run(self, mode):
+        if mode not in ("clangd", "basic"):
+            sublime.status_message("[CppAssistant] 非法补全模式: %s" % mode)
+            return
+        path = os.path.join(sublime.packages_path(), "User",
+                            "CppAssistant.sublime-settings")
+        data = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = sublime.decode_value(f.read()) or {}
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        new_value = (mode == "clangd")
+        old_value = data.get("enable_clangd_style_completion", True)
+        if old_value == new_value:
+            label = {"clangd": "LSP-clangd 风格", "basic": "严格前缀基础模式"}[mode]
+            sublime.status_message("[CppAssistant] 补全模式已是: %s" % label)
+            return
+        data["enable_clangd_style_completion"] = new_value
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(sublime.encode_value(data, True))
+        except Exception as e:
+            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
+            return
+        label = {"clangd": "LSP-clangd 风格（模糊匹配）",
+                 "basic": "严格前缀基础模式（仅前缀匹配）"}[mode]
+        sublime.status_message("[CppAssistant] 补全模式已切换: %s" % label)
+
+
 class CaPanelClearCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
@@ -803,8 +855,9 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
         cf = _find_clang_format()
         if cf is not None:
             style = _s("clang_format_style", CLANG_FORMAT_STYLE_DEFAULT)
-            # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
-            creationflags = 0x08000000 if os.name == "nt" else 0
+            # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
+            # would otherwise flash for a split second when launching clang-format
+            creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             try:
                 proc = subprocess.Popen(
                     [cf, "--assume-filename=x.cpp", "--style=" + style],
