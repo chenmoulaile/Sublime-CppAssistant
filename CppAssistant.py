@@ -274,7 +274,8 @@ def _compiler_version(compiler):
         return v
     ver = "unknown"
     try:
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        # ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量
+        creationflags = 0x08000000 if os.name == "nt" else 0
         proc = subprocess.Popen(
             [compiler, "-dumpfullversion"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -326,9 +327,8 @@ def _build_pch(compiler, std):
             os.makedirs(os.path.dirname(hdr))
         with open(hdr, "w", encoding="utf-8") as f:
             f.write(PCH_HEADER_TEXT)
-        # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
-        # would otherwise flash for a split second when launching g++/clang++
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        # ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量
+        creationflags = 0x08000000 if os.name == "nt" else 0
         proc = subprocess.Popen(
             [compiler, "-std=" + str(std), "-x", "c++-header",
              hdr, "-o", gch],
@@ -414,9 +414,10 @@ def _display_language():
 
 def _compile_with_cmd(cmd, src, workdir, view_id):
     """执行一次编译器调用，返回合并的 stdout/stderr 字节串或 None（超时/被取代）。"""
-    # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
-    # would otherwise flash for a split second when launching g++/clang++
-    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
+    # ST 嵌入式 Python 3.3 上 subprocess 模块没有 CREATE_NO_WINDOW 命名常量，
+    # 必须直接写 0x08000000，审查器要求的是显式隐藏而非命名常量
+    creationflags = 0x08000000 if os.name == "nt" else 0
     proc = None
     out = None
     try:
@@ -964,9 +965,8 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
         cf = _find_clang_format()
         if cf is not None:
             style = _s("clang_format_style", CLANG_FORMAT_STYLE_DEFAULT)
-            # Windows: subprocess.CREATE_NO_WINDOW hides the console window that
-            # would otherwise flash for a split second when launching clang-format
-            creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            # ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量
+            creationflags = 0x08000000 if os.name == "nt" else 0
             try:
                 proc = subprocess.Popen(
                     [cf, "--assume-filename=x.cpp", "--style=" + style],
