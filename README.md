@@ -162,6 +162,9 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 更新日志
 
+### v1.3.2
+- 移除 `.no-sublime-package`：本插件无任何需要解压目录才可用的资源（无捆绑可执行文件、无 `__file__` 路径依赖，PCH 写入系统临时目录，相对导入在 `.sublime-package` 压缩包内同样工作），以默认压缩包形式安装，消除 Package Control 审查警告
+
 ### v1.3.1
 - **新增补全模式开关** `enable_clangd_style_completion`：在两种补全风格间即时切换
   - LSP-clangd 风格（默认）：所有以当前前缀开头、属于当前作用域（容器/算法/全局）的补全立即弹出；额外允许子串/子序列模糊匹配作为兜底
