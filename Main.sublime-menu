@@ -17,6 +17,14 @@
 						"children":
 						[
 							{
+								"caption": "Settings",
+								"command": "edit_settings",
+								"args": {
+									"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+									"default": "{\n\t$0\n}\n"
+								}
+							},
+							{
 								"caption": "Settings – Default",
 								"command": "open_file",
 								"args": {

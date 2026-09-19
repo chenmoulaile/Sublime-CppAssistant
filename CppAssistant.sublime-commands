@@ -13,20 +13,7 @@
 		"default": "{\n\t$0\n}\n"
 	  }
 	},
-	{ "caption": "首选项: CppAssistant 设置", "command": "edit_settings",
-	  "args": {
-		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
-		"default": "{\n\t$0\n}\n"
-	  }
-	},
 	{ "caption": "Preferences: CppAssistant Key Bindings", "command": "edit_settings",
-	  "args": {
-		"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
-		"user_file": "${packages}/User/Default (${platform}).sublime-keymap",
-		"default": "[\n\t$0\n]\n"
-	  }
-	},
-	{ "caption": "首选项: CppAssistant 快捷键", "command": "edit_settings",
 	  "args": {
 		"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
 		"user_file": "${packages}/User/Default (${platform}).sublime-keymap",

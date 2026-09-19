@@ -28,7 +28,19 @@ import sublime
 import sublime_plugin
 
 # Use relative import for local modules (avoids sys.path modification)
-from . import ca_engine  # noqa: E402
+from .cppassistant import ca_engine  # noqa: E402
+
+
+def _hidden_window_startupinfo():
+    if os.name == "nt":
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+            return si
+        except Exception:
+            pass
+    return None
 
 _SETTINGS = "CppAssistant.sublime-settings"
 _settings_obj = None
@@ -276,10 +288,12 @@ def _compiler_version(compiler):
     try:
         # ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量
         creationflags = 0x08000000 if os.name == "nt" else 0
+        startupinfo = _hidden_window_startupinfo()
         proc = subprocess.Popen(
             [compiler, "-dumpfullversion"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, creationflags=creationflags)
+            stdin=subprocess.DEVNULL, creationflags=creationflags,
+            startupinfo=startupinfo)
         out, _ = proc.communicate(timeout=10)
         if proc.returncode == 0 and out:
             ver = out.decode("utf-8", "replace").strip() or "unknown"
@@ -329,11 +343,13 @@ def _build_pch(compiler, std):
             f.write(PCH_HEADER_TEXT)
         # ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量
         creationflags = 0x08000000 if os.name == "nt" else 0
+        startupinfo = _hidden_window_startupinfo()
         proc = subprocess.Popen(
             [compiler, "-std=" + str(std), "-x", "c++-header",
              hdr, "-o", gch],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, creationflags=creationflags)
+            stdin=subprocess.DEVNULL, creationflags=creationflags,
+            startupinfo=startupinfo)
         proc.wait(timeout=180)
         if proc.returncode == 0 and os.path.isfile(gch):
             _PCH_READY.add(sig)
@@ -418,6 +434,7 @@ def _compile_with_cmd(cmd, src, workdir, view_id):
     # ST 嵌入式 Python 3.3 上 subprocess 模块没有 CREATE_NO_WINDOW 命名常量，
     # 必须直接写 0x08000000，审查器要求的是显式隐藏而非命名常量
     creationflags = 0x08000000 if os.name == "nt" else 0
+    startupinfo = _hidden_window_startupinfo()
     proc = None
     out = None
     try:
@@ -426,7 +443,8 @@ def _compile_with_cmd(cmd, src, workdir, view_id):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
-            cwd=workdir, creationflags=creationflags)
+            cwd=workdir, creationflags=creationflags,
+            startupinfo=startupinfo)
         _lint_procs[view_id] = proc
         try:
             out, _ = proc.communicate(
@@ -967,11 +985,13 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
             style = _s("clang_format_style", CLANG_FORMAT_STYLE_DEFAULT)
             # ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量
             creationflags = 0x08000000 if os.name == "nt" else 0
+            startupinfo = _hidden_window_startupinfo()
             try:
                 proc = subprocess.Popen(
                     [cf, "--assume-filename=x.cpp", "--style=" + style],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, creationflags=creationflags)
+                    stderr=subprocess.PIPE, creationflags=creationflags,
+                    startupinfo=startupinfo)
                 out, err = proc.communicate(
                     input=src.encode("utf-8"), timeout=15)
             except Exception:
