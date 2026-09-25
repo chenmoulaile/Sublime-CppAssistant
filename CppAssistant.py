@@ -28,7 +28,7 @@ import sublime
 import sublime_plugin
 
 # Use relative import for local modules (avoids sys.path modification)
-from .cppassistant import ca_engine  # noqa: E402
+from cppassistant import ca_engine  # noqa: E402
 
 
 def _hidden_window_startupinfo():
