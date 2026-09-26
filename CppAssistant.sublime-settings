@@ -38,6 +38,18 @@
     //         过滤掉所有子串/子序列模糊结果，最简洁最可预测。
     // 切换后即时生效（自动失效补全缓存）。
     "enable_clangd_style_completion": true,
+    // 智能头文件插入（clangd header-insertion + 万能头判断）：
+    // 补全被接受时自动补上 #include <X>，例如输入 vector 补全后
+    // 自动插入 #include <vector>；
+    //   - 文件里已有 #include <bits/stdc++.h>（万能头）-> 不再重复插入；
+    //   - 该头文件已在文件里 -> 跳过；
+    //   - 否则插入到最后一个 #include 行之后。
+    "auto_insert_includes": true,
+    // 悬停文档：鼠标悬停在符号上显示 clangd 的类型/文档弹窗
+    "enable_hover": true,
+    // 函数签名提示：光标在函数调用括号内时显示重载签名
+    // （与 LSP-clangd 的 signature help 行为一致）
+    "enable_signature_help": true,
 
     // ================= 语法检查 =================
     // 实时语法检查总开关

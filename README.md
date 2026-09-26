@@ -1,8 +1,10 @@
 # CppAssistant —— Sublime Text 4 C++ 辅助插件（内嵌真实 clangd 引擎 + 全汉化）
 
 > **v1.4.0 起内置移植 LSP-clangd**：插件自带最小 LSP 客户端，直接驱动真实的 clangd 语言服务器（无需安装 LSP 主框架），补全达到编译器级语义准确度；同时保留纯 Python 内置数据库兜底，零配置可用。诊断信息完整中文化。
+>
+> **v1.5.0 补全力度对齐 LSP-clangd**：**智能头文件插入**（补全被接受时自动补 `#include <vector>`，已有 `bits/stdc++.h` 万能头则不插）、**悬停文档**（鼠标悬停显示 clangd 类型/文档）、**函数签名提示**（光标在调用括号内显示重载签名）。
 
-为 C++ 提供 LSP-clangd 同级体验：**真实 clangd 语义补全 / 中文语法检查 / F12 跳转定义 / jiangly 码风格式化**。
+为 C++ 提供 LSP-clangd 同级体验：**真实 clangd 语义补全 / 智能头文件插入 / 悬停文档 / 函数签名提示 / 中文语法检查 / F12 跳转定义 / jiangly 码风格式化**。
 开箱即用：有 clangd 就用真引擎，没有就自动回退内置数据库。
 
 ## 性能（与 LSP-clangd 对比）
@@ -42,6 +44,13 @@
     `clangd_completion_wait_ms`（默认 60ms）可调，设 0 完全异步
   - 找不到 clangd 自动回退内置数据库并状态栏提示；路径可用 `clangd_binary` 指定
   - 补全条目类型全部中文标注（函数 / 成员函数 / 成员变量 / 类 / 常量…）
+  - **智能头文件插入**（v1.5.0，`auto_insert_includes` 默认开启）：补全被接受时
+    自动补上对应的 `#include <X>`——例如输入 `vector` 补全后自动插入
+    `#include <vector>`；**文件里已有 `#include <bits/stdc++.h>`（万能头）时
+    不再重复插入**，头文件已在文件里也会跳过，否则插入到最后一个
+    `#include` 行之后（与 LSP-clangd 的 header-insertion 行为一致）
+  - **函数参数占位符**：补全函数时自动带上 `push_back(${1:x})` 式的参数
+    占位片段（clangd 默认行为，Tab 跳参数）
 - **内置数据库模式**（`enable_clangd_engine: false` 或无 clangd 时自动启用）：
   - 纯 Python 静态数据库：129 个 STL 函数 + 31 类容器成员
   - **排序策略同样为：用户/内置片段最前 → C++14 及以下档 → C++17/20/23 档靠后**
@@ -56,7 +65,16 @@
   - 输入 `#include <` 或 `#include "` 弹出头文件列表
   - 代码片段：`us` → `using namespace std;`，`inc` → 万能头，`fastio`、`mainf`、`solvef`
 
-### 2. 实时语法检查（报错信息全中文，三级加速）
+### 2. 悬停文档与函数签名提示（v1.5.0 新增）
+- **悬停文档**（`enable_hover`，默认开启）：鼠标悬停在符号上时弹出 clangd
+  生成的类型/文档弹窗（函数签名、所在头文件、成员说明），与 LSP-clangd 的
+  hover 一致；纯 clangd 数据，无 clangd 时不出弹窗
+- **函数签名提示**（`enable_signature_help`，默认开启）：光标位于函数调用的
+  括号内时自动弹出重载签名列表（当前重载高亮，附带参数文档），
+  输入过程实时更新，移出括号自动关闭；`if` / `for` / `while` 等
+  控制流语句的括号不会误触发
+
+### 3. 实时语法检查（报错信息全中文，三级加速）
 - **第一级 · 即时基础检查**（毫秒级）：纯 Python 词法扫描，输入过程中实时检测
   括号配平、全角标点、未闭合字符串/注释，不必等编译器
 - **第二级 · 编译器完整检查**：后台调用 `g++ -fsyntax-only` 或 `clang++ -fsyntax-only`
@@ -71,11 +89,11 @@
   之后含该头文件的检查耗时约从 1.2s 降至 0.33s（约 4 倍）
 - 找不到编译器时自动退化为**基础检查**：括号配平、全角标点检测、未闭合字符串/注释
 
-### 3. F12 跳转定义
+### 4. F12 跳转定义
 搜索顺序：当前文件 → 同窗口已打开文件 → 当前文件目录及 `include_paths` 下的本地头文件（递归跟随 `#include "..."`）。
 多个候选时弹出快速面板选择；本地未找到时回退到 Sublime 内置符号索引。
 
-### 4. jiangly 码风格式化
+### 5. jiangly 码风格式化
 - 优先调用 clang-format（内置 jiangly 风格配置：4 空格缩进、K&R 大括号、ColumnLimit 100 不折行）
 - 无 clang-format 时使用内置兜底格式化器（缩进归一化、大括号空格、逗号分号、流运算符空格，
   且保证不破坏字符串/注释/模板嵌套）
@@ -130,6 +148,9 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | --- | --- | --- |
 | `enable_completions` | `true` | 智能补全开关 |
 | `enable_clangd_style_completion` | `true` | 补全模式：`true` LSP-clangd 风格（默认，宽松模糊匹配）/ `false` 严格前缀基础模式（仅前缀匹配） |
+| `auto_insert_includes` | `true` | 智能头文件插入：补全被接受时自动补 `#include <X>`（已有 `bits/stdc++.h` 万能头或该头已包含则跳过） |
+| `enable_hover` | `true` | 悬停文档：鼠标悬停显示 clangd 类型/文档弹窗 |
+| `enable_signature_help` | `true` | 函数签名提示：光标在调用括号内显示重载签名 |
 | `enable_linting` | `true` | 实时语法检查开关 |
 | `instant_basic_check` | `true` | 即时基础检查（毫秒级括号/全角标点/字符串检测） |
 | `lint_debounce` | `0.1` | 停止输入多少秒后开始编译器完整检查（删除错误行后基本即时清除） |
@@ -176,6 +197,31 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 英文模式下会保留 `gcc/clang` 原始报错信息，方便复制搜索；中文模式适合日常学习；双语模式适合教学/对比。
 
 ## 更新日志
+
+### v1.5.0（补全力度对齐 LSP-clangd）
+- **智能头文件插入**（用户需求核心）：补全被接受时自动补 `#include <X>`——
+  例如输入 `vector` 补全后自动插入 `#include <vector>`：
+  - 文件里已有 `#include <bits/stdc++.h>`（万能头）→ 不再重复插入
+    （clangd 的 header-insertion 默认策略原生识别万能头传递包含，
+    插件侧再做二次防御判断，双保险）
+  - 该头文件已在文件里 → 跳过；否则插入到最后一个 `#include` 行之后
+  - 实现机制：clangd 的 `additionalTextEdits` 携带 include 指令 → 插件在
+    补全被接受时（`on_text_changed` 匹配插入文本）智能应用；
+    `auto_insert_includes` 可关
+  - 剥离 clangd label 前的 header-insertion 装饰符（`•`），触发词保持干净
+- **函数参数占位符**：函数补全自动带 `push_back(${1:x})` 式参数占位片段
+  （clangd 默认行为，此前被插件误关，现恢复与 LSP-clangd 一致）
+- **悬停文档（hover）**：鼠标悬停符号弹出 clangd 类型/文档弹窗，
+  `enable_hover` 可关
+- **函数签名提示（signature help）**：光标在调用括号内实时显示重载签名
+  （当前重载高亮 + 参数文档），控制流关键字不误触发，
+  `enable_signature_help` 可关
+- 协议层：`ca_clangd.py` 新增 `textDocument/hover` 与
+  `textDocument/signatureHelp` 支持（含解析器），补全解析附带
+  `includes` 字段
+- 兼容性修正：不同版本 clangd 的 `--header-insertion` 取值名不同
+  （旧版 `iws` / 新版 `iwyu`），显式传 flag 会令其一端启动失败，
+  改用默认策略（即 LSP-clangd 的用法），跨版本稳定
 
 ### v1.4.1（修复插件无法加载）
 - **修复 ImportError**：ST 宿主不把包目录加入 `sys.path`，根级插件的绝对导入

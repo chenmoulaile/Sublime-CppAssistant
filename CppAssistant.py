@@ -184,6 +184,9 @@ _clangd_state = {
     "no_server": False,    # 已确认机器上没有 clangd，用内置数据库兜底
     "async_cache": {},     # (buffer_id, change_count, offset) -> [dict]
     "refreshed": None,     # 最近一次弹窗刷新键（防刷新循环）
+    # buffer_id -> {"cc": 编辑代号, "items": [(trigger, 展开后插入文本, [头文件])]}
+    # 记录最近一次补全候选附带的 #include 插入指令，供补全被接受后应用
+    "pending_includes": {},
 }
 
 # 内置数据库条目按版本分档：C++14 及以下排前面，C++17/20/23 排后面
@@ -333,10 +336,14 @@ def _get_clangd_client(view):
         if f not in fallback:
             fallback.append(f)
     args = ["--background-index=false",
-            "--header-insertion=never",
             "--completion-style=detailed",
-            "--function-arg-placeholders=false",
             "-j=2",
+            # header-insertion 与 function-arg-placeholders 均用 clangd
+            # 默认值（与 LSP-clangd 一致，不显式传 flag）：默认策略 iwyu
+            # 会在补全项上附带 #include <X> 的 additionalTextEdits，由
+            # 插件应用并做万能头智能判断（已有 bits/stdc++.h 时跳过）。
+            # 注意：不同版本 clangd 的取值名不同（旧版 iws / 新版 iwyu），
+            # 显式传 flag 反而会令其中一端启动失败，故省略。
             # clangd 读取我们动态维护的 compile_commands.json（标准姿势，
             # 决定 -std 与编译器头文件路径；比 query-driver 白名单可靠）
             "--compile-commands-dir=" + _clangd_cdb_dir().replace("\\", "/")]
@@ -412,6 +419,109 @@ def _tier_sort_static(results, prefix):
     out.extend(early)
     out.extend(later)
     return out
+
+
+# 补全被接受后的头文件插入（万能头智能判断）--------------------------------
+
+_SNIPPET_FIELD_RE = re.compile(r"\$\{\d+:[^{}]*\}|\$\d+")
+
+
+def _expand_snippet_text(s):
+    """把补全模板里的 snippet 占位符展开成实际插入文本。
+
+    ${1:默认值} -> 默认值；$1/$0 -> 空串。用于把 clangd 的 insert
+    （--function-arg-placeholders=true 时形如 push_back(${1:x})）
+    与编辑器实际插入的文本做匹配。
+    """
+    def _sub(m):
+        tok = m.group(0)
+        if tok.startswith("${"):
+            return tok[tok.index(":") + 1:-1]
+        return ""
+    return _SNIPPET_FIELD_RE.sub(_sub, s or "")
+
+
+def _stash_includes(view, dicts):
+    """记录本次补全候选附带的 #include 插入指令（clangd header-insertion）。
+
+    Sublime 没有"补全被接受"事件，这里把 (trigger, 展开后插入文本) ->
+    头文件列表 暂存起来，on_text_changed 里检测到匹配的插入文本后应用。
+    """
+    try:
+        if not _s("auto_insert_includes", True):
+            return
+        items = []
+        for d in dicts:
+            incs = d.get("includes")
+            if not incs:
+                continue
+            items.append((d.get("trigger") or "",
+                          _expand_snippet_text(d.get("insert") or ""),
+                          list(incs)))
+        bid = view.buffer_id()
+        if not items:
+            _clangd_state["pending_includes"].pop(bid, None)
+            return
+        _clangd_state["pending_includes"][bid] = {
+            "cc": view.change_count(),
+            "items": items,
+        }
+    except Exception as e:
+        _log_error("头文件插入暂存", e)
+
+
+def _apply_pending_includes(view, hdrs):
+    """补全被接受后的实际应用入口（on_text_changed 回调后调）。
+
+    规则（对齐用户需求）：
+      - 缓冲里已有 #include <bits/stdc++.h>（万能头）-> 什么都不插；
+      - 否则把补全项携带的头文件插入到最后一个 #include 行之后；
+      - 目标头文件已经在文件里 -> 跳过该条。
+    实际编辑交给 TextCommand（UI 线程执行），这里只做线程切换。
+    """
+    try:
+        if not hdrs:
+            return
+        view.run_command("ca_insert_pending_includes",
+                         {"includes": [str(h) for h in hdrs]})
+    except Exception as e:
+        _log_error("头文件插入", e)
+
+
+class CaInsertPendingIncludesCommand(sublime_plugin.TextCommand):
+    """把缺失的 #include <X> 插到最后一个 #include 行之后（无则插文件开头）。"""
+
+    def run(self, edit, includes=None):
+        view = self.view
+        if not includes:
+            return
+        text = view.substr(sublime.Region(0, view.size()))
+        if "bits/stdc++.h" in text:
+            return
+        missing = []
+        seen = set()
+        for h in includes:
+            h = str(h).strip()
+            if not h or h in seen:
+                continue
+            seen.add(h)
+            if ('#include <%s>' % h) in text or ('#include "%s"' % h) in text:
+                continue
+            missing.append(h)
+        if not missing:
+            return
+        lines = text.split("\n")
+        last_inc = -1
+        for i, ln in enumerate(lines):
+            if ln.strip().startswith("#include"):
+                last_inc = i
+        if last_inc >= 0:
+            pt = view.text_point(last_inc, len(lines[last_inc]))
+            block = "\n" + "\n".join("#include <%s>" % h for h in missing)
+        else:
+            pt = 0
+            block = "\n".join("#include <%s>" % h for h in missing) + "\n"
+        view.insert(edit, pt, block)
 
 
 def _maybe_refresh_popup(view, key):
@@ -495,8 +605,11 @@ class CaEventListener(sublime_plugin.EventListener):
         cache = st["async_cache"]
         if key in cache:
             items = cache.get(key)
-            return (_snippet_items_for_prefix(prefix) + items) if items \
-                else None
+            if items:
+                dicts = _snippet_items_for_prefix(prefix) + items
+                _stash_includes(view, dicts)
+                return dicts
+            return None
         wait_ms = int(_s("clangd_completion_wait_ms", 60) or 0)
 
         def on_arrival(parsed):
@@ -516,7 +629,9 @@ class CaEventListener(sublime_plugin.EventListener):
                                    on_arrival=on_arrival)
         if not parsed:
             return None  # 本次先弹内置数据库兜底，clangd 结果到了再刷新
-        return _snippet_items_for_prefix(prefix) + parsed
+        dicts = _snippet_items_for_prefix(prefix) + parsed
+        _stash_includes(view, dicts)
+        return dicts
 
     # ---- 语法检查触发 ----
     def on_load_async(self, view):
@@ -524,6 +639,58 @@ class CaEventListener(sublime_plugin.EventListener):
         # clangd 预热：延迟 300ms，等编辑器把文件展示稳定后推送全文
         sublime.set_timeout(
             lambda: _warm_clangd_document(view), 300)
+
+    # ---- 补全被接受后的头文件插入 ----
+    def on_text_changed_async(self, view, changes):
+        self._maybe_apply_pending_includes(view, changes)
+
+    def _maybe_apply_pending_includes(self, view, changes):
+        """检测"补全被接受"并触发智能头文件插入。
+
+        Sublime 没有 completion-accepted 事件，这里比对本次编辑插入的
+        文本与暂存的补全候选：匹配到即视为补全被接受，取出该候选携带
+        的头文件列表交给 TextCommand 应用（万能头判断在 TextCommand 里）。
+        误报场景（手打/粘贴出与候选完全一致的文本）后果只是补一条正确的
+        #include，可接受。
+        """
+        try:
+            if not _is_cpp(view):
+                return
+            if not _s("auto_insert_includes", True):
+                return
+            pend = _clangd_state["pending_includes"].get(view.buffer_id())
+            if not pend:
+                return
+            cc = view.change_count()
+            if cc <= pend["cc"] or cc > pend["cc"] + 8:
+                # 太旧或与快照脱节：直接丢弃（下次补全会重新暂存）
+                _clangd_state["pending_includes"].pop(view.buffer_id(), None)
+                return
+            inserted = []
+            for ch in changes:
+                try:
+                    txt = ch[2]
+                except Exception:
+                    txt = None
+                if isinstance(txt, str) and txt:
+                    inserted.append(txt)
+            if not inserted:
+                return
+            joined = "\n".join(inserted)
+            hit = None
+            for trig, expanded, incs in pend["items"]:
+                if expanded and expanded in joined:
+                    hit = incs
+                    break
+                if trig and trig in joined:
+                    hit = incs
+                    break
+            _clangd_state["pending_includes"].pop(view.buffer_id(), None)
+            if not hit:
+                return
+            _apply_pending_includes(view, hit)
+        except Exception as e:
+            _log_error("头文件插入检测", e)
 
     def on_pre_save(self, view):
         if _s("format_on_save", False) and _is_cpp(view):
@@ -534,6 +701,37 @@ class CaEventListener(sublime_plugin.EventListener):
 
     def on_modified_async(self, view):
         self._maybe_lint(view, debounce=True)
+        self._maybe_signature_help(view)
+
+    # ---- hover 悬停文档 ----
+    def on_hover_async(self, view, point, hover_zone):
+        try:
+            if hover_zone != 1:  # 仅正文区
+                return
+            if not _is_cpp(view):
+                return
+            sublime.set_timeout(
+                lambda: run_hover(view, point), 0)
+        except Exception as e:
+            _log_error("hover 触发", e)
+
+    # ---- signature help 触发（80ms 防抖）----
+    def _maybe_signature_help(self, view):
+        try:
+            if not _is_cpp(view):
+                return
+            vid = view.id()
+            t = _sig_timers.pop(vid, None)
+            if t is not None:
+                t.cancel()
+            tmr = threading.Timer(
+                0.08, lambda: sublime.set_timeout(
+                    lambda: run_signature_help(view), 0))
+            tmr.daemon = True
+            tmr.start()
+            _sig_timers[vid] = tmr
+        except Exception as e:
+            _log_error("签名提示触发", e)
 
     def _maybe_lint(self, view, debounce=False):
         if not _is_cpp(view):
@@ -569,7 +767,7 @@ class CaEventListener(sublime_plugin.EventListener):
 
     def on_close(self, view):
         vid = view.id()
-        for timers in (_lint_timers, _basic_timers):
+        for timers in (_lint_timers, _basic_timers, _sig_timers):
             t = timers.pop(vid, None)
             if t is not None:
                 t.cancel()
@@ -597,6 +795,7 @@ class CaEventListener(sublime_plugin.EventListener):
         for k in [k for k in _clangd_state["async_cache"]
                   if k[0] == bid]:
             _clangd_state["async_cache"].pop(k, None)
+        _clangd_state["pending_includes"].pop(bid, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1177,6 +1376,215 @@ def _view_by_id(vid):
             if v.id() == vid:
                 return v
     return None
+
+
+# ---------------------------------------------------------------------------
+# clangd hover 悬停文档 / signature help 函数签名提示
+# ---------------------------------------------------------------------------
+
+_sig_timers = {}   # view_id -> threading.Timer（签名提示防抖）
+
+
+def _html_escape(s):
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
+_POPUP_STYLE = (
+    '<style>'
+    'body { margin: 0; padding: 0.35rem 0.5rem; }'
+    'pre { margin: 0; font-family: Consolas, monospace;'
+    ' white-space: pre-wrap; }'
+    'div.sig-active { font-family: Consolas, monospace;'
+    ' padding: 0.1rem 0; font-weight: bold; }'
+    'div.sig-other { font-family: Consolas, monospace;'
+    ' opacity: 0.6; }'
+    'div.sig-doc { margin-top: 0.3rem; white-space: pre-wrap;'
+    ' opacity: 0.85; }'
+    '</style>'
+)
+
+# 这些控制流关键字的括号内不弹签名提示
+_SIG_KEYWORD_BLACKLIST = frozenset((
+    "if", "for", "while", "switch", "return", "sizeof", "catch",
+    "else", "do", "new", "delete", "throw", "static_assert",
+))
+
+
+def _clangd_fetch(fname, method, text, offset, timeout=0.5):
+    """向 clangd 发送 hover / signatureHelp 请求的公共入口。
+
+    返回解析结果或 None；找不到客户端/文件时返回 None。
+    """
+    client = _clangd_state["client"]
+    if client is None or not client.is_ready():
+        return None
+    if method == "hover":
+        return client.hover(fname, text, offset, timeout=timeout)
+    return client.signature_help(fname, text, offset, timeout=timeout)
+
+
+class CaHoverText(sublime_plugin.TextCommand):
+    """在指定位置弹出 clangd 悬停文档（UI 线程执行）。"""
+
+    def is_enabled(self, **kwargs):
+        return True
+
+    def run(self, edit, point=None, body=None):
+        view = self.view
+        if not body:
+            return
+        html = _POPUP_STYLE + '<pre>%s</pre>' % _html_escape(body)
+        try:
+            view.show_popup(html, sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+                            location=point, max_width=640)
+            _clangd_state["sig_active"] = False
+        except Exception as e:
+            _log_error("hover 弹窗", e)
+
+
+class CaSignaturePopupText(sublime_plugin.TextCommand):
+    """弹出函数签名提示 popup（UI 线程执行）。"""
+
+    def run(self, edit, got=None):
+        view = self.view
+        if not got:
+            return
+        lines = got.get("lines") or []
+        html_parts = [_POPUP_STYLE]
+        for label, active in lines:
+            esc = _html_escape(label)
+            if active:
+                html_parts.append(
+                    '<div class="sig-active">\u276f %s</div>' % esc)
+            else:
+                html_parts.append('<div class="sig-other">%s</div>' % esc)
+        doc = got.get("doc")
+        if doc:
+            html_parts.append(
+                '<div class="sig-doc">%s</div>' % _html_escape(doc))
+        try:
+            view.show_popup("".join(html_parts),
+                            sublime.HIDE_ON_MOUSE_MOVE_AWAY, max_width=640)
+            _clangd_state["sig_active"] = True
+        except Exception as e:
+            _log_error("签名弹窗", e)
+
+
+def run_hover(view, point):
+    """后台线程：请求 clangd hover 并回到 UI 线程弹窗。"""
+    try:
+        if not view.is_valid() or not _is_cpp(view):
+            return
+        if not _s("enable_clangd_engine", True) or \
+                not _s("enable_hover", True):
+            return
+        fname = view.file_name()
+        if not fname:
+            return
+        try:
+            word = view.substr(view.word(point)).strip()
+        except Exception:
+            return
+        if not word:
+            return
+        st = _clangd_state
+        # 同一符号且弹窗已开：不重复请求
+        if view.is_popup_visible() and st.get("hover_word") == word:
+            return
+        st["hover_word"] = word
+        size = view.size()
+        text = view.substr(sublime.Region(0, min(size, 400000)))
+        got = _clangd_fetch(fname, "hover", text, point)
+        if not got:
+            return
+
+        def show():
+            try:
+                if not view.is_valid():
+                    return
+                # 鼠标已移到别的符号：丢弃过期结果
+                if st.get("hover_word") != word:
+                    return
+                view.run_command("ca_hover", {"point": point,
+                                              "body": got[1]})
+            except Exception as e:
+                _log_error("hover 展示", e)
+
+        sublime.set_timeout(show, 0)
+    except Exception as e:
+        _log_error("hover", e)
+
+
+def run_signature_help(view):
+    """检测光标是否在函数调用括号内；是则请求签名提示并弹窗。
+
+    触发判定：从光标向前找最近的未闭合 "("，且它前面是函数名
+    （标识符，排除 if/for/while 等控制流关键字）。
+    打字过程中每次输入都会重新检测（80ms 防抖）。
+    """
+    try:
+        if not view.is_valid() or not _is_cpp(view):
+            return
+        if not _s("enable_clangd_engine", True) or \
+                not _s("enable_signature_help", True):
+            return
+        # 补全弹窗开着时不打扰
+        if hasattr(view, "is_auto_complete_visible") and \
+                view.is_auto_complete_visible():
+            return
+        client = _clangd_state["client"]
+        if client is None or not client.is_ready():
+            return
+        fname = view.file_name()
+        if not fname:
+            return
+        try:
+            pt = view.sel()[0].begin()
+        except Exception:
+            return
+        # 向前扫描找未闭合的 "("（最多回看 600 字符）
+        look = view.substr(sublime.Region(max(0, pt - 600), pt))
+        depth = 0
+        paren_off = -1
+        i = len(look) - 1
+        while i >= 0:
+            ch = look[i]
+            if ch == ")":
+                depth += 1
+            elif ch == "(":
+                if depth == 0:
+                    paren_off = i
+                    break
+                depth -= 1
+            i -= 1
+        ok = False
+        name = ""
+        if paren_off >= 0:
+            j = paren_off - 1
+            while j >= 0 and (look[j].isalnum() or look[j] == "_"):
+                j -= 1
+            name = look[j + 1:paren_off]
+            if name and (name[0].isalpha() or name[0] == "_") and \
+                    name not in _SIG_KEYWORD_BLACKLIST:
+                ok = True
+        if not ok:
+            # 已离开括号：若是我们的签名弹窗则关闭
+            if _clangd_state.pop("sig_active", None):
+                try:
+                    if view.is_popup_visible():
+                        view.hide_popup()
+                except Exception:
+                    pass
+            return
+        size = view.size()
+        text = view.substr(sublime.Region(0, min(size, 400000)))
+        got = _clangd_fetch(fname, "signature", text, pt)
+        if not got:
+            return
+        view.run_command("ca_signature_popup", {"got": got})
+    except Exception as e:
+        _log_error("签名提示", e)
 
 
 # ---------------------------------------------------------------------------

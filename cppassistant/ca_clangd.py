@@ -20,6 +20,8 @@ JSON-RPC 通信，把 clangd 的真实语义补全（编译器级准确度）接
   initialize / initialized / shutdown / exit
   textDocument/didOpen / didChange / didClose
   textDocument/completion            （同步等待 + 异步回调双模式）
+  textDocument/hover                 （悬停文档，同步等待）
+  textDocument/signatureHelp         （函数签名提示，同步等待）
   $/cancelRequest
   服务器反向请求（workspace/configuration、client/registerCapability、
   window/workDoneProgress/create）一律回空，避免 clangd 卡住。
@@ -143,11 +145,53 @@ def _clamp_insert(it):
     return insert, bool(it.get("insertTextFormat", 1) == 2)
 
 
+_INCLUDE_RE_TEXT = u"#include"
+
+
+def _extract_includes(it):
+    """从 additionalTextEdits 中提取补全附带的 #include 插入指令。
+
+    clangd 的 header-insertion（默认 iws）把 `#include <vector>` 作为
+    additionalTextEdits 附在补全项上，由客户端在补全被接受时应用。
+    这里只提取 include 型编辑（其余类型的附加编辑忽略），返回头文件
+    名列表，如 ["vector", "utility"]。
+    """
+    edits = it.get("additionalTextEdits")
+    if not isinstance(edits, list):
+        return []
+    out = []
+    for e in edits:
+        if not isinstance(e, dict):
+            continue
+        new = e.get("newText") or ""
+        if _INCLUDE_RE_TEXT not in new:
+            continue
+        # 提取 #include <X> / #include "X" 中的 X
+        lt = new.find("<")
+        if lt == -1:
+            lt = new.find('"')
+            rt = new.find('"', lt + 1)
+        else:
+            rt = new.find(">", lt)
+        if lt == -1 or rt == -1:
+            continue
+        hdr = new[lt + 1:rt].strip()
+        if hdr:
+            out.append(hdr)
+    return out
+
+
+# clangd header-insertion 装饰符：label 前的圆点（会插 include 时添加）。
+# 不同版本 clangd 用不同符号：U+2022（•）/ U+25E6（◦）
+_HEADER_DECORATORS = (u"\u2022", u"\u25e6")
+
+
 def parse_completion_result(result):
     """解析 textDocument/completion 的返回值为统一条目字典列表。
 
-    返回 [{trigger, insert, annotation, kind, detail, snippet}, ...]，
-    保持 clangd 自己的相关性排序（服务端已按 sortText 排好）。
+    返回 [{trigger, insert, annotation, kind, detail, snippet,
+           includes}, ...]，保持 clangd 自己的相关性排序（服务端已按
+    sortText 排好）。includes 为补全被接受时应插入的头文件（可为空）。
     """
     if result is None:
         return []
@@ -159,6 +203,12 @@ def parse_completion_result(result):
         if not isinstance(it, dict):
             continue
         label = it.get("label") or ""
+        # 剥掉 header-insertion 装饰符（•/◦/空格：是否插 include 以
+        # additionalTextEdits 为准，装饰符只会污染触发词）
+        if label:
+            label = label.lstrip()
+            if label and label[0] in _HEADER_DECORATORS:
+                label = label[1:].lstrip()
         if not label:
             continue
         insert, is_snippet = _clamp_insert(it)
@@ -174,8 +224,83 @@ def parse_completion_result(result):
             "kind": kind_key,
             "detail": detail,
             "snippet": is_snippet,
+            "includes": _extract_includes(it),
         })
     return out
+
+
+def parse_hover(result):
+    """解析 textDocument/hover 的返回值为 (语言, 纯文本) 或 None。
+
+    contents 兼容三种形态：MarkupContent{language,value}、
+    [{language,value}...] 列表、纯字符串。
+    """
+    if not isinstance(result, dict):
+        return None
+    contents = result.get("contents")
+    if contents is None:
+        return None
+    parts = []
+    lang = ""
+    if isinstance(contents, dict):
+        lang = contents.get("language") or ""
+        v = contents.get("value")
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+    elif isinstance(contents, list):
+        for c in contents:
+            if isinstance(c, dict):
+                lang = lang or (c.get("language") or "")
+                v = c.get("value") or ""
+            else:
+                v = str(c)
+            if v.strip():
+                parts.append(v)
+    elif isinstance(contents, str):
+        if contents.strip():
+            parts.append(contents)
+    if not parts:
+        return None
+    return (lang, "\n\n".join(parts))
+
+
+def parse_signature_help(result):
+    """解析 textDocument/signatureHelp 的返回值。
+
+    返回 {"active": 标签, "param": 当前参数序号, "lines": [(文本, 是否激活)],
+          "doc": 文档或 None} 或 None。
+    lines 里 (文本, True) 表示当前激活的重载签名。
+    """
+    if not isinstance(result, dict):
+        return None
+    sigs = result.get("signatures")
+    if not isinstance(sigs, list) or not sigs:
+        return None
+    act = result.get("activeSignature") or 0
+    if not isinstance(act, int) or act < 0 or act >= len(sigs):
+        act = 0
+    ap = result.get("activeParameter") or 0
+    if not isinstance(ap, int) or ap < 0:
+        ap = 0
+    lines = []
+    doc = None
+    for i, sig in enumerate(sigs):
+        if not isinstance(sig, dict):
+            continue
+        label = sig.get("label") or ""
+        if not label:
+            continue
+        lines.append((label, i == act))
+        if i == act:
+            d = sig.get("documentation")
+            if isinstance(d, dict):
+                doc = d.get("value") or None
+            elif isinstance(d, str):
+                doc = d or None
+    if not lines:
+        return None
+    return {"active": lines[act][0] if act < len(lines) else "",
+            "param": ap, "lines": lines, "doc": doc}
 
 
 class ClangdClient(object):
@@ -517,3 +642,45 @@ class ClangdClient(object):
             except Exception:
                 pass
         return cb
+
+    # ---- 悬停文档 / 签名提示 ----
+
+    def _sync_and_position(self, path, text, offset):
+        """把当前全文同步给 clangd 并换算 LSP (line, character) 位置。
+
+        hover / signatureHelp 等单发请求共用；返回 (uri, line, col)
+        或 None（服务器未就绪）。
+        """
+        if not self.is_ready():
+            return None
+        uri = path_to_uri(path)
+        if uri not in self._doc_versions:
+            self.open_document(path, text)
+        else:
+            self.change_document(path, text)
+        line, col = line_col_utf16(text, offset)
+        return (uri, line, col)
+
+    def hover(self, path, text, offset, timeout=0.4):
+        """请求悬停文档；返回 (语言, 文本) 或 None。"""
+        pos = self._sync_and_position(path, text, offset)
+        if pos is None:
+            return None
+        uri, line, col = pos
+        result = self.request("textDocument/hover", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": col},
+        }, timeout=timeout)
+        return parse_hover(result)
+
+    def signature_help(self, path, text, offset, timeout=0.4):
+        """请求函数签名提示；返回 parse_signature_help 的结构或 None。"""
+        pos = self._sync_and_position(path, text, offset)
+        if pos is None:
+            return None
+        uri, line, col = pos
+        result = self.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": col},
+        }, timeout=timeout)
+        return parse_signature_help(result)
