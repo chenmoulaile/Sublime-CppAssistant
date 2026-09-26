@@ -152,6 +152,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `enable_hover` | `true` | 悬停文档：鼠标悬停显示 clangd 类型/文档弹窗 |
 | `enable_signature_help` | `true` | 函数签名提示：光标在调用括号内显示重载签名 |
 | `enable_linting` | `true` | 实时语法检查开关 |
+| `lint_engine` | `"compiler"` | 诊断引擎：`compiler` 后台 g++/clang++ 完整检查 / `clangd` LSP 式实时诊断（与 LSP-clangd 同源，不再启动编译器） |
 | `instant_basic_check` | `true` | 即时基础检查（毫秒级括号/全角标点/字符串检测） |
 | `lint_debounce` | `0.1` | 停止输入多少秒后开始编译器完整检查（删除错误行后基本即时清除） |
 | `lint_timeout` | `12` | 编译器单次检查超时（秒），超时不清空已有标记 |
@@ -197,6 +198,24 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 英文模式下会保留 `gcc/clang` 原始报错信息，方便复制搜索；中文模式适合日常学习；双语模式适合教学/对比。
 
 ## 更新日志
+
+### v1.6.0（补全提速 + 简洁列表 + clangd 诊断引擎模式）
+- **补全列表简洁化（对齐 LSP-clangd）**：去掉 `--completion-style=detailed`，
+  改用 clangd 默认 bundled 风格——类/模板只出**一条**简洁条目，完整签名
+  显示在右侧详情面板；不再把十几个构造函数重载展开成长条目占满弹窗，
+  条目数大减、弹窗渲染更快
+- **补全响应提速**：UI 线程同步等待上限 60ms → **30ms**（clangd 热路径
+  5~30ms 大概率命中；未命中走兜底 + 异步刷新，不打断打字节奏），
+  `clangd_completion_wait_ms` 可调
+- **新增诊断引擎模式 `lint_engine`**（LSP 式代码审查）：
+  - `"clangd"`：直接使用 clangd 实时推送的 `publishDiagnostics`
+    （与 LSP-clangd 的诊断同源同速），不再启动编译器进程；消息仍经过
+    插件翻译表本地化，波浪线/幽灵条/状态栏/诊断面板全套复用
+  - `"compiler"`（默认）：现有 g++/clang++ 后台完整检查
+  - 切换方式：命令面板 `CppAssistant: 切换诊断引擎为 clangd (LSP 式代码审查)`
+    / 菜单 `Preferences → Package Settings → CppAssistant → 诊断引擎`
+  - clangd 未就绪时仍有即时基础检查兜底
+- 协议层：客户端存储每个文件的 clangd 诊断（`diagnostics_for`）
 
 ### v1.5.2（修复 ST 4213 stable 补全整体失效）
 - **修复常量兼容性（关键）**：`sublime.INHIBIT_SNIPPET_COMPLETIONS` 仅较新

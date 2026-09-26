@@ -346,6 +346,9 @@ class ClangdClient(object):
         self._preamble_ready = set()
         # uri 规范化映射缓存（clangd 回发的是规范化 uri）
         self._uri_norm = {}
+        # clangd 诊断存储：norm_uri -> [(line0, col0, severity, message)]
+        # 供诊断引擎模式（lint_engine=clangd）渲染 LSP 式代码审查
+        self._diagnostics = {}
         self._ready = threading.Event()
         self._dead = threading.Event()
         self._send_init_id = [None]
@@ -578,7 +581,27 @@ class ClangdClient(object):
             td = params.get("textDocument") or {}
             uri = td.get("uri") or ""
             if uri:
-                self._preamble_ready.add(_norm_uri(uri))
+                nu = _norm_uri(uri)
+                self._preamble_ready.add(nu)
+                items = []
+                for d in (params.get("diagnostics") or []):
+                    if not isinstance(d, dict):
+                        continue
+                    rng = d.get("range") or {}
+                    start = rng.get("start") or {}
+                    try:
+                        ln = int(start.get("line", 0))
+                        cl = int(start.get("character", 0))
+                    except Exception:
+                        ln, cl = 0, 0
+                    try:
+                        sev = int(d.get("severity", 1) or 1)
+                    except Exception:
+                        sev = 1
+                    m = d.get("message") or ""
+                    if m:
+                        items.append((ln, cl, sev, m))
+                self._diagnostics[nu] = items
         if method and self.on_notify is not None:
             try:
                 self.on_notify(method, msg.get("params"))
@@ -627,6 +650,16 @@ class ClangdClient(object):
         兜底，避免白等与服务器空转。
         """
         return _norm_uri(path_to_uri(path)) in self._preamble_ready
+
+    def diagnostics_for(self, path):
+        """该文件最新的 clangd 诊断列表（[(line0, col0, severity, msg)]）。
+
+        无该文件诊断时返回 None；空列表表示 clangd 认为"无诊断"。
+        """
+        nu = _norm_uri(path_to_uri(path))
+        if nu not in self._diagnostics:
+            return None
+        return list(self._diagnostics[nu])
 
     # ---- 补全 ----
 

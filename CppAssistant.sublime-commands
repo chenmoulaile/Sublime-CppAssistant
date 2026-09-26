@@ -11,6 +11,8 @@
 	{ "caption": "CppAssistant: 切换补全引擎为内置数据库 (builtin)", "command": "ca_set_completion_engine", "args": { "engine": "builtin" } },
 	{ "caption": "CppAssistant: 补全引擎诊断（clangd 是否接管）", "command": "ca_show_engine_status" },
 	{ "caption": "CppAssistant: 显示/隐藏错误幽灵提示条", "command": "ca_toggle_phantoms" },
+	{ "caption": "CppAssistant: 切换诊断引擎为 clangd (LSP 式代码审查)", "command": "ca_set_lint_engine", "args": { "engine": "clangd" } },
+	{ "caption": "CppAssistant: 切换诊断引擎为编译器检查 (g++/clang++)", "command": "ca_set_lint_engine", "args": { "engine": "compiler" } },
 	{ "caption": "Preferences: CppAssistant Settings", "command": "edit_settings",
 	  "args": {
 		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",

@@ -117,6 +117,26 @@
 							},
 							{ "caption": "-" },
 							{
+								"caption": "诊断引擎 (lint_engine)",
+								"id": "cppassistant-lint-engine",
+								"children":
+								[
+									{
+										"caption": "clangd 诊断 (LSP 式代码审查) - 使用 clangd 推送的实时诊断，与 LSP-clangd 一致",
+										"command": "ca_set_lint_engine",
+										"args": { "engine": "clangd" },
+										"checkbox": true
+									},
+									{
+										"caption": "编译器检查 (compiler) - 后台调用 g++/clang++ 完整检查",
+										"command": "ca_set_lint_engine",
+										"args": { "engine": "compiler" },
+										"checkbox": true
+									}
+								]
+							},
+							{ "caption": "-" },
+							{
 								"caption": "Key Bindings – Default",
 								"command": "open_file",
 								"args": {

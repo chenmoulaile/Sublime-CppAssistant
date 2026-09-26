@@ -24,7 +24,9 @@
     // 热路径下 clangd 通常 5~30ms 返回；超时先弹内置数据库兜底，
     // 结果到达后自动刷新弹窗（与 LSP 插件行为一致）。
     // 设为 0 则完全异步（永不阻塞，但首次弹窗只有兜底结果）。
-    "clangd_completion_wait_ms": 60,
+    // 注意：该值是在 UI 线程等待的，打字卡顿感随该值增大而变强，
+    // 30ms 是流畅与命中率的平衡点。
+    "clangd_completion_wait_ms": 30,
     // 额外的 clangd fallbackFlags（无 compile_commands.json 时的兜底编译参数，
     // 追加在 -std= 之后），如 ["-I", "D:/libs/include"]
     "clangd_extra_fallback_flags": [],
@@ -55,6 +57,14 @@
     // 实时语法检查总开关
     // 参考 LSP-clangd：基础检查 < 10ms，编译器检查（启用 PCH）< 300ms
     "enable_linting": true,
+    // 诊断引擎（lint_engine）：
+    //   "compiler" （默认）后台调用 g++/clang++ 做完整检查（现有行为）
+    //   "clangd"           LSP 式代码审查：直接使用 clangd 推送的实时诊断
+    //                      （与 LSP-clangd 一致），不再启动编译器进程；
+    //                      消息仍经过插件翻译表本地化。
+    //                      需要 enable_clangd_engine 开启；
+    //                      clangd 未就绪时仅显示即时基础检查结果
+    "lint_engine": "compiler",
     // 即时基础检查：纯 Python 毫秒级检测括号配平、全角标点、
     // 未闭合字符串/注释，输入时立即提示，无需等待编译器
     "instant_basic_check": true,

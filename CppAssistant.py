@@ -366,11 +366,85 @@ def _stop_clangd_client():
     _clangd_state["ready_announced"] = False
 
 
+def _view_for_uri(uri):
+    """按 LSP uri 找对应 view（诊断回调用）。"""
+    import urllib.parse
+    try:
+        p = urllib.parse.unquote(uri or "")
+    except Exception:
+        p = uri or ""
+    if p.startswith("file://"):
+        p = p[len("file://"):]
+    p = p.replace("\\", "/")
+    if re.match(r"^/[A-Za-z]:", p):
+        p = p[1:]
+    for w in sublime.windows():
+        for v in w.views():
+            fname = v.file_name()
+            if fname and fname.replace("\\", "/").lower() == p.lower():
+                return v
+    return None
+
+
+def _apply_clangd_diagnostics(uri):
+    """把 clangd 诊断转换为插件诊断结构并渲染（lint_engine=clangd 模式）。
+
+    在 clangd 读线程触发，实际渲染切回 UI 线程执行。
+    """
+    try:
+        if str(_s("lint_engine", "compiler")) != "clangd":
+            return
+        client = _clangd_state["client"]
+        view = _view_for_uri(uri)
+        if client is None or view is None or not view.is_valid():
+            return
+        items = client.diagnostics_for(view.file_name())
+        if items is None:
+            return
+        lang = _display_language()
+        entries = []
+        for (ln, cl, sev, msg) in items:
+            sev_en = "error" if sev == 1 else "warning"
+            zh = msg
+            try:
+                zh = ca_engine.translate_message(msg)
+            except Exception:
+                pass
+            if lang == "en":
+                text = msg
+            elif lang == "both":
+                text = msg + (u"（%s）" % zh if zh and zh != msg else "")
+            else:
+                text = zh
+            entries.append({
+                "line": ln + 1, "col": cl + 1,
+                "sev": ca_engine.severity_label(sev_en, lang),
+                "sev_en": sev_en,
+                "msg": msg, "zh": zh, "text": text,
+                "ctx": "", "notes": [], "tier": "compiler",
+            })
+        vid = view.id()
+
+        def done():
+            try:
+                st = _lint_state.setdefault(vid, {})
+                st["compiler"] = entries
+                st["compiler_src_hash"] = None  # clangd 诊断无 src hash
+                render_diagnostics(vid)
+            except Exception as e:
+                _log_error("clangd 诊断渲染", e)
+
+        sublime.set_timeout(done, 0)
+    except Exception as e:
+        _log_error("clangd 诊断转换", e)
+
+
 def _on_clangd_notify(method, params):
     """clangd 读线程通知回调（勿做重活）。
 
-    首次收到任意文件的 publishDiagnostics ≈ preamble 构建完成，
-    状态栏提示用户"clangd 引擎已就绪"（此后补全自动升级为 clangd 结果）。
+    - 首次收到 publishDiagnostics ≈ preamble 构建完成，状态栏提示
+      "clangd 引擎已就绪"（此后补全自动升级为 clangd 结果）。
+    - lint_engine=clangd 模式下，把诊断交给渲染管线（LSP 式代码审查）。
     """
     if method == "textDocument/publishDiagnostics":
         st = _clangd_state
@@ -383,6 +457,12 @@ def _on_clangd_notify(method, params):
                     0)
             except Exception:
                 pass
+        uri = ((params or {}).get("textDocument") or {}).get("uri") or ""
+        if uri:
+            try:
+                _apply_clangd_diagnostics(uri)
+            except Exception as e:
+                _log_error("clangd 诊断回调", e)
 
 
 def _get_clangd_client(view):
@@ -421,7 +501,10 @@ def _get_clangd_client(view):
     for d in _compiler_include_dirs():
         fallback.append("-I" + d)
     args = ["--background-index=false",
-            "--completion-style=detailed",
+            # 补全风格用 clangd 默认（bundled）：类型/模板只出一条简洁
+            # 条目，完整签名显示在右侧详情面板——与 LSP-clangd 的体验
+            # 一致。此前传 --completion-style=detailed 会把每个重载展开
+            # 成独立长条目（十几个构造函数占满弹窗），既冗长又拖慢渲染
             "-j=2",
             # header-insertion 与 function-arg-placeholders 均用 clangd
             # 默认值（与 LSP-clangd 一致，不显式传 flag）：默认策略 iwyu
@@ -701,7 +784,9 @@ class CaEventListener(sublime_plugin.EventListener):
                 _stash_includes(view, dicts)
                 return dicts
             return None
-        wait_ms = int(_s("clangd_completion_wait_ms", 60) or 0)
+        # 同步等待上限压到 30ms（clangd 热路径 5~30ms 大概率命中）；
+        # 未命中走兜底 + 异步刷新，不阻塞打字节奏（等待越久每键越卡）
+        wait_ms = int(_s("clangd_completion_wait_ms", 30) or 0)
 
         def on_arrival(parsed):
             if not parsed:
@@ -849,7 +934,11 @@ class CaEventListener(sublime_plugin.EventListener):
             btmr.daemon = True
             btmr.start()
             _basic_timers[vid] = btmr
-        # 第二级：编译器完整检查（防抖）
+        # 第二级：完整检查。
+        # lint_engine=clangd 时诊断由 publishDiagnostics 推送（LSP 式），
+        # 不启动编译器进程；compiler 模式走编译器检查（防抖）
+        if str(_s("lint_engine", "compiler")) == "clangd":
+            return
         t = _lint_timers.pop(vid, None)
         if t is not None:
             t.cancel()
@@ -1820,6 +1909,62 @@ class CaSetCompletionEngineCommand(sublime_plugin.ApplicationCommand):
         label = {"clangd": u"真实 clangd 引擎（LSP-clangd 移植）",
                  "builtin": u"内置数据库（C++14 档优先）"}[engine]
         sublime.status_message("[CppAssistant] 补全引擎已切换: %s" % label)
+
+
+class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
+    """切换诊断引擎（lint_engine）。
+
+    - compiler（默认）：后台调用 g++/clang++ 完整检查（现有行为）
+    - clangd：LSP 式代码审查——直接使用 clangd 推送的
+      publishDiagnostics（与 LSP-clangd 的诊断一致），不再启动编译器
+      进程；诊断消息仍经过插件翻译表本地化。clangd 模式要求
+      enable_clangd_engine 开启（clangd 未运行时退回即时基础检查）
+    """
+
+    def run(self, engine):
+        if engine not in ("compiler", "clangd"):
+            sublime.status_message("[CppAssistant] 非法诊断引擎: %s" % engine)
+            return
+        path = os.path.join(sublime.packages_path(), "User",
+                            "CppAssistant.sublime-settings")
+        data = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = sublime.decode_value(f.read()) or {}
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        if data.get("lint_engine", "compiler") == engine:
+            label = {"compiler": u"编译器检查", "clangd": u"clangd 诊断 (LSP 式)"}[engine]
+            sublime.status_message("[CppAssistant] 诊断引擎已是: %s" % label)
+            return
+        data["lint_engine"] = engine
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(sublime.encode_value(data, True))
+        except Exception as e:
+            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
+            return
+        label = {"compiler": u"编译器检查 (g++/clang++)",
+                 "clangd": u"clangd 诊断 (LSP 式代码审查)"}[engine]
+        sublime.status_message("[CppAssistant] 诊断引擎已切换: %s" % label)
+        # 立即刷新所有视图（clangd 模式下等 clangd 下一轮推送；
+        # compiler 模式触发一次完整检查）
+        for w in sublime.windows():
+            for v in w.views():
+                try:
+                    if engine == "compiler" and _is_cpp(v):
+                        render_diagnostics(v.id())
+                        run_lint(v)
+                    else:
+                        render_diagnostics(v.id())
+                except Exception:
+                    pass
+
+    def is_checked(self, engine=None):
+        return str(_s("lint_engine", "compiler")) == engine
 
 
 class CaPanelClearCommand(sublime_plugin.TextCommand):
