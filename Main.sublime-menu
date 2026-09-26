@@ -107,6 +107,16 @@
 							},
 							{ "caption": "-" },
 							{
+								"caption": "显示/隐藏错误幽灵提示条",
+								"command": "ca_toggle_phantoms",
+								"checkbox": true
+							},
+							{
+								"caption": "补全引擎诊断（clangd 是否接管）",
+								"command": "ca_show_engine_status"
+							},
+							{ "caption": "-" },
+							{
 								"caption": "Key Bindings – Default",
 								"command": "open_file",
 								"args": {

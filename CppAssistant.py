@@ -187,6 +187,8 @@ _clangd_state = {
     # buffer_id -> {"cc": 编辑代号, "items": [(trigger, 展开后插入文本, [头文件])]}
     # 记录最近一次补全候选附带的 #include 插入指令，供补全被接受后应用
     "pending_includes": {},
+    # 补全来源统计（诊断用）：clangd 结果次数 / 内置兜底次数
+    "stats": {"clangd": 0, "builtin": 0},
 }
 
 # 内置数据库条目按版本分档：C++14 及以下排前面，C++17/20/23 排后面
@@ -263,8 +265,8 @@ def _cdb_update(fname, std, force=False):
                     arr = sublime.decode_value(f.read()) or []
                 if isinstance(arr, list):
                     for e in arr:
-                        if isinstance(e, dict) and e.get("filename"):
-                            db[e["filename"]] = e
+                        if isinstance(e, dict) and e.get("file"):
+                            db[e["file"]] = e
         except Exception:
             db = {}
         _CDB_CACHE["db"] = db
@@ -278,7 +280,10 @@ def _cdb_update(fname, std, force=False):
     entry = {
         "directory": os.path.dirname(key),
         "arguments": args_list + [key],
-        "filename": key,
+        # 注意：标准 compile_commands.json 的键是 "file"（不是 "filename"），
+        # 键名错误会导致 clangd 拒绝加载整个 CDB（Unknown key），
+        # 永远退回 fallback 编译模式
+        "file": key,
     }
     old = db.get(key)
     if old == entry and not force:
@@ -286,11 +291,60 @@ def _cdb_update(fname, std, force=False):
     db[key] = entry
     try:
         arr = [db[k] for k in sorted(db.keys())]
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(sublime.encode_value(arr, False))
+        payload = sublime.encode_value(arr, False)
+        # 原子写（临时文件 + os.replace）：clangd 的 automaticReload 会
+        # 监听 CDB 变化，写到一半的文件会被它读走导致解析失败。
+        # 多个 Sublime 窗口/实例并发写同理。
+        tmp_path = path + ".tmp%d" % os.getpid()
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp_path, path)
         _CDB_CACHE["mtime"] = os.path.getmtime(path)
     except Exception as e:
         _log_error("clangd compile_commands 写入", e)
+
+
+def _compiler_include_dirs():
+    """提取编译器的 C++ 头文件搜索路径列表（结果缓存，只查一次）。
+
+    用途：clangd 的 fallbackFlags 注入 -I。clangd 在 CDB 缺条目时进入
+    fallback 模式，fallback 命令只有 clang 自带 resource-dir、没有
+    libstdc++ 头路径，bits/stdc++.h 直接解析失败（补全/诊断全空）。
+    把 g++ 的真实 include 列表喂给 fallbackFlags 后，fallback 也能
+    正确解析标准库。
+    """
+    if _include_dirs_cache["done"]:
+        return list(_include_dirs_cache["dirs"])
+    dirs = []
+    compiler = find_compiler()
+    if compiler:
+        try:
+            creationflags = 0x08000000 if os.name == "nt" else 0
+            p = subprocess.Popen(
+                [compiler, "-E", "-x", "c++", "-", "-v"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, creationflags=creationflags,
+                startupinfo=_hidden_window_startupinfo())
+            _, err = p.communicate(timeout=15)
+            text = (err or b"").decode("utf-8", "replace")
+            in_search = False
+            for line in text.splitlines():
+                if "#include <...> search starts here" in line:
+                    in_search = True
+                    continue
+                if in_search:
+                    if line.startswith("End of search list"):
+                        break
+                    d = line.strip()
+                    if d and os.path.isdir(d) and d not in dirs:
+                        dirs.append(d)
+        except Exception as e:
+            _log_error("编译器 include 路径探测", e)
+    _include_dirs_cache.update(dirs=dirs, done=True)
+    return list(dirs)
+
+
+_include_dirs_cache = {"done": False, "dirs": []}
 
 
 def _stop_clangd_client():
@@ -302,6 +356,26 @@ def _stop_clangd_client():
             pass
     _clangd_state["client"] = None
     _clangd_state["sig"] = None
+    _clangd_state["ready_announced"] = False
+
+
+def _on_clangd_notify(method, params):
+    """clangd 读线程通知回调（勿做重活）。
+
+    首次收到任意文件的 publishDiagnostics ≈ preamble 构建完成，
+    状态栏提示用户"clangd 引擎已就绪"（此后补全自动升级为 clangd 结果）。
+    """
+    if method == "textDocument/publishDiagnostics":
+        st = _clangd_state
+        if not st.get("ready_announced"):
+            st["ready_announced"] = True
+            try:
+                sublime.set_timeout(
+                    lambda: sublime.status_message(
+                        u"CppAssistant: clangd 引擎已就绪（语义补全已接管）"),
+                    0)
+            except Exception:
+                pass
 
 
 def _get_clangd_client(view):
@@ -335,6 +409,10 @@ def _get_clangd_client(view):
     for f in (_s("clangd_extra_fallback_flags", []) or []):
         if f not in fallback:
             fallback.append(f)
+    # fallback 模式兜底：把编译器的标准库 include 路径喂给 clangd，
+    # 否则 CDB 缺条目时 fallback 命令解析不了 bits/stdc++.h
+    for d in _compiler_include_dirs():
+        fallback.append("-I" + d)
     args = ["--background-index=false",
             "--completion-style=detailed",
             "-j=2",
@@ -350,7 +428,8 @@ def _get_clangd_client(view):
     args.extend(_s("clangd_args", []) or [])
     try:
         c = ca_clangd.ClangdClient(binary, args, root,
-                                   fallback_flags=fallback)
+                                   fallback_flags=fallback,
+                                   on_notify=_on_clangd_notify)
         c.start()
     except Exception as e:
         st["last_fail"] = now
@@ -577,11 +656,16 @@ class CaEventListener(sublime_plugin.EventListener):
             except Exception as e:
                 _log_error("补全引擎", e)
                 return None
-            if clangd_style:
-                flags |= sublime.INHIBIT_WORD_COMPLETIONS
             dicts = _tier_sort_static(results, prefix)
+            _clangd_state["stats"]["builtin"] += 1
+        else:
+            _clangd_state["stats"]["clangd"] += 1
         if not dicts:
             return None
+        if clangd_style:
+            # LSP-clangd 风格下压制 Sublime 内置单词补全（两种引擎都压：
+            # 否则用户代码里的标识符如 revertDSU 会混进语义补全列表）
+            flags |= sublime.INHIBIT_WORD_COMPLETIONS
         items = [_make_item(d) for d in dicts]
         return sublime.CompletionList(items, flags)
 
@@ -624,6 +708,14 @@ class CaEventListener(sublime_plugin.EventListener):
 
         # 首次补全前确保该文件在 compile_commands.json 中
         _cdb_update(fname, std)
+        if not client.is_preamble_ready(fname):
+            # preamble 还在构建（c++23 等高档标准 + bits/stdc++.h
+            # 冷启动实测可达 10s+）：本回合直接用内置数据库兜底，
+            # 只发起纯异步请求触发文档同步，结果到达后自动刷新弹窗。
+            # （就绪前 clangd 的补全请求一律返回空，同步等待纯属白等）
+            client.completion(fname, text, off, timeout=0,
+                              on_arrival=on_arrival)
+            return None
         parsed = client.completion(fname, text, off,
                                    timeout=wait_ms / 1000.0,
                                    on_arrival=on_arrival)
@@ -1742,6 +1834,86 @@ class CaShowDiagnosticsCommand(sublime_plugin.WindowCommand):
         panel.run_command("append", {"characters": txt, "force": True})
         self.window.run_command("show_panel",
                                 {"panel": "output.ca_diagnostics"})
+
+
+class CaShowEngineStatusCommand(sublime_plugin.TextCommand):
+    """补全引擎诊断：查看 clangd 是否真正接管补全（排查用）。
+
+    弹窗 + 控制台同时输出：clangd 路径、客户端状态、最近补全来源
+    统计（clangd / 内置兜底）、当前 C++ 标准等。
+    """
+
+    def run(self, edit):
+        view = self.view
+        st = _clangd_state
+        stats = st.get("stats") or {}
+        binary = ca_clangd.find_clangd(_s("clangd_binary", "") or None)
+        c = st["client"]
+        lines = [
+            u"CppAssistant 补全引擎诊断",
+            u"-----------------------------",
+            u"clangd 程序: %s" % (binary or u"未找到（PATH 里没有 clangd）"),
+        ]
+        if c is None:
+            lines.append(u"clangd 客户端: 未启动")
+        else:
+            try:
+                lines.append(u"clangd 客户端: alive=%s ready=%s" %
+                             (c.is_alive(), c.is_ready()))
+                try:
+                    fname = view.file_name()
+                    pre = c.is_preamble_ready(fname) if fname else False
+                except Exception:
+                    pre = False
+                lines.append(u"preamble 就绪（诊断已到达）: %s" % pre)
+                if not pre:
+                    lines.append(u"（preamble 构建中：c++23 等高档标准 + "
+                                 u"bits/stdc++.h 冷启动需 10s 左右，"
+                                 u"期间补全由内置数据库兜底）")
+            except Exception:
+                lines.append(u"clangd 客户端: 状态异常")
+        lines.append(u"无服务器标志 no_server: %s" % st.get("no_server"))
+        lines.append(u"引擎开关 enable_clangd_engine: %s" %
+                     _s("enable_clangd_engine", True))
+        lines.append(u"补全模式 clangd_style: %s" %
+                     _s("enable_clangd_style_completion", True))
+        lines.append(u"C++ 标准 cxx_standard: %s" %
+                     _s("cxx_standard", "c++14"))
+        lines.append(u"本次会话补全来源统计: clangd %d 次 / 内置兜底 %d 次"
+                     % (stats.get("clangd", 0), stats.get("builtin", 0)))
+        lines.append(u"当前文件已保存: %s（未保存时 clangd 不接管）"
+                     % bool(view.file_name()))
+        lines.append(u"当前文件识别为 C++: %s" % _is_cpp(view))
+        msg = u"\n".join(lines)
+        print("[CppAssistant] ===== 引擎诊断 =====")
+        print(msg)
+        sublime.message_dialog(msg)
+
+
+class CaTogglePhantomsCommand(sublime_plugin.ApplicationCommand):
+    """显示/隐藏错误幽灵提示条（即时生效，不改默认设置文件之外的东西）。"""
+
+    def run(self):
+        cur = bool(_s("show_phantoms", True))
+        new = not cur
+        if _settings_obj is not None:
+            _settings_obj.set("show_phantoms", new)
+            try:
+                sublime.save_settings("CppAssistant.sublime-settings")
+            except Exception:
+                pass
+        for w in sublime.windows():
+            for v in w.views():
+                try:
+                    render_diagnostics(v.id())
+                except Exception:
+                    pass
+        sublime.status_message(
+            u"CppAssistant: 幽灵提示条已%s（状态栏与波浪线不受影响）"
+            % (u"显示" if new else u"隐藏"))
+
+    def is_checked(self):
+        return bool(_s("show_phantoms", True))
 
 
 # ---------------------------------------------------------------------------

@@ -198,6 +198,32 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 更新日志
 
+### v1.5.1（修复 clangd 引擎未真正接管补全）
+- **修复 compile_commands.json 键名错误（关键）**：标准 CDB 的键是 `"file"`
+  而非 `"filename"`，键名错误导致 **clangd 自 v1.4.0 起从未成功加载 CDB**，
+  一直运行在 fallback 兜底编译模式；C++14 下 fallback 碰巧可用掩盖了问题，
+  C++23 等高档标准下 preamble 构建极慢（20s+）且报头文件冲突，
+  表现为"补全只有内置数据库结果、没有 std:: 前缀与模板签名"。
+  修复后 clangd 按真正的 g++ 命令行解析（实测 8s 内就绪）
+- **修复补全弹窗混入 Sublime 单词补全**：clangd 结果命中时同样传入
+  `INHIBIT_WORD_COMPLETIONS`（此前只在内置兜底分支传入），
+  `revertDSU` 之类的自定义函数不再混进语义补全列表
+- **CDB 原子写入**：临时文件 + `os.replace`，消除并发写导致的
+  "写到一半被 clangd 读走 → 解析失败 → 永久 fallback" 竞态
+  （多个 Sublime 窗口/实例同时运行时必现）
+- **fallbackFlags 注入编译器真实 include 路径**：自动执行
+  `g++ -E -x c++ -v` 提取搜索路径，CDB 缺条目时 fallback 模式也能
+  正确解析 bits/stdc++.h（双保险）
+- **preamble 就绪检测**：clangd 首次诊断通知到达（≈preamble 构建完成）
+  之前，补全直接走内置数据库兜底（不再白白同步等待）；就绪瞬间状态栏
+  提示"clangd 引擎已就绪（语义补全已接管）"。注：高档标准（c++20/23）
+  + bits/stdc++.h 的 preamble 冷启动需 5~15s，期间为兜底结果，属正常现象
+- **新增补全引擎诊断命令**：`CppAssistant: 补全引擎诊断（clangd 是否接管）`
+  弹窗显示 clangd 路径、客户端状态、preamble 就绪状态、补全来源统计，
+  一眼定位"补全为什么不像 clangd"
+- **幽灵提示条可即时开关**：命令面板/菜单 `CppAssistant: 显示/隐藏错误
+  幽灵提示条` 即时生效（波浪线与状态栏不受影响），不想看到时一键关闭
+
 ### v1.5.0（补全力度对齐 LSP-clangd）
 - **智能头文件插入**（用户需求核心）：补全被接受时自动补 `#include <X>`——
   例如输入 `vector` 补全后自动插入 `#include <vector>`：

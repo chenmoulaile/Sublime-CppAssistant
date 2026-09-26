@@ -134,6 +134,21 @@ def line_col_utf16(text, offset):
     return line, col
 
 
+def _norm_uri(u):
+    """规范化 LSP uri 用于集合比较。
+
+    clangd 会把我们的 file:///C%3A/... 规范化为 file:///C:/... 再回发
+    （diagnostics 等通知），直接字符串比较永远匹配不上。
+    """
+    if not u:
+        return ""
+    try:
+        u = urllib.parse.unquote(u)
+    except Exception:
+        pass
+    return u.replace("\\", "/").lower()
+
+
 def _clamp_insert(it):
     """从 CompletionItem 提取插入文本。"""
     te = it.get("textEdit")
@@ -325,6 +340,12 @@ class ClangdClient(object):
         self._pending = {}      # id -> {"event": Event, "resp": dict|None}
         self._idgen = [0]
         self._doc_versions = {}  # uri -> int
+        # 已收到 publishDiagnostics 的 uri 集合：首次诊断到达 ≈ 该文件的
+        # preamble 构建完成（大标准 + bits/stdc++.h 冷启动可达 10s+，
+        # 在此之前 clangd 补全返回空，客户端应先走本地兜底）
+        self._preamble_ready = set()
+        # uri 规范化映射缓存（clangd 回发的是规范化 uri）
+        self._uri_norm = {}
         self._ready = threading.Event()
         self._dead = threading.Event()
         self._send_init_id = [None]
@@ -552,6 +573,12 @@ class ClangdClient(object):
                 entry["event"].set()
             return
         # 通知
+        if method == "textDocument/publishDiagnostics":
+            params = msg.get("params") or {}
+            td = params.get("textDocument") or {}
+            uri = td.get("uri") or ""
+            if uri:
+                self._preamble_ready.add(_norm_uri(uri))
         if method and self.on_notify is not None:
             try:
                 self.on_notify(method, msg.get("params"))
@@ -592,6 +619,14 @@ class ClangdClient(object):
 
     def has_document(self, path):
         return path_to_uri(path) in self._doc_versions
+
+    def is_preamble_ready(self, path):
+        """该文件的 preamble 是否构建完成（首次诊断通知到达即视为就绪）。
+
+        就绪前 clangd 的补全请求返回空结果；调用方应先用本地数据库
+        兜底，避免白等与服务器空转。
+        """
+        return _norm_uri(path_to_uri(path)) in self._preamble_ready
 
     # ---- 补全 ----
 
