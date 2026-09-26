@@ -28,11 +28,22 @@ import zlib
 import sublime
 import sublime_plugin
 
-# Use relative import for local modules (avoids sys.path modification)
-from cppassistant import ca_clangd  # noqa: E402
-from cppassistant import ca_engine  # noqa: E402
-from cppassistant import ca_user_snippets  # noqa: E402
-from cppassistant.ca_stdlib_data import SNIPPETS  # noqa: E402
+# 子包导入：优先相对导入（ST 宿主把根级插件挂载在包命名空间下，
+# 与 cph-by-chenkx 的 .core.* 模式一致）；若宿主把根级文件当独立
+# 模块加载（无父包），则把包目录加入 sys.path 后走绝对导入兜底。
+try:
+    from .cppassistant import ca_clangd  # noqa: E402
+    from .cppassistant import ca_engine  # noqa: E402
+    from .cppassistant import ca_user_snippets  # noqa: E402
+    from .cppassistant.ca_stdlib_data import SNIPPETS  # noqa: E402
+except ImportError:  # pragma: no cover - 仅独立模块宿主触发
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    from cppassistant import ca_clangd  # noqa: E402
+    from cppassistant import ca_engine  # noqa: E402
+    from cppassistant import ca_user_snippets  # noqa: E402
+    from cppassistant.ca_stdlib_data import SNIPPETS  # noqa: E402
 
 
 def _hidden_window_startupinfo():

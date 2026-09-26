@@ -12,7 +12,7 @@
 
 import re
 
-from cppassistant.ca_stdlib_data import (
+from .ca_stdlib_data import (
     MEMBERS_DB_FAST, GENERIC_MEMBERS_FAST, STD_ITEMS_ALL,
     KEYWORDS, KEYWORDS_SET, SNIPPETS, SNIPPETS_BY_TRIG,
     HEADERS, HEADERS_SET, TRANSLATIONS, QUOTE_NORMALIZE,

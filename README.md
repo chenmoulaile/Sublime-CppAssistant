@@ -177,6 +177,12 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 更新日志
 
+### v1.4.1（修复插件无法加载）
+- **修复 ImportError**：ST 宿主不把包目录加入 `sys.path`，根级插件的绝对导入
+  `from cppassistant import ...` 会失败（v1.3.4 起即受影响）。
+  改为相对导入 `from .cppassistant import ...`（与 cph-by-chenkx 的
+  `.core.*` 模式一致），并保留 sys.path 绝对导入兜底，两种宿主挂载方式均可加载。
+
 ### v1.4.0（内嵌真实 clangd 引擎）
 - **移植 LSP-clangd**：新增 `cppassistant/ca_clangd.py` 最小 LSP 客户端
   （stdio JSON-RPC），直接驱动真实 clangd 语言服务器，无需安装 LSP 主框架：
