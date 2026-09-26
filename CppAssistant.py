@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-"""CppAssistant —— Sublime Text 4 C++ 辅助插件（LSP-clangd 风格的轻量级汉化优化版）
+"""CppAssistant —— Sublime Text 4 C++ 辅助插件（内嵌真实 clangd 引擎 + 汉化版）
 
-基于 LSP-clangd 架构设计：
-  - 智能补全：内置 STL 数据库（O(1) 字典查找）+ 多级缓存
-  - 实时语法检查：即时基础检查（毫秒级）+ 编译器完整检查（PCH + 结果缓存 + 过期进程立即终止）
+补全引擎（v1.4.0 起移植 LSP-clangd，直接驱动真实 clangd 语言服务器）：
+  - 内嵌最小 LSP 客户端（cppassistant/ca_clangd.py）：stdio JSON-RPC 与
+    clangd 通信，补全结果为编译器级语义准确度（签名、重载、成员、局部变量）
+  - 用户代码片段（User 包里的 .sublime-snippet）+ 内置片段排最前面
+  - 内置数据库兜底模式下按 C++14 档排前面，C++17/20/23 档排后面
+  - 无 clangd 时自动回退内置 STL 数据库（零配置可用）
+
+其他功能（沿用 LSP-clangd 架构设计）：
+  - 实时语法检查：即时基础检查（毫秒级）+ 编译器完整检查（PCH + 结果缓存）
   - F12 跳转定义：当前文件 → 已打开文件 → 本地头文件递归搜索
   - jiangly 码风格式化：优先 clang-format，无则内置兜底
-
-性能参考 LSP-clangd：
-  - 输入过程中的结构性错误（括号/全角标点/未闭合字符串）< 10ms 给出
-  - 完整语义检查（启用 PCH）常规代码 < 300ms 给出
-  - 补全响应 < 5ms（命中缓存时 < 1ms）
-  - 所有结果缓存：文本未变更时零延迟复用
 
 兼容 Sublime Text 4 的 Python 3.3 插件宿主。
 """
@@ -22,13 +22,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import zlib
 
 import sublime
 import sublime_plugin
 
 # Use relative import for local modules (avoids sys.path modification)
+from cppassistant import ca_clangd  # noqa: E402
 from cppassistant import ca_engine  # noqa: E402
+from cppassistant import ca_user_snippets  # noqa: E402
+from cppassistant.ca_stdlib_data import SNIPPETS  # noqa: E402
 
 
 def _hidden_window_startupinfo():
@@ -70,6 +74,11 @@ def _on_settings_changed():
     _LINT_CACHE.clear()
     # 通知引擎失效缓存
     ca_engine.invalidate_cache()
+    ca_user_snippets.invalidate_cache()
+    # clangd 相关设置变化时重启语言服务器（下次补全时懒重启）
+    if _clangd_state["sig"] is not None and \
+            _clangd_state["sig"] != _clangd_settings_sig():
+        _stop_clangd_client()
 
 
 def plugin_unloaded():
@@ -82,6 +91,8 @@ def plugin_unloaded():
         except Exception:
             pass
     _lint_procs.clear()
+    # 关闭 clangd 语言服务器
+    _stop_clangd_client()
 
 
 def _s(key, default=None):
@@ -132,9 +143,10 @@ _KIND_MAP = {
 
 
 def _make_item(d):
-    kind = _KIND_MAP.get(d["kind"], _kind_default)()
+    kind = _KIND_MAP.get(d.get("kind"), _kind_default)()
     insert = d["insert"]
-    is_snippet = ("\n" in insert) or ("$" in insert)
+    is_snippet = (bool(d.get("snippet")) or ("\n" in insert)
+                  or ("$" in insert))
     fmt = (sublime.COMPLETION_FORMAT_SNIPPET if is_snippet
            else sublime.COMPLETION_FORMAT_TEXT)
     details = d.get("detail", "")
@@ -147,6 +159,270 @@ def _make_item(d):
         kind=kind,
         details=details,
     )
+
+
+# ---------------------------------------------------------------------------
+# clangd 补全引擎（移植 LSP-clangd：直接驱动真实 clangd 语言服务器）
+# ---------------------------------------------------------------------------
+
+_clangd_state = {
+    "client": None,
+    "root": None,
+    "sig": None,           # 相关设置签名（变化时重启 clangd）
+    "last_fail": 0.0,
+    "no_server": False,    # 已确认机器上没有 clangd，用内置数据库兜底
+    "async_cache": {},     # (buffer_id, change_count, offset) -> [dict]
+    "refreshed": None,     # 最近一次弹窗刷新键（防刷新循环）
+}
+
+# 内置数据库条目按版本分档：C++14 及以下排前面，C++17/20/23 排后面
+_LATER_STD_RE = re.compile(r"C\+\+(1[7-9]|2[0-9])")
+
+
+def _clangd_settings_sig():
+    return "%s|%s|%s|%s|%s|%s" % (
+        _s("enable_clangd_engine", True),
+        _s("cxx_standard", "c++14"),
+        _s("clangd_binary", "") or "",
+        _s("clangd_args", []) or [],
+        _s("clangd_extra_fallback_flags", []) or [],
+        _s("compiler_path", "") or "")
+
+
+def _clangd_root_for(view):
+    wd = _s("clangd_working_dir", "")
+    if wd and os.path.isdir(wd):
+        return wd
+    fname = view.file_name()
+    if fname:
+        return os.path.dirname(fname)
+    try:
+        folders = view.window().folders()
+    except Exception:
+        folders = None
+    return folders[0] if folders else None
+
+
+def _clangd_cdb_dir():
+    """compile_commands.json 所在目录（clangd 用 --compile-commands-dir 指向它）。
+
+    优先用 Sublime 的缓存目录；不可用时退回系统临时目录。
+    """
+    try:
+        base = sublime.cache_path()
+    except Exception:
+        base = None
+    if not base:
+        base = tempfile.gettempdir()
+    d = os.path.join(base, "CppAssistant")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = tempfile.gettempdir()
+    return d
+
+
+_CDB_PATH = None
+_CDB_CACHE = {"mtime": None, "db": {}}  # mtime -> 条目字典（避免每键读盘）
+
+
+def _cdb_update(fname, std, force=False):
+    """把单个源文件的编译参数写入 compile_commands.json（clangd 标准姿势）。
+
+    这是让 clangd 按指定 C++ 标准与编译器头文件解析代码的可靠方式
+    （比 --query-driver 的 glob 白名单更确定）。文件名 -> 条目字典缓存
+    在内存里，只有内容变化才写盘。
+    """
+    global _CDB_PATH
+    if _CDB_PATH is None:
+        _CDB_PATH = os.path.join(_clangd_cdb_dir(), "compile_commands.json")
+    path = _CDB_PATH
+    try:
+        mtime = os.path.getmtime(path) if os.path.isfile(path) else None
+    except Exception:
+        mtime = None
+    if _CDB_CACHE["mtime"] != mtime:
+        db = {}
+        try:
+            if mtime is not None:
+                with open(path, "r", encoding="utf-8") as f:
+                    arr = sublime.decode_value(f.read()) or []
+                if isinstance(arr, list):
+                    for e in arr:
+                        if isinstance(e, dict) and e.get("filename"):
+                            db[e["filename"]] = e
+        except Exception:
+            db = {}
+        _CDB_CACHE["db"] = db
+        _CDB_CACHE["mtime"] = mtime
+    db = _CDB_CACHE["db"]
+    key = fname.replace("\\", "/")
+    compiler = _compiler_cache.get("path") or find_compiler() or "clang++"
+    args_list = [compiler.replace("\\", "/"), "-std=" + std]
+    for a in (_s("compiler_extra_args", []) or []):
+        args_list.append(a)
+    entry = {
+        "directory": os.path.dirname(key),
+        "arguments": args_list + [key],
+        "filename": key,
+    }
+    old = db.get(key)
+    if old == entry and not force:
+        return
+    db[key] = entry
+    try:
+        arr = [db[k] for k in sorted(db.keys())]
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(sublime.encode_value(arr, False))
+        _CDB_CACHE["mtime"] = os.path.getmtime(path)
+    except Exception as e:
+        _log_error("clangd compile_commands 写入", e)
+
+
+def _stop_clangd_client():
+    c = _clangd_state["client"]
+    if c is not None:
+        try:
+            c.shutdown()
+        except Exception:
+            pass
+    _clangd_state["client"] = None
+    _clangd_state["sig"] = None
+
+
+def _get_clangd_client(view):
+    """懒启动 clangd（首次打开 C++ 视图后触发）；失败 5 秒冷却重试。"""
+    st = _clangd_state
+    if not _s("enable_clangd_engine", True):
+        return None
+    if st["no_server"]:
+        return None
+    c = st["client"]
+    if c is not None and c.is_alive():
+        return c
+    if c is not None:
+        _stop_clangd_client()
+    now = time.time()
+    if now - st["last_fail"] < 5.0:
+        return None
+    sig = _clangd_settings_sig()
+    if st["sig"] != sig:
+        st["sig"] = sig
+    binary = ca_clangd.find_clangd(_s("clangd_binary", "") or None)
+    if not binary:
+        st["no_server"] = True
+        sublime.status_message(
+            u"CppAssistant: 未找到 clangd，补全使用内置数据库"
+            u"（可设置 clangd_binary 指定路径）")
+        return None
+    root = _clangd_root_for(view)
+    std = _s("cxx_standard", "c++14")
+    fallback = ["-std=" + std]
+    for f in (_s("clangd_extra_fallback_flags", []) or []):
+        if f not in fallback:
+            fallback.append(f)
+    args = ["--background-index=false",
+            "--header-insertion=never",
+            "--completion-style=detailed",
+            "--function-arg-placeholders=false",
+            "-j=2",
+            # clangd 读取我们动态维护的 compile_commands.json（标准姿势，
+            # 决定 -std 与编译器头文件路径；比 query-driver 白名单可靠）
+            "--compile-commands-dir=" + _clangd_cdb_dir().replace("\\", "/")]
+    args.extend(_s("clangd_args", []) or [])
+    try:
+        c = ca_clangd.ClangdClient(binary, args, root,
+                                   fallback_flags=fallback)
+        c.start()
+    except Exception as e:
+        st["last_fail"] = now
+        _log_error("clangd 启动", e)
+        return None
+    st["client"] = c
+    st["root"] = root
+    return c
+
+
+def _warm_clangd_document(view):
+    """打开/切换 C++ 文档后把全文推给 clangd 预热（异步，不阻塞）。
+
+    先确保该文件在 compile_commands.json 里（clangd 首次解析文件时
+    就按正确参数建立 preamble），再推送全文。
+    """
+    try:
+        if not _s("enable_clangd_engine", True) or not _is_cpp(view):
+            return
+        fname = view.file_name()
+        if not fname:
+            return
+        _cdb_update(fname, _s("cxx_standard", "c++14"))
+        client = _get_clangd_client(view)
+        if client is None or not client.is_ready():
+            return
+        text = view.substr(sublime.Region(0, min(view.size(), 400000)))
+        if client.has_document(fname):
+            client.change_document(fname, text)
+        else:
+            client.open_document(fname, text)
+    except Exception as e:
+        _log_error("clangd 预热", e)
+
+
+def _snippet_items_for_prefix(prefix):
+    """用户自己的 .sublime-snippet + 内置片段，按触发器前缀过滤。
+
+    这两组永远排在弹窗最前面（用户肌肉记忆优先）。
+    """
+    if not prefix:
+        return []
+    low = prefix.lower()
+    out = []
+    for d in ca_user_snippets.get_cpp_snippets():
+        if d["trigger"].lower().startswith(low):
+            out.append(d)
+    for trig, body, desc, kd in SNIPPETS:
+        if trig.lower().startswith(low):
+            out.append({"trigger": trig, "insert": body,
+                        "annotation": desc, "kind": kd,
+                        "detail": desc, "snippet": True})
+    return out
+
+
+def _tier_sort_static(results, prefix):
+    """内置数据库兜底：用户片段最前 → C++14 及以下档 → C++17/20/23 档。"""
+    out = _snippet_items_for_prefix(prefix)
+    early = []
+    later = []
+    for d in results:
+        if _LATER_STD_RE.search(d.get("annotation") or ""):
+            later.append(d)
+        else:
+            early.append(d)
+    out.extend(early)
+    out.extend(later)
+    return out
+
+
+def _maybe_refresh_popup(view, key):
+    """clangd 异步结果到达后，若弹窗仍开着且文本未变，重开弹窗换上新结果。
+
+    与 LSP 插件行为一致；refreshed 键防止刷新循环。
+    """
+    st = _clangd_state
+    if st["refreshed"] == key:
+        return
+    try:
+        if view.change_count() != key[1]:
+            return
+        if hasattr(view, "is_auto_complete_visible") and \
+                not view.is_auto_complete_visible():
+            return
+        st["refreshed"] = key
+        view.run_command("hide_auto_complete")
+        sublime.set_timeout(
+            lambda: view.run_command("auto_complete"), 0)
+    except Exception:
+        pass
 
 
 class CaEventListener(sublime_plugin.EventListener):
@@ -163,32 +439,80 @@ class CaEventListener(sublime_plugin.EventListener):
         text = view.substr(sublime.Region(0, min(size, cap)))
         if off > len(text):
             return None
-        # 补全模式：true=LSP-clangd 风格（默认）；false=严格前缀基础模式
+        # 补全匹配风格：true=LSP-clangd 风格（默认）；false=严格前缀基础模式
         clangd_style = bool(_s("enable_clangd_style_completion", True))
-        try:
-            results = ca_engine.analyze(
-                text, off,
-                cache_key=view.buffer_id(),
-                cache_version=view.change_count(),
-                clangd_style=clangd_style)
-        except Exception as e:
-            _log_error("补全引擎", e)
+        flags = sublime.INHIBIT_SNIPPET_COMPLETIONS  # 片段由本插件统一供给
+        dicts = None
+        if _s("enable_clangd_engine", True):
+            dicts = self._clangd_items(view, text, off, prefix)
+        if dicts is None:
+            # 内置数据库兜底（clangd 未启用/未找到/本次超时）
+            try:
+                results = ca_engine.analyze(
+                    text, off,
+                    cache_key=view.buffer_id(),
+                    cache_version=view.change_count(),
+                    clangd_style=clangd_style)
+            except Exception as e:
+                _log_error("补全引擎", e)
+                return None
+            if clangd_style:
+                flags |= sublime.INHIBIT_WORD_COMPLETIONS
+            dicts = _tier_sort_static(results, prefix)
+        if not dicts:
             return None
-        if not results:
+        items = [_make_item(d) for d in dicts]
+        return sublime.CompletionList(items, flags)
+
+    def _clangd_items(self, view, text, off, prefix):
+        """真实 clangd 补全；返回 dict 列表或 None（走兜底）。
+
+        命中顺序：用户/内置片段（最前）→ clangd 结果（保持服务端
+        相关性排序，全部符合当前 C++ 标准）。
+        空结果视为"preamble 未就绪"，返回 None 走内置数据库兜底，
+        且不缓存、不触发弹窗刷新（避免刷新成空弹窗）。
+        """
+        st = _clangd_state
+        client = _get_clangd_client(view)
+        if client is None:
             return None
-        items = [_make_item(d) for d in results]
-        if clangd_style:
-            # 与 LSP-clangd 相同：压制 Sublime 内置的单词补全，
-            # 弹窗中只显示按语义排序的候选，避免同前缀的普通单词
-            # 把 is_sorted / stable_sort 这类语义候选挤出可视区域
-            return sublime.CompletionList(
-                items, sublime.INHIBIT_WORD_COMPLETIONS)
-        # 基础模式：与内置单词补全共存，行为最接近原生
-        return sublime.CompletionList(items, 0)
+        fname = view.file_name()
+        if not fname:
+            return None
+        std = _s("cxx_standard", "c++14")
+        key = (view.buffer_id(), view.change_count(), off)
+        cache = st["async_cache"]
+        if key in cache:
+            items = cache.get(key)
+            return (_snippet_items_for_prefix(prefix) + items) if items \
+                else None
+        wait_ms = int(_s("clangd_completion_wait_ms", 60) or 0)
+
+        def on_arrival(parsed):
+            if not parsed:
+                return  # 未就绪/真无结果：不缓存不刷新
+            cache[key] = parsed
+            if len(cache) > 32:
+                for k in list(cache.keys())[:-32]:
+                    cache.pop(k, None)
+            sublime.set_timeout(
+                lambda: _maybe_refresh_popup(view, key), 0)
+
+        # 首次补全前确保该文件在 compile_commands.json 中
+        _cdb_update(fname, std)
+        parsed = client.completion(fname, text, off,
+                                   timeout=wait_ms / 1000.0,
+                                   on_arrival=on_arrival)
+        if not parsed:
+            return None  # 本次先弹内置数据库兜底，clangd 结果到了再刷新
+        return _snippet_items_for_prefix(prefix) + parsed
 
     # ---- 语法检查触发 ----
     def on_load_async(self, view):
         self._maybe_lint(view)
+        # clangd 预热：延迟 300ms，等编辑器把文件展示稳定后推送全文
+        sublime.set_timeout(
+            lambda: _warm_clangd_document(view), 300)
 
     def on_pre_save(self, view):
         if _s("format_on_save", False) and _is_cpp(view):
@@ -250,6 +574,18 @@ class CaEventListener(sublime_plugin.EventListener):
         _basic_gen.pop(vid, None)
         _lint_state.pop(vid, None)
         _LINT_CACHE.pop(vid, None)
+        # clangd：关闭文档并清理该缓冲的异步补全缓存
+        fname = view.file_name()
+        client = _clangd_state["client"]
+        if fname and client is not None:
+            try:
+                client.close_document(fname)
+            except Exception:
+                pass
+        bid = view.buffer_id()
+        for k in [k for k in _clangd_state["async_cache"]
+                  if k[0] == bid]:
+            _clangd_state["async_cache"].pop(k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +1254,54 @@ class CaSetCompletionModeCommand(sublime_plugin.ApplicationCommand):
         label = {"clangd": "LSP-clangd 风格（模糊匹配）",
                  "basic": "严格前缀基础模式（仅前缀匹配）"}[mode]
         sublime.status_message("[CppAssistant] 补全模式已切换: %s" % label)
+
+
+class CaSetCompletionEngineCommand(sublime_plugin.ApplicationCommand):
+    """切换补全引擎。
+
+    引擎说明：
+      - clangd  （默认，推荐）：内嵌最小 LSP 客户端直接驱动真实 clangd
+                语言服务器，编译器级语义补全（签名/重载/局部变量）。
+                用户片段排最前，结果遵循当前 C++ 标准（CSP-S 推荐 c++14）。
+      - builtin ：内置 STL 数据库兜底（零依赖，无 clangd 也可用）。
+                用户片段排最前，C++14 档排前面，C++17/20/23 档排后面。
+
+    行为：改写 User/CppAssistant.sublime-settings 里的
+    enable_clangd_engine 字段，设置变更自动重启引擎并立即生效。
+    """
+
+    def run(self, engine):
+        if engine not in ("clangd", "builtin"):
+            sublime.status_message("[CppAssistant] 非法补全引擎: %s" % engine)
+            return
+        path = os.path.join(sublime.packages_path(), "User",
+                            "CppAssistant.sublime-settings")
+        data = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = sublime.decode_value(f.read()) or {}
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        new_value = (engine == "clangd")
+        old_value = data.get("enable_clangd_engine", True)
+        if old_value == new_value:
+            label = {"clangd": "真实 clangd 引擎", "builtin": "内置数据库"}[engine]
+            sublime.status_message("[CppAssistant] 补全引擎已是: %s" % label)
+            return
+        data["enable_clangd_engine"] = new_value
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(sublime.encode_value(data, True))
+        except Exception as e:
+            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
+            return
+        _stop_clangd_client()  # 强制下次按新引擎重建
+        label = {"clangd": u"真实 clangd 引擎（LSP-clangd 移植）",
+                 "builtin": u"内置数据库（C++14 档优先）"}[engine]
+        sublime.status_message("[CppAssistant] 补全引擎已切换: %s" % label)
 
 
 class CaPanelClearCommand(sublime_plugin.TextCommand):

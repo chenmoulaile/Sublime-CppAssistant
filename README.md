@@ -1,9 +1,9 @@
-# CppAssistant —— Sublime Text 4 C++ 辅助插件（LSP-clangd 风格的轻量级汉化优化版）
+# CppAssistant —— Sublime Text 4 C++ 辅助插件（内嵌真实 clangd 引擎 + 全汉化）
 
-> 这是 **LSP-clangd 架构的汉化与性能优化版本**。在保持纯 Python 实现、零外部依赖的同时，参考 LSP-clangd 的多级缓存与异步调度思路，将补全响应、语法检查速度优化至 LSP-clangd 同等水平，并提供完整的中文本地化。
+> **v1.4.0 起内置移植 LSP-clangd**：插件自带最小 LSP 客户端，直接驱动真实的 clangd 语言服务器（无需安装 LSP 主框架），补全达到编译器级语义准确度；同时保留纯 Python 内置数据库兜底，零配置可用。诊断信息完整中文化。
 
-为 C++ 提供类似 LSP-clangd 的轻量体验：**智能补全 / 中文语法检查 / F12 跳转定义 / jiangly 码风格式化**。
-纯 Python 实现，无外部 Python 依赖，开箱即用。
+为 C++ 提供 LSP-clangd 同级体验：**真实 clangd 语义补全 / 中文语法检查 / F12 跳转定义 / jiangly 码风格式化**。
+开箱即用：有 clangd 就用真引擎，没有就自动回退内置数据库。
 
 ## 性能（与 LSP-clangd 对比）
 
@@ -25,21 +25,36 @@
 
 ## 功能特性
 
-### 1. 智能代码补全
-- 内置 129 个 STL 函数与 31 类容器成员数据库（算法/容器/流/cmath/cctype/内建函数…）
-- **两种补全模式可切换**（`enable_clangd_style_completion`，默认 LSP-clangd 风格）：
-  - **LSP-clangd 风格**（默认）：所有以当前前缀开头、属于当前作用域（容器/算法/全局）的补全立即弹出；同时允许子串/子序列模糊匹配作为兜底，输入习惯宽松时很顺手。并且与 LSP-clangd 相同，自动**压制 Sublime 内置的普通单词补全**，弹窗纯净、语义候选置顶。
-  - **严格前缀基础模式**：只保留严格前缀匹配（大小写不敏感），过滤掉所有模糊/子串/子序列结果，行为最简洁最可预测，最接近 Sublime 内置单词补全。
-  - 切换方式：命令面板 `CppAssistant: 切换补全模式为 ...` / 菜单 `Preferences → Package Settings → CppAssistant → 补全模式` / 手动改 `enable_clangd_style_completion`
-- 自动识别 `using namespace std;`：
-  - 未声明时，输入 `lowe` → 补全插入 `std::lower_bound(...)`
-  - 已声明时，输入 `lowe` → 只补 `lower_bound(...)`，不会重复加前缀
-- 类型推断：识别变量声明后按 `.` 弹出对应成员
-  - `vector<int> v;` → `v.` 弹出 `push_back / pop_back / size / ...`
-  - map 迭代器 `it->` → 弹出 `first / second`
-  - `cin.` / `cout.` 弹出流成员
-- 输入 `#include <` 或 `#include "` 弹出头文件列表
-- 代码片段：`us` → `using namespace std;`，`inc` → 万能头，`fastio`、`mainf`、`solvef`
+### 1. 智能代码补全（v1.4.0 起默认真实 clangd 引擎）
+
+**补全引擎（`enable_clangd_engine`，默认开启）**：
+- **真实 clangd 引擎**（默认）：插件内嵌最小 LSP 客户端（移植自 LSP-clangd 的
+  服务器发现与参数逻辑），直接与 clangd 语言服务器通过 stdio JSON-RPC 通信：
+  - 编译器级语义补全：函数签名、重载列表、容器成员、局部变量全部准确
+  - 通过动态维护 `compile_commands.json`（`--compile-commands-dir` 指向）
+    注入 `-std=`（默认 **c++14**，面向 CSP-S/NOIP）与编译器头文件路径，
+    MSYS2 等clangd环境下 `bits/stdc++.h` 可正常解析
+  - **排序策略：用户代码片段（User 包里的 `.sublime-snippet`）与内置片段
+    永远排最前面**，其后是 clangd 结果（保持服务端相关性排序，全部符合
+    当前 C++ 标准；C++14 下不会混入 C++17/20/23 符号）
+  - clangd 结果未就绪时（打开文件后约 1~2s 内）先弹内置数据库兜底，
+    结果到达后自动刷新弹窗（与 LSP 插件行为一致）；等待上限
+    `clangd_completion_wait_ms`（默认 60ms）可调，设 0 完全异步
+  - 找不到 clangd 自动回退内置数据库并状态栏提示；路径可用 `clangd_binary` 指定
+  - 补全条目类型全部中文标注（函数 / 成员函数 / 成员变量 / 类 / 常量…）
+- **内置数据库模式**（`enable_clangd_engine: false` 或无 clangd 时自动启用）：
+  - 纯 Python 静态数据库：129 个 STL 函数 + 31 类容器成员
+  - **排序策略同样为：用户/内置片段最前 → C++14 及以下档 → C++17/20/23 档靠后**
+  - **两种匹配模式可切换**（`enable_clangd_style_completion`，默认 LSP-clangd 风格）：
+    - **LSP-clangd 风格**（默认）：所有以当前前缀开头、属于当前作用域的补全立即弹出；
+      同时允许子串/子序列模糊匹配兜底；自动压制 Sublime 内置单词补全
+    - **严格前缀基础模式**：只保留严格前缀匹配（大小写不敏感），最简洁最可预测
+    - 切换方式：命令面板 `CppAssistant: 切换补全模式为 ...` / 菜单 / 手动改设置
+- 内置数据库同时支持（两种引擎下兜底行为一致）：
+  - 自动识别 `using namespace std;`：未声明时输入 `lowe` → 插入 `std::lower_bound(...)`
+  - 类型推断：`vector<int> v;` → `v.` 弹出成员；迭代器 `it->` → `first / second`
+  - 输入 `#include <` 或 `#include "` 弹出头文件列表
+  - 代码片段：`us` → `using namespace std;`，`inc` → 万能头，`fastio`、`mainf`、`solvef`
 
 ### 2. 实时语法检查（报错信息全中文，三级加速）
 - **第一级 · 即时基础检查**（毫秒级）：纯 Python 词法扫描，输入过程中实时检测
@@ -161,6 +176,26 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 英文模式下会保留 `gcc/clang` 原始报错信息，方便复制搜索；中文模式适合日常学习；双语模式适合教学/对比。
 
 ## 更新日志
+
+### v1.4.0（内嵌真实 clangd 引擎）
+- **移植 LSP-clangd**：新增 `cppassistant/ca_clangd.py` 最小 LSP 客户端
+  （stdio JSON-RPC），直接驱动真实 clangd 语言服务器，无需安装 LSP 主框架：
+  - 编译器级语义补全（签名 / 重载 / 容器成员 / 局部变量），补全类型全中文标注
+  - 动态维护 `compile_commands.json` 注入 `-std=` 与编译器头文件路径，
+    MSYS2 环境下 `bits/stdc++.h` 正常解析（clangd 21 实测通过）
+  - clangd 未就绪时内置数据库兜底 + 结果到达自动刷新弹窗（与 LSP 一致）
+  - `clangd_binary` / `clangd_args` / `clangd_completion_wait_ms` /
+    `clangd_extra_fallback_flags` / `clangd_working_dir` 全套设置
+- **补全排序策略**（面向 CSP-S/NOIP）：
+  - 用户代码片段（`.sublime-snippet`，自动扫描 C/C++ 作用域）与内置片段
+    （`us` / `inc` / `fastio` …）永远排最前
+  - clangd 结果遵循当前 C++ 标准（默认 **c++14**，`cxx_standard` 可调，
+    同步作用于语法检查的 `-std=`）
+  - 内置数据库兜底模式：C++14 及以下档排前面，C++17/20/23 档排后面
+- 新增命令 `ca_set_completion_engine` 与菜单/命令面板"补全引擎"开关
+- 修复 Package Control 审查项：子包化导入（ca_engine / ca_stdlib_data）、
+  全部 subprocess 隐藏窗口处理、`Preferences: CppAssistant Settings /
+  Key Bindings` 命令面板条目、菜单 Settings 条目（v1.3.4 审查 2 失败 + 9 警告全部清零）
 
 ### v1.3.3
 - **补全弹窗现在与 LSP-clangd 完全一致**：LSP-clangd 风格模式下传入 `INHIBIT_WORD_COMPLETIONS`，压制 Sublime 内置的普通单词补全，弹窗只保留按语义排序的候选——不再出现同前缀的普通单词把 `is_sorted` / `stable_sort` 等语义候选挤出可视区、"快打完整个词才看到想要的"的问题

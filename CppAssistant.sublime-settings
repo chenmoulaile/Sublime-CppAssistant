@@ -3,6 +3,33 @@
     // 是否启用智能补全（自动识别 using namespace std; 并补 std:: 前缀）
     // 参考 LSP-clangd 性能：内置缓存使响应 < 5ms
     "enable_completions": true,
+    // 补全引擎：
+    //   true  （默认，推荐）真实 clangd 引擎：内嵌最小 LSP 客户端直接驱动
+    //         clangd 语言服务器（移植自 LSP-clangd），编译器级语义补全：
+    //         函数签名、重载、容器成员、局部变量全部准确。
+    //         用户代码片段排最前面，其余结果遵循当前 C++ 标准。
+    //         找不到 clangd 时自动回退内置数据库，零配置可用。
+    //   false 内置数据库模式：纯 Python 静态数据库兜底。
+    //         用户代码片段排最前面，C++14 及以下档排前面，
+    //         C++17/20/23 档排后面（面向 CSP-S / NOIP 选手优化）。
+    // 切换后即时生效（自动重启引擎）。
+    "enable_clangd_engine": true,
+    // clangd 可执行文件路径；留空则在 PATH 中自动查找
+    // （clangd、clangd-18 ... clangd-21 等常见命名都会尝试）。
+    // Windows 推荐 MSYS2 的 clangd（pacman -S mingw-w64-x86_64-clang）。
+    "clangd_binary": "",
+    // 传给 clangd 的额外命令行参数，如 ["--log=verbose"]
+    "clangd_args": [],
+    // 同步等待 clangd 补全结果的最长时间（毫秒）。
+    // 热路径下 clangd 通常 5~30ms 返回；超时先弹内置数据库兜底，
+    // 结果到达后自动刷新弹窗（与 LSP 插件行为一致）。
+    // 设为 0 则完全异步（永不阻塞，但首次弹窗只有兜底结果）。
+    "clangd_completion_wait_ms": 60,
+    // 额外的 clangd fallbackFlags（无 compile_commands.json 时的兜底编译参数，
+    // 追加在 -std= 之后），如 ["-I", "D:/libs/include"]
+    "clangd_extra_fallback_flags": [],
+    // clangd 的工作目录（相当于项目根目录）；留空则用当前文件所在目录
+    "clangd_working_dir": "",
     // 补全模式开关：
     //   true  （默认）LSP-clangd 风格：所有以当前前缀开头、属于当前作用域
     //         （容器/算法/全局）的补全立即弹出；额外允许子串/子序列模糊匹配
@@ -36,8 +63,10 @@
     //   "both" 双语 (英文在前中文在后, 适合教学/对比学习)
     // 切换语言后即时生效(设置变更时自动清空诊断结果缓存)
     "display_language": "zh",
-    // C++ 标准
-    "cxx_standard": "c++23",
+    // C++ 标准（同时用于语法检查的 -std= 与 clangd 补全的 fallbackFlags）。
+    // CSP-S / NOIP 系列比赛使用 C++14，故默认 c++14；
+    // 如需 C++17/20/23 的新特性补全与检查可自行调高。
+    "cxx_standard": "c++14",
     // 编译器可执行文件路径；留空则自动在 PATH 中查找 g++、clang++
     "compiler_path": "",
     // 额外传给编译器的参数，如 ["-I", "D:/libs/include"]

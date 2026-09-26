@@ -67,6 +67,26 @@
 							},
 							{ "caption": "-" },
 							{
+								"caption": "补全引擎 (enable_clangd_engine)",
+								"id": "cppassistant-completion-engine",
+								"children":
+								[
+									{
+										"caption": "真实 clangd 引擎 (clangd) - 内嵌 LSP 客户端直接驱动 clangd，编译器级语义补全，用户片段排最前",
+										"command": "ca_set_completion_engine",
+										"args": { "engine": "clangd" },
+										"checkbox": true
+									},
+									{
+										"caption": "内置数据库 (builtin) - 纯 Python 兜底，用户片段排最前，C++14 档优先，C++17/20/23 档靠后",
+										"command": "ca_set_completion_engine",
+										"args": { "engine": "builtin" },
+										"checkbox": true
+									}
+								]
+							},
+							{ "caption": "-" },
+							{
 								"caption": "补全模式 (enable_clangd_style_completion)",
 								"id": "cppassistant-completion-mode",
 								"children":
