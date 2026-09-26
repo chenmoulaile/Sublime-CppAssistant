@@ -136,6 +136,13 @@ def _is_cpp(view):
 # 补全
 # ---------------------------------------------------------------------------
 
+# 补全压制旗标兼容：INHIBIT_SNIPPET_COMPLETIONS 仅较新 ST4 版本提供，
+# 旧版（如 4213 stable）没有该常量，直接引用会让 on_query_completions
+# 抛 AttributeError 导致补全整体失效（曾经的真实故障）。统一走 getattr。
+_INHIBIT_SNIPPET = getattr(sublime, "INHIBIT_SNIPPET_COMPLETIONS", 0)
+_INHIBIT_WORD = getattr(sublime, "INHIBIT_WORD_COMPLETIONS", 0)
+
+
 def _kind_default():
     return sublime.KIND_AMBIGUOUS
 
@@ -641,7 +648,7 @@ class CaEventListener(sublime_plugin.EventListener):
             return None
         # 补全匹配风格：true=LSP-clangd 风格（默认）；false=严格前缀基础模式
         clangd_style = bool(_s("enable_clangd_style_completion", True))
-        flags = sublime.INHIBIT_SNIPPET_COMPLETIONS  # 片段由本插件统一供给
+        flags = _INHIBIT_SNIPPET  # 片段由本插件统一供给（旧版 ST 无此常量为 0）
         dicts = None
         if _s("enable_clangd_engine", True):
             dicts = self._clangd_items(view, text, off, prefix)
@@ -665,7 +672,7 @@ class CaEventListener(sublime_plugin.EventListener):
         if clangd_style:
             # LSP-clangd 风格下压制 Sublime 内置单词补全（两种引擎都压：
             # 否则用户代码里的标识符如 revertDSU 会混进语义补全列表）
-            flags |= sublime.INHIBIT_WORD_COMPLETIONS
+            flags |= _INHIBIT_WORD
         items = [_make_item(d) for d in dicts]
         return sublime.CompletionList(items, flags)
 

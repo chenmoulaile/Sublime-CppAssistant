@@ -198,6 +198,15 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 更新日志
 
+### v1.5.2（修复 ST 4213 stable 补全整体失效）
+- **修复常量兼容性（关键）**：`sublime.INHIBIT_SNIPPET_COMPLETIONS` 仅较新
+  ST4 版本提供，ST 4213 stable 没有该常量，直接引用导致
+  `on_query_completions` 抛 `AttributeError`，**补全引擎（含 clangd 启动）
+  完全没有机会运行**——即"诊断显示客户端未启动、统计 0/0、等不到就绪提示"
+  的直接原因。现统一走 `getattr` 兼容（`INHIBIT_WORD_COMPLETIONS` 同样处理），
+  新旧版本 ST 均正常
+- 测试环境已按 4213 真实 API 面貌建模（剔除新常量）回归通过
+
 ### v1.5.1（修复 clangd 引擎未真正接管补全）
 - **修复 compile_commands.json 键名错误（关键）**：标准 CDB 的键是 `"file"`
   而非 `"filename"`，键名错误导致 **clangd 自 v1.4.0 起从未成功加载 CDB**，
