@@ -201,6 +201,22 @@ def _extract_includes(it):
 _HEADER_DECORATORS = (u"\u2022", u"\u25e6")
 
 
+def _short_label(label):
+    """把 clangd 的完整签名 label 裁成短名（对齐 LSP-clangd 的显示）。
+
+    "std::vector<typename Tp, typename Alloc>" -> "std::vector"
+    "push_back(const value_type &x)"           -> "push_back"
+    "operator<"（无参数列表、非 name<...> 形式）-> 原样保留
+    完整签名由调用方放进详情面板显示。
+    """
+    i = label.find("(")
+    if i > 0:
+        return label[:i].rstrip()
+    if label.endswith(">") and "<" in label:
+        return label[:label.index("<")].rstrip()
+    return label
+
+
 def parse_completion_result(result):
     """解析 textDocument/completion 的返回值为统一条目字典列表。
 
@@ -226,14 +242,20 @@ def parse_completion_result(result):
                 label = label[1:].lstrip()
         if not label:
             continue
+        # 短名触发词（LSP-clangd 同款显示）：剥函数参数列表与模板参数，
+        # 完整签名保留进详情，弹窗不再被超长签名刷屏
+        short = _short_label(label)
         insert, is_snippet = _clamp_insert(it)
         kd_code = it.get("kind", 0) or 0
         ann, kind_key = LSP_KIND_MAP.get(kd_code, (u"符号", "u"))
         detail = it.get("detail") or ""
         if isinstance(detail, dict):
             detail = detail.get("value") or ""
+        if short != label:
+            detail = (label + ("\n" + detail if detail else "")) if detail \
+                else label
         out.append({
-            "trigger": label,
+            "trigger": short,
             "insert": insert,
             "annotation": ann,
             "kind": kind_key,

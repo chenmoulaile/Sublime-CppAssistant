@@ -199,6 +199,20 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 更新日志
 
+### v1.6.1（补全短名显示 + zip 包菜单兼容）
+- **补全条目改为短名显示（对齐 LSP-clangd）**：clangd 返回的 label 带
+  完整签名（`std::vector<typename Tp, typename Alloc>`、
+  `push_back(const value_type &x)`），现在弹窗只显示短名
+  （`std::vector` / `push_back`），完整签名移入右侧详情面板；
+  `operator<` 等特殊名字安全保留
+- **修复 .sublime-package（zip 压缩包）安装下菜单报错**：菜单里的
+  `open_file ${packages}` 型条目（Settings – Default / 命令面板 / README）
+  在 Package Control 压缩包安装形式下打不开文件并弹
+  "could not be opened"——已全部移除，仅保留 `edit_settings` 标准条目
+  （zip 与目录两种安装形式均正常）
+- 常见问题新增：回车"吞换行"说明（补全弹窗开着时回车默认是确认补全，
+  属 Sublime 全局键位；README 提供让回车始终换行的可选键位）
+
 ### v1.6.0（补全提速 + 简洁列表 + clangd 诊断引擎模式）
 - **补全列表简洁化（对齐 LSP-clangd）**：去掉 `--completion-style=detailed`，
   改用 clangd 默认 bundled 风格——类/模板只出**一条**简洁条目，完整签名
@@ -353,6 +367,20 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 常见问题
 
+- **敲完代码按回车换行，换行"被吞"了还插入了补全？**
+  这是 Sublime 的默认键位：**补全弹窗开着时，回车会先"确认补全"而不是换行**（LSP-clangd 等所有补全插件同理，不是本插件吞键）。
+  想让回车永远换行，把下面条目加进 `Preferences → Key Bindings` 的 User 文件：
+  ```json
+  { "keys": ["enter"], "command": "insert", "args": {"characters": "\n"},
+    "context": [{ "key": "auto_complete_visible" }] },
+  ```
+  之后用 **Tab** 或**继续输入后按标点**来确认补全即可。
+- **通过 Package Control 安装的版本功能比 README 少 / 设置打不开？**
+  说明本地副本停留在旧版本：`Ctrl+Shift+P` → **Package Control: Upgrade Package**
+  → 选 **CppAssistant** 升级到最新 tag。另外若同时存在"目录形式"和
+  "Package Control 安装"两份 CppAssistant，建议**只保留一份**（删掉
+  `Packages/CppAssistant` 目录或卸载 Package Control 中的副本），
+  否则容易混淆版本。
 - **刚更新/重装插件后补全和语法检查突然没反应？**
   Sublime 对插件的热重载在文件快速变动时可能进入半死状态（事件监听器失效）。
   **重启一次 Sublime Text 即可恢复**；若仍异常，`View → Show Console` 里查看

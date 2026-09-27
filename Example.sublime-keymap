@@ -16,5 +16,12 @@
 			{ "key": "selector", "operator": "equal",
 			"operand": "source.c++, source.c" }
 		]
-	}
+	},
+
+
+	// 可选：让回车在补全弹窗开着时也始终换行（不被"确认补全"吃掉）。
+	// 把下面这条复制到 Preferences → Key Bindings 的 User 文件即可生效；
+	// 之后用 Tab 或标点确认补全。
+	// { "keys": ["enter"], "command": "insert", "args": {"characters": "\n"},
+	// 	"context": [{ "key": "auto_complete_visible" }] },
 ]

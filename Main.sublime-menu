@@ -16,30 +16,23 @@
 						"id": "cppassistant-settings",
 						"children":
 						[
-							{
-								"caption": "Settings",
-								"command": "edit_settings",
-								"args": {
-									"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
-									"default": "{\n\t$0\n}\n"
-								}
-							},
-							{
-								"caption": "Settings – Default",
-								"command": "open_file",
-								"args": {
-									"file": "${packages}/CppAssistant/CppAssistant.sublime-settings"
-								}
-							},
-							{
-								"caption": "Settings – User",
-								"command": "edit_settings",
-								"args": {
-									"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
-									"default": "{\n\t$0\n}\n"
-								}
-							},
-							{ "caption": "-" },
+						{
+							"caption": "Settings",
+							"command": "edit_settings",
+							"args": {
+								"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+								"default": "{\n\t$0\n}\n"
+							}
+						},
+						{
+							"caption": "Settings – User",
+							"command": "edit_settings",
+							"args": {
+								"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+								"default": "{\n\t$0\n}\n"
+							}
+						},
+						{ "caption": "-" },
 							{
 								"caption": "诊断显示语言 (display_language)",
 								"id": "cppassistant-language",
@@ -135,39 +128,17 @@
 									}
 								]
 							},
-							{ "caption": "-" },
-							{
-								"caption": "Key Bindings – Default",
-								"command": "open_file",
-								"args": {
-									"file": "${packages}/CppAssistant/Example.sublime-keymap"
-								}
-							},
-							{
-								"caption": "Key Bindings – User",
+						{ "caption": "-" },
+						{
+							"caption": "Key Bindings – User",
 								"command": "edit_settings",
 								"args": {
 									"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
 									"user_file": "${packages}/User/Default (${platform}).sublime-keymap",
 									"default": "[\n\t$0\n]\n"
 								}
-							},
-							{ "caption": "-" },
-							{
-								"caption": "命令面板（Commands）",
-								"command": "open_file",
-								"args": {
-									"file": "${packages}/CppAssistant/CppAssistant.sublime-commands"
-								}
-							},
-							{
-								"caption": "README（使用说明）",
-								"command": "open_file",
-								"args": {
-									"file": "${packages}/CppAssistant/README.md"
-								}
 							}
-						]
+					]
 					}
 				]
 			}
