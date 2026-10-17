@@ -1,6 +1,6 @@
 [
 	{
-		"caption": "首选项",
+		"caption": "Preferences",
 		"mnemonic": "n",
 		"id": "preferences",
 		"children":
@@ -34,24 +34,24 @@
 						},
 						{ "caption": "-" },
 							{
-								"caption": "诊断显示语言 (display_language)",
+								"caption": "Diagnostic language",
 								"id": "cppassistant-language",
 								"children":
 								[
 									{
-										"caption": "中文 (zh) - 仅显示中文",
+										"caption": "Chinese",
 										"command": "ca_set_display_language",
 										"args": { "lang": "zh" },
 										"checkbox": true
 									},
 									{
-										"caption": "English (en) - 仅显示英文原文",
+										"caption": "English",
 										"command": "ca_set_display_language",
 										"args": { "lang": "en" },
 										"checkbox": true
 									},
 									{
-										"caption": "中英双语 (both) - 英文在前中文在后",
+										"caption": "English + Chinese",
 										"command": "ca_set_display_language",
 										"args": { "lang": "both" },
 										"checkbox": true
@@ -60,18 +60,18 @@
 							},
 							{ "caption": "-" },
 							{
-								"caption": "补全引擎 (enable_clangd_engine)",
+								"caption": "Completion engine",
 								"id": "cppassistant-completion-engine",
 								"children":
 								[
 									{
-										"caption": "真实 clangd 引擎 (clangd) - 内嵌 LSP 客户端直接驱动 clangd，编译器级语义补全，用户片段排最前",
+										"caption": "clangd engine (semantic completions)",
 										"command": "ca_set_completion_engine",
 										"args": { "engine": "clangd" },
 										"checkbox": true
 									},
 									{
-										"caption": "内置数据库 (builtin) - 纯 Python 兜底，用户片段排最前，C++14 档优先，C++17/20/23 档靠后",
+										"caption": "Built-in database (no clangd needed)",
 										"command": "ca_set_completion_engine",
 										"args": { "engine": "builtin" },
 										"checkbox": true
@@ -80,18 +80,18 @@
 							},
 							{ "caption": "-" },
 							{
-								"caption": "补全模式 (enable_clangd_style_completion)",
+								"caption": "Completion mode",
 								"id": "cppassistant-completion-mode",
 								"children":
 								[
 									{
-										"caption": "LSP-clangd 风格 (clangd) - 所有以当前前缀开头的补全立即弹出，并允许子串/子序列模糊匹配",
+										"caption": "LSP-clangd style (fuzzy matching)",
 										"command": "ca_set_completion_mode",
 										"args": { "mode": "clangd" },
 										"checkbox": true
 									},
 									{
-										"caption": "严格前缀基础模式 (basic) - 仅保留严格前缀匹配，过滤子串/子序列模糊结果",
+										"caption": "Strict prefix (basic)",
 										"command": "ca_set_completion_mode",
 										"args": { "mode": "basic" },
 										"checkbox": true
@@ -100,28 +100,28 @@
 							},
 							{ "caption": "-" },
 							{
-								"caption": "显示/隐藏错误幽灵提示条",
+								"caption": "Show inline error phantoms",
 								"command": "ca_toggle_phantoms",
 								"checkbox": true
 							},
 							{
-								"caption": "补全引擎诊断（clangd 是否接管）",
+								"caption": "Completion engine status",
 								"command": "ca_show_engine_status"
 							},
 							{ "caption": "-" },
 							{
-								"caption": "诊断引擎 (lint_engine)",
+								"caption": "Diagnostic engine",
 								"id": "cppassistant-lint-engine",
 								"children":
 								[
 									{
-										"caption": "clangd 诊断 (LSP 式代码审查) - 使用 clangd 推送的实时诊断，与 LSP-clangd 一致",
+										"caption": "clangd diagnostics (LSP-style)",
 										"command": "ca_set_lint_engine",
 										"args": { "engine": "clangd" },
 										"checkbox": true
 									},
 									{
-										"caption": "编译器检查 (compiler) - 后台调用 g++/clang++ 完整检查",
+										"caption": "Compiler check (g++/clang++)",
 										"command": "ca_set_lint_engine",
 										"args": { "engine": "compiler" },
 										"checkbox": true

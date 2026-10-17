@@ -1,108 +1,140 @@
 {
-    // ================= 补全 =================
-    // 是否启用智能补全（自动识别 using namespace std; 并补 std:: 前缀）
-    // 参考 LSP-clangd 性能：内置缓存使响应 < 5ms
+    // ==================== Completion ====================
+    // Master switch for smart completions. Recognizes `using namespace std;`
+    // and adds the `std::` prefix when needed.
+    // Reference point (LSP-clangd): a built-in cache keeps responses < 5ms.
     "enable_completions": true,
-    // 补全引擎：
-    //   true  （默认，推荐）真实 clangd 引擎：内嵌最小 LSP 客户端直接驱动
-    //         clangd 语言服务器（移植自 LSP-clangd），编译器级语义补全：
-    //         函数签名、重载、容器成员、局部变量全部准确。
-    //         用户代码片段排最前面，其余结果遵循当前 C++ 标准。
-    //         找不到 clangd 时自动回退内置数据库，零配置可用。
-    //   false 内置数据库模式：纯 Python 静态数据库兜底。
-    //         用户代码片段排最前面，C++14 及以下档排前面，
-    //         C++17/20/23 档排后面（面向 CSP-S / NOIP 选手优化）。
-    // 切换后即时生效（自动重启引擎）。
+    // Completion engine:
+    //   true  (default, recommended) Real clangd engine: a minimal built-in
+    //         LSP client drives the clangd language server directly (ported
+    //         from LSP-clangd) for compiler-grade semantic completions:
+    //         function signatures, overloads, container members and local
+    //         variables are all accurate. User snippets sort first, and the
+    //         other results respect the active C++ standard. When clangd is
+    //         not found it falls back to the built-in database, so it works
+    //         with zero configuration.
+    //   false Built-in database mode: a pure-Python static fallback.
+    //         User snippets sort first; C++14-and-older entries rank ahead
+    //         of the C++17/20/23 ones (tuned for CSP-S / NOIP).
+    // Takes effect immediately (the engine restarts automatically).
     "enable_clangd_engine": true,
-    // clangd 可执行文件路径；留空则在 PATH 中自动查找
-    // （clangd、clangd-18 ... clangd-21 等常见命名都会尝试）。
-    // Windows 推荐 MSYS2 的 clangd（pacman -S mingw-w64-x86_64-clang）。
+    // Path to the clangd executable; when empty it is looked up on PATH
+    // (common names such as clangd, clangd-18 ... clangd-21 are all tried).
+    // On Windows the MSYS2 clangd is recommended
+    // (pacman -S mingw-w64-x86_64-clang).
     "clangd_binary": "",
-    // 传给 clangd 的额外命令行参数，如 ["--log=verbose"]
+    // Extra command-line arguments passed to clangd, e.g. ["--log=verbose"]
     "clangd_args": [],
-    // 同步等待 clangd 补全结果的最长时间（毫秒）。
-    // 热路径下 clangd 通常 5~30ms 返回；超时先弹内置数据库兜底，
-    // 结果到达后自动刷新弹窗（与 LSP 插件行为一致）。
-    // 设为 0 则完全异步（永不阻塞，但首次弹窗只有兜底结果）。
-    // 注意：该值是在 UI 线程等待的，打字卡顿感随该值增大而变强，
-    // 30ms 是流畅与命中率的平衡点。
-    "clangd_completion_wait_ms": 30,
-    // 额外的 clangd fallbackFlags（无 compile_commands.json 时的兜底编译参数，
-    // 追加在 -std= 之后），如 ["-I", "D:/libs/include"]
+    // Maximum time (ms) to wait synchronously for clangd completion results.
+    // On the hot path clangd usually returns in 5~30ms; on timeout the
+    // built-in database results show first and clangd replaces them once
+    // they arrive (matching LSP behaviour).
+    // 0 (default) never blocks the editor: the first popup shows built-in
+    // database results and clangd results replace them a moment later.
+    // Raise it (e.g. 30) to wait for clangd inside the first popup, at the
+    // cost of a small per-keystroke delay. Note that this wait happens on
+    // the UI thread, so the typing feel degrades as the value grows.
+    "clangd_completion_wait_ms": 0,
+    // Extra clangd fallbackFlags: compile flags used when there is no
+    // compile_commands.json, appended after -std=,
+    // e.g. ["-I", "D:/libs/include"]
     "clangd_extra_fallback_flags": [],
-    // clangd 的工作目录（相当于项目根目录）；留空则用当前文件所在目录
+    // clangd working directory (acts as the project root); when empty the
+    // current file's directory is used.
     "clangd_working_dir": "",
-    // 补全模式开关：
-    //   true  （默认）LSP-clangd 风格：所有以当前前缀开头、属于当前作用域
-    //         （容器/算法/全局）的补全立即弹出；额外允许子串/子序列模糊匹配
-    //         作为宽松模式下的兜底，体验最像 clangd。
-    //   false 严格前缀基础模式：只保留严格前缀匹配（大小写不敏感），
-    //         过滤掉所有子串/子序列模糊结果，最简洁最可预测。
-    // 切换后即时生效（自动失效补全缓存）。
+    // Completion mode:
+    //   true  (default) LSP-clangd style: every completion that starts with
+    //         the current prefix and belongs to the current scope
+    //         (container/algorithm/global) pops up immediately; substring
+    //         and subsequence fuzzy matching is also allowed as a fallback
+    //         in the relaxed mode, so it feels closest to clangd.
+    //   false Strict-prefix basic mode: keeps only strict prefix matches
+    //         (case-insensitive) and filters out all substring/subsequence
+    //         fuzzy results - the simplest and most predictable.
+    // Takes effect immediately (the completion cache is invalidated).
     "enable_clangd_style_completion": true,
-    // 智能头文件插入（clangd header-insertion + 万能头判断）：
-    // 补全被接受时自动补上 #include <X>，例如输入 vector 补全后
-    // 自动插入 #include <vector>；
-    //   - 文件里已有 #include <bits/stdc++.h>（万能头）-> 不再重复插入；
-    //   - 该头文件已在文件里 -> 跳过；
-    //   - 否则插入到最后一个 #include 行之后。
+    // Smart header insertion (clangd header-insertion plus universal-header
+    // detection): when a completion is accepted the matching #include <X> is
+    // added automatically - e.g. after completing `vector` the line
+    // #include <vector> is inserted.
+    //   - if the file already has #include <bits/stdc++.h> (the universal
+    //     header), nothing is inserted again;
+    //   - if that header is already present, it is skipped;
+    //   - otherwise it is inserted after the last #include line.
     "auto_insert_includes": true,
-    // 悬停文档：鼠标悬停在符号上显示 clangd 的类型/文档弹窗
+    // Hover docs: show clangd's type/documentation popup when the mouse
+    // hovers over a symbol.
     "enable_hover": true,
-    // 函数签名提示：光标在函数调用括号内时显示重载签名
-    // （与 LSP-clangd 的 signature help 行为一致）
+    // Signature help: show overload signatures while the caret is inside a
+    // function-call parenthesis (matches LSP-clangd signature help).
     "enable_signature_help": true,
 
-    // ================= 语法检查 =================
-    // 实时语法检查总开关
-    // 参考 LSP-clangd：基础检查 < 10ms，编译器检查（启用 PCH）< 300ms
+    // ==================== Linting ====================
+    // Master switch for live syntax checking.
+    // Reference points (LSP-clangd): basic checks < 10ms, compiler checks
+    // (with PCH enabled) < 300ms.
     "enable_linting": true,
-    // 诊断引擎（lint_engine）：
-    //   "compiler" （默认）后台调用 g++/clang++ 做完整检查（现有行为）
-    //   "clangd"           LSP 式代码审查：直接使用 clangd 推送的实时诊断
-    //                      （与 LSP-clangd 一致），不再启动编译器进程；
-    //                      消息仍经过插件翻译表本地化。
-    //                      需要 enable_clangd_engine 开启；
-    //                      clangd 未就绪时仅显示即时基础检查结果
+    // Diagnostic engine (lint_engine):
+    //   "compiler" (default) call g++/clang++ in the background for a full
+    //                      check (existing behaviour).
+    //   "clangd"           LSP-style review: use the live diagnostics that
+    //                      clangd pushes directly (matching LSP-clangd);
+    //                      no compiler process is started, and messages are
+    //                      still localized through the plugin's translation
+    //                      table. Requires enable_clangd_engine; while
+    //                      clangd is not ready only the instant basic check
+    //                      results are shown.
     "lint_engine": "compiler",
-    // 即时基础检查：纯 Python 毫秒级检测括号配平、全角标点、
-    // 未闭合字符串/注释，输入时立即提示，无需等待编译器
+    // Instant basic check: pure-Python, millisecond detection of bracket
+    // balance, full-width punctuation and unclosed strings/comments -
+    // reported while typing, with no need to wait for the compiler.
     "instant_basic_check": true,
-    // 停止输入多少秒后开始编译器完整检查（默认 0.1s；删除/修复错误时
-    // 几乎立即响应；编译器检查本身使用结果缓存提速）
+    // Seconds of idle typing before the full compiler check starts (default
+    // 0.1s; near-instant when deleting or fixing error lines; the compiler
+    // check itself caches results to speed up repeat runs).
     "lint_debounce": 0.1,
-    // 编译器单次检查超时（秒）；超时不会清空已有标记
+    // Timeout (seconds) for a single compiler check; on timeout existing
+    // markers are not cleared.
     "lint_timeout": 12,
-    // 预编译头加速：首次检查前后台构建 bits/stdc++.h 的缓存，
-    // 之后包含该头文件的检查速度提升约 4~5 倍（约 1.2s -> 0.33s）
-    // 性能优化：PCH 直接通过 -include 挂载，不创建任何临时 .cpp 文件
+    // Precompiled-header speedup: before the first check, build a cache of
+    // bits/stdc++.h in the background; afterwards checks that include that
+    // header run about 4~5x faster (about 1.2s -> 0.33s).
+    // For performance the PCH is mounted directly via -include, so no
+    // temporary .cpp file is created.
     "enable_pch": true,
-    // 在错误行下方显示中文幽灵提示条
+    // Show inline error phantoms below the error line.
     "show_phantoms": true,
-    // 诊断信息显示语言:
-    //   "zh"   仅中文 (默认, 推荐)
-    //   "en"   仅英文 (保留 gcc/clang 原始信息, 适合阅读英文资料/搜索原报错的场景)
-    //   "both" 双语 (英文在前中文在后, 适合教学/对比学习)
-    // 切换语言后即时生效(设置变更时自动清空诊断结果缓存)
-    "display_language": "zh",
-    // C++ 标准（同时用于语法检查的 -std= 与 clangd 补全的 fallbackFlags）。
-    // CSP-S / NOIP 系列比赛使用 C++14，故默认 c++14；
-    // 如需 C++17/20/23 的新特性补全与检查可自行调高。
+    // Diagnostic display language:
+    //   "en"   English only (default)
+    //   "zh"   Chinese only
+    //   "both" English with Chinese appended
+    // Takes effect immediately (changing the setting clears the diagnostic
+    // result cache).
+    "display_language": "en",
+    // C++ standard (used both for the -std= flag in syntax checking and for
+    // clangd's fallbackFlags). The CSP-S / NOIP contest series uses C++14,
+    // so the default is c++14; raise it for C++17/20/23 feature completions
+    // and checks.
     "cxx_standard": "c++14",
-    // 编译器可执行文件路径；留空则自动在 PATH 中查找 g++、clang++
+    // Compiler executable path; when empty, g++ and clang++ are looked up
+    // automatically on PATH.
     "compiler_path": "",
-    // 额外传给编译器的参数，如 ["-I", "D:/libs/include"]
+    // Extra arguments passed to the compiler, e.g. ["-I", "D:/libs/include"]
     "compiler_extra_args": [],
-    // 额外头文件搜索目录（同时用于 F12 跨文件跳转）
+    // Extra header search directories (also used for F12 cross-file
+    // go-to-definition).
     "include_paths": [],
 
-    // ================= 格式化（jiangly 码风）=================
-    // 缩进宽度（兜底格式化器使用；clang-format 由 style 控制）
+    // ==================== Formatting (jiangly style) ====================
+    // Indent width (used by the fallback formatter; clang-format is
+    // controlled by clang_format_style).
     "indent_width": 4,
-    // 保存时自动格式化整个文档
+    // Format the whole document on save.
     "format_on_save": false,
-    // clang-format 路径；留空自动在 PATH 查找。找不到时使用内置兜底格式化器
+    // clang-format path; when empty it is looked up on PATH. If it is not
+    // found, the built-in fallback formatter is used.
     "clang_format_path": "",
-    // jiangly 码风 clang-format 配置：4 空格缩进、K&R 大括号、宽行不折行
+    // jiangly-style clang-format config: 4-space indent, K&R braces, and no
+    // wrapping of long lines.
     "clang_format_style": "{ BasedOnStyle: Google, IndentWidth: 4, ColumnLimit: 100, AccessModifierOffset: -4, DerivePointerAlignment: false, PointerAlignment: Left, AllowShortIfStatementsOnASingleLine: false, AllowShortLoopsOnASingleLine: false, AllowShortCaseLabelsOnASingleLine: false, AllowShortFunctionsOnASingleLine: Inline, SortIncludes: Never, FixNamespaceComments: false, AlignConsecutiveAssignments: false, AlignConsecutiveDeclarations: false, AlignTrailingComments: false, InsertBraces: false }"
 }

@@ -20,8 +20,8 @@ JSON-RPC 通信，把 clangd 的真实语义补全（编译器级准确度）接
   initialize / initialized / shutdown / exit
   textDocument/didOpen / didChange / didClose
   textDocument/completion            （同步等待 + 异步回调双模式）
-  textDocument/hover                 （悬停文档，同步等待）
-  textDocument/signatureHelp         （函数签名提示，同步等待）
+  textDocument/hover                 （悬停文档，调用方放工作线程等待）
+  textDocument/signatureHelp         （函数签名提示，同上）
   $/cancelRequest
   服务器反向请求（workspace/configuration、client/registerCapability、
   window/workDoneProgress/create）一律回空，避免 clangd 卡住。
@@ -44,34 +44,35 @@ _CLANGD_NAMES = (
     "clangd-12", "clangd-11",
 )
 
-# LSP CompletionItemKind -> (中文标注, CppAssistant 内部 kind 键)
-# 内部 kind 键会被 CppAssistant._KIND_MAP 转成 Sublime 的图标 + 中文标签
+# LSP CompletionItemKind -> (英文标注, CppAssistant 内部 kind 键)
+# 标注直接显示在补全弹窗右侧；内部 kind 键会被 CppAssistant._KIND_MAP
+# 转成 Sublime 的图标 + 类型标签
 LSP_KIND_MAP = {
-    1: (u"文本", "v"),
-    2: (u"成员函数", "m"),
-    3: (u"函数", "f"),
-    4: (u"构造函数", "m"),
-    5: (u"成员变量", "v"),
-    6: (u"变量", "v"),
-    7: (u"类", "t"),
-    8: (u"接口", "t"),
-    9: (u"模块", "t"),
-    10: (u"属性", "v"),
-    11: (u"单元", "v"),
-    12: (u"值", "c"),
-    13: (u"枚举", "t"),
-    14: (u"关键字", "k"),
-    15: (u"代码片段", "s"),
-    16: (u"颜色", "c"),
-    17: (u"文件", "u"),
-    18: (u"引用", "u"),
-    19: (u"枚举值", "c"),
-    20: (u"常量", "c"),
-    21: (u"结构体", "t"),
-    22: (u"事件", "u"),
-    23: (u"操作符", "u"),
-    24: (u"类型参数", "t"),
-    25: (u"命名空间", "t"),
+    1: (u"text", "v"),
+    2: (u"method", "m"),
+    3: (u"function", "f"),
+    4: (u"constructor", "m"),
+    5: (u"field", "v"),
+    6: (u"variable", "v"),
+    7: (u"class", "t"),
+    8: (u"interface", "t"),
+    9: (u"module", "t"),
+    10: (u"property", "v"),
+    11: (u"unit", "v"),
+    12: (u"value", "c"),
+    13: (u"enum", "t"),
+    14: (u"keyword", "k"),
+    15: (u"snippet", "s"),
+    16: (u"color", "c"),
+    17: (u"file", "u"),
+    18: (u"reference", "u"),
+    19: (u"enum member", "c"),
+    20: (u"constant", "c"),
+    21: (u"struct", "t"),
+    22: (u"event", "u"),
+    23: (u"operator", "u"),
+    24: (u"type parameter", "t"),
+    25: (u"namespace", "t"),
 }
 
 
@@ -247,7 +248,7 @@ def parse_completion_result(result):
         short = _short_label(label)
         insert, is_snippet = _clamp_insert(it)
         kd_code = it.get("kind", 0) or 0
-        ann, kind_key = LSP_KIND_MAP.get(kd_code, (u"符号", "u"))
+        ann, kind_key = LSP_KIND_MAP.get(kd_code, (u"symbol", "u"))
         detail = it.get("detail") or ""
         if isinstance(detail, dict):
             detail = detail.get("value") or ""
@@ -489,9 +490,11 @@ class ClangdClient(object):
         if params is not None:
             msg["params"] = params
         if cb is not None:
-            self._pending[rid] = {"event": threading.Event(), "cb": cb}
+            self._pending[rid] = {"event": threading.Event(), "cb": cb,
+                                  "method": method}
         else:
-            self._pending[rid] = {"event": threading.Event(), "cb": None}
+            self._pending[rid] = {"event": threading.Event(), "cb": None,
+                                  "method": method}
         self._write_frame(msg)
         return rid
 
@@ -512,9 +515,17 @@ class ClangdClient(object):
             return None
         return resp.get("result") if isinstance(resp, dict) else None
 
-    def cancel_all(self):
-        """取消所有未完成的请求（快速输入时减少 clangd 空转）。"""
+    def cancel_pending(self, method):
+        """只取消指定方法的未完成请求。
+
+        补全请求会随打字不断重发，需要取消上一轮；但 hover /
+        signatureHelp 与补全并发在跑，一刀切取消会把它们的结果
+        一起丢掉（弹窗永远出不来）。
+        """
         for rid in list(self._pending.keys()):
+            entry = self._pending.get(rid)
+            if entry is None or entry.get("method") != method:
+                continue
             self.notify("$/cancelRequest", {"id": rid})
 
     def _reader_loop(self):
@@ -703,7 +714,7 @@ class ClangdClient(object):
         else:
             self.change_document(path, text)
         line, col = line_col_utf16(text, offset)
-        self.cancel_all()
+        self.cancel_pending("textDocument/completion")
         rid = self._send_request("textDocument/completion", {
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": col},

@@ -19,9 +19,10 @@
 	},
 
 
-	// 可选：让回车在补全弹窗开着时也始终换行（不被"确认补全"吃掉）。
-	// 把下面这条复制到 Preferences → Key Bindings 的 User 文件即可生效；
-	// 之后用 Tab 或标点确认补全。
+	// Optional: make Enter always insert a newline even while the completion
+	// popup is open (so it is not consumed by "accept completion"). Copy the
+	// entry below into your User keymap under Preferences -> Key Bindings to
+	// enable it, then use Tab or a punctuation character to accept completions.
 	// { "keys": ["enter"], "command": "insert", "args": {"characters": "\n"},
 	// 	"context": [{ "key": "auto_complete_visible" }] },
 ]

@@ -49,7 +49,7 @@ def _parse_snippet_resource(res):
     return {
         "trigger": trigger,
         "insert": content,
-        "annotation": u"用户片段",
+        "annotation": u"User snippet",
         "kind": "s",
         "detail": desc,
         "snippet": True,
@@ -77,8 +77,3 @@ def get_cpp_snippets(force_reload=False):
     _cache["t"] = now
     _cache["items"] = items
     return items
-
-
-def invalidate_cache():
-    _cache["t"] = 0.0
-    _cache["items"] = None

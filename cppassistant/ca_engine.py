@@ -17,7 +17,7 @@ from .ca_stdlib_data import (
     KEYWORDS, KEYWORDS_SET, SNIPPETS, SNIPPETS_BY_TRIG,
     HEADERS, HEADERS_SET, TRANSLATIONS, QUOTE_NORMALIZE,
     SEVERITY_MAP, WARNING_FLAG_ZH, _ELEM_RULES,
-    STD_SYMBOL_HEADER, STD_HEADERS_SET,
+    STD_SYMBOL_HEADER, STD_HEADERS_SET, en_detail,
 )
 
 # ---------------------------------------------------------------------------
@@ -570,7 +570,8 @@ def analyze(text, offset, cache_key=None, cache_version=None,
                 continue
             seen.add(h)
             results.append({"trigger": h, "insert": h,
-                            "annotation": u"头文件", "kind": "t",
+                            "annotation": u"头文件", "annotation_en": "header",
+                            "kind": "t",
                             "detail": "#include " + h, "_score": sc})
         results.sort(key=lambda d: (d["_score"], len(d["trigger"])))
         for d in results:
@@ -599,22 +600,27 @@ def analyze(text, offset, cache_key=None, cache_version=None,
         members = MEMBERS_DB_FAST.get(key) if key else None
         if members is None:
             members = [] if key else GENERIC_MEMBERS_FAST
-        raw_items.extend((it["trigger"], it["insert"],
-                          it["annotation"], it["kind"], False)
+        raw_items.extend((it["trigger"], it["insert"], it["annotation"],
+                          it["kind"], False,
+                          en_detail(it["insert"], key)
+                          or en_detail(it["insert"]) or u"")
                          for it in members)
     elif accessor == "scope":
         raw_items = [(it["trigger"], it["insert"], it["annotation"],
-                      it["kind"], False) for it in STD_ITEMS_ALL]
+                      it["kind"], False,
+                      en_detail(it["insert"]) or u"") for it in STD_ITEMS_ALL]
     else:
         for trig, body, desc, kd in SNIPPETS:
-            raw_items.append((trig, body, desc, kd, False))
+            raw_items.append((trig, body, desc, kd, False,
+                              en_detail(trig) or u""))
         for kw in KEYWORDS:
-            raw_items.append((kw, kw, u"关键字", "k", False))
+            raw_items.append((kw, kw, u"关键字", "k", False, u"keyword"))
         for name, desc in syms.items():
-            raw_items.append((name, name, desc, "u", False))
+            raw_items.append((name, name, desc, "u", False, desc or u""))
         for it in STD_ITEMS_ALL:
             raw_items.append((it["trigger"], it["insert"], it["annotation"],
-                              it["kind"], it["want_std"]))
+                              it["kind"], it["want_std"],
+                              en_detail(it["insert"]) or u""))
 
     already_std = (accessor == "scope" and receiver == "std")
     need_prefix = not env["using_std"]
@@ -623,7 +629,7 @@ def analyze(text, offset, cache_key=None, cache_version=None,
     seen = set()
     # 基础模式下只保留严格前缀匹配（score < 5），过滤掉子串/子序列模糊结果
     max_score = 999 if clangd_style else 5
-    for trigger, insert, ann, kd, want_std in raw_items:
+    for trigger, insert, ann, kd, want_std, ann_en in raw_items:
         sc = _score(trigger, prefix)
         if sc >= max_score or trigger in seen:
             continue
@@ -634,7 +640,8 @@ def analyze(text, offset, cache_key=None, cache_version=None,
         else:
             detail = trigger
         results.append({"trigger": trigger, "insert": insert,
-                        "annotation": ann, "kind": kd, "detail": detail,
+                        "annotation": ann, "annotation_en": ann_en,
+                        "kind": kd, "detail": detail,
                         "_score": sc})
     results.sort(key=lambda d: (d["_score"], len(d["trigger"]),
                                 d["trigger"]))
@@ -651,35 +658,25 @@ def analyze(text, offset, cache_key=None, cache_version=None,
     return results
 
 
-def invalidate_cache():
-    """显式失效缓存（设置变更时调用）"""
-    _ANALYSIS_CACHE.update(key=None, ver=None, env=None, syms=None,
-                           text=None, size=-1)
-    _COMPLETION_CACHE.update(key=None, ver=None, offset=None, ctx=None,
-                             results=None, mode=None)
-    _LINESTATE_CACHE.update(key=None, ver=None, states=None,
-                            text=None, size=-1)
-
-
 # ---------------------------------------------------------------------------
 # 定义查找（F12 跳转）
 # ---------------------------------------------------------------------------
 
 _DEF_PATTERNS = (
-    (u"类型定义",
+    (u"type definition",
      lambda sym: re.compile(r"\b(?:struct|class|union|enum)(?:\s+class)?\s+" +
                             sym + r"\b")),
-    (u"宏定义",
+    (u"macro definition",
      lambda sym: re.compile(r"^[ \t]*#[ \t]*define[ \t]+" + sym + r"\b",
                             re.M)),
-    (u"类型别名",
+    (u"type alias",
      lambda sym: re.compile(r"\busing\s+" + sym +
                             r"\s*=|\btypedef\b[^;\n]*?\b" + sym + r"\s*;")),
-    (u"函数定义",
+    (u"function definition",
      lambda sym: re.compile(
          r"\b" + sym + r"\s*\((?:[^()]|\([^()]*\))*\)\s*(?:const\s*)?"
          r"(?:->[^{;\n]+)?\s*\{")),
-    (u"变量定义",
+    (u"variable definition",
      lambda sym: re.compile(
          r"^[ \t]*(?:static\s+|const\s+|constexpr\s+)*"
          r"[A-Za-z_][\w:<>,\*&\[\]\s]*[\s*&]" + sym +
@@ -704,7 +701,7 @@ def find_definitions(text, symbol):
             idx = m.start()
             if mask[idx]:
                 continue
-            if label != u"宏定义" and label != u"函数定义":
+            if label != u"macro definition" and label != u"function definition":
                 seg_end = text.find("\n", idx)
                 if any(mask[idx:seg_end if seg_end != -1 else len(text)]):
                     continue
@@ -788,15 +785,19 @@ def find_system_header(header_name, include_paths=None):
     return None
 
 
+# STD_SYMBOL_HEADER 里的符号类别是中文，转成英文主文案
+_SYM_KIND_EN = {u"类型": "type", u"符号": "symbol"}
+
+
 def find_definition_std_fallback(symbol, include_paths=None):
     """对 std 命名空间下的符号做头文件 fallback。
 
     返回 [dict] 列表（候选），每个元素含：
       - kind: 'std_symbol' / 'std_header' / 'system_header_path'
-      - label: 简短中文标签
+      - label / detail: 英文主文案
+      - label_zh / detail_zh: 中文文案（display_language 为 zh/both 时由调用方取用）
       - header: 头文件名（不含尖括号）
       - path: 实际文件路径（仅 system_header_path）
-      - detail: 描述行
     """
     import os
     results = []
@@ -808,10 +809,13 @@ def find_definition_std_fallback(symbol, include_paths=None):
         path = find_system_header(symbol, include_paths)
         results.append({
             "kind": "std_header",
-            "label": u"系统头文件",
+            "label": u"system header",
+            "label_zh": u"系统头文件",
             "header": symbol,
             "path": path,
-            "detail": u"标准库头文件 <%s>，位于编译器 include 路径" % symbol,
+            "detail": u"Standard library header <%s>, found in the compiler "
+                      u"include path" % symbol,
+            "detail_zh": u"标准库头文件 <%s>，位于编译器 include 路径" % symbol,
         })
         return results
 
@@ -820,13 +824,17 @@ def find_definition_std_fallback(symbol, include_paths=None):
     if info:
         header, sym_kind = info
         path = find_system_header(header, include_paths)
+        kind_en = _SYM_KIND_EN.get(sym_kind, u"symbol")
         results.append({
             "kind": "std_symbol",
-            "label": u"标准库%s" % sym_kind,
+            "label": u"standard library %s" % kind_en,
+            "label_zh": u"标准库%s" % sym_kind,
             "header": header,
             "path": path,
-            "detail": u"std::%s 定义于 <%s> 系统头文件中(可考虑 #include <%s>)" % (
+            "detail": u"std::%s is defined in <%s> (consider #include <%s>)" % (
                 symbol, header, header),
+            "detail_zh": u"std::%s 定义于 <%s> 系统头文件中(可考虑 #include <%s>)"
+                         % (symbol, header, header),
         })
         return results
 
@@ -892,18 +900,18 @@ def goto_definition_advanced(symbol, view_text, view, include_paths=None,
     # 4. 标准库 fallback
     std_hits = find_definition_std_fallback(symbol, include_paths)
     for hit in std_hits:
+        zh = {"label_zh": hit.get("label_zh"), "detail_zh": hit.get("detail_zh")}
         # 优先看是否能找到系统头文件路径
         if hit.get("path"):
+            extra = {"path": hit["path"]}
+            extra.update(zh)
             results.append((3, "system_header_path", 1, 0,
-                            hit["label"] + " (文件路径)",
-                            hit["detail"],
-                            {"path": hit["path"]}))
+                            hit["label"], hit["detail"], extra))
         # 标准符号提示
+        extra = {"path": hit.get("path"), "header": hit.get("header")}
+        extra.update(zh)
         results.append((3, hit["kind"], 1, 0,
-                        hit["label"],
-                        hit["detail"],
-                        {"path": hit.get("path"),
-                         "header": hit.get("header")}))
+                        hit["label"], hit["detail"], extra))
 
     return results
 
@@ -965,33 +973,6 @@ def translate_message(msg):
     return en, zh
 
 
-# 严重程度标签中英文双语（用户切换语言时使用）
-SEVERITY_LABELS = {
-    "error": {"en": "error", "zh": "错误"},
-    "fatal error": {"en": "fatal error", "zh": "致命错误"},
-    "warning": {"en": "warning", "zh": "警告"},
-    "note": {"en": "note", "zh": "提示"},
-}
-
-
-def severity_label(sev_en, lang):
-    """根据 lang (zh/en/both) 返回严重程度的中英文标签。
-
-    - zh -> 仅中文:  "错误"
-    - en -> 仅英文:  "error"
-    - both -> 双语:  "error / 错误"
-    - 其它/非法 -> 退化为中文
-    """
-    info = SEVERITY_LABELS.get(sev_en)
-    if info is None:
-        return sev_en
-    if lang == "en":
-        return info["en"]
-    if lang == "both":
-        return "%s / %s" % (info["en"], info["zh"])
-    return info["zh"]
-
-
 def format_message(en, zh, lang):
     """根据 lang 返回最终显示的诊断文本。
 
@@ -1013,48 +994,49 @@ def format_message(en, zh, lang):
     return zh
 
 
-def parse_compiler_output(output, display_language="zh"):
-    """解析 g++/clang++ 诊断输出 -> [dict(file,line,col,sev,msg,zh,text,ctx)]
+def parse_compiler_output(output):
+    """解析 g++/clang++ 诊断输出。
 
-    display_language:
-      "zh"  -> text 字段为中文
-      "en"  -> text 字段为英文
-      "both" -> text 字段为 "en（中文）" 双语
+    返回 [dict(file,line,col,sev_en,msg,zh,ctx,ctx_zh,notes)]：msg/ctx 是英文
+    原文，zh/ctx_zh 是译文。这里不选显示语言——那是渲染层按 display_language
+    决定的事，因此诊断结果缓存与语言设置无关。
     """
     output = output.replace("\r\n", "\n").replace("\r", "\n")
     entries = []
-    pending_ctx = ""
+    pending_ctx = ("", "")
     for line in output.split("\n"):
         if not line.strip():
             continue
         cm = _CTX_RE.match(line)
         if cm:
-            kind_zh = _CTX_ZH.get(cm.group(1), u"函数")
-            pending_ctx = u"在%s '%s' 中：" % (kind_zh, cm.group(2))
+            kind = cm.group(1)
+            pending_ctx = (
+                u"In %s '%s': " % (kind, cm.group(2)),
+                u"在%s '%s' 中：" % (_CTX_ZH.get(kind, u"函数"), cm.group(2)))
             continue
         im = _IN_FILE_RE.match(line)
         if im:
-            pending_ctx = u"（由 %s 第 %s 行包含引入）" % (
-                os_path_basename(im.group(1)), im.group(2))
+            base = os_path_basename(im.group(1))
+            pending_ctx = (
+                u"(included from %s line %s) " % (base, im.group(2)),
+                u"（由 %s 第 %s 行包含引入）" % (base, im.group(2)))
             continue
         m = _DIAG_RE.match(line)
         if not m:
             continue
         en, zh = translate_message(m.group(5))
-        text = format_message(en, zh, display_language)
         entries.append({
             "file": m.group(1),
             "line": int(m.group(2)),
             "col": int(m.group(3)) if m.group(3) else 1,
             "sev_en": m.group(4),
-            "sev": severity_label(m.group(4), display_language),
             "msg": en,
             "zh": zh,
-            "text": text,
-            "ctx": pending_ctx,
+            "ctx": pending_ctx[0],
+            "ctx_zh": pending_ctx[1],
             "notes": [],
         })
-        pending_ctx = ""
+        pending_ctx = ("", "")
     return entries
 
 
@@ -1068,14 +1050,25 @@ def os_path_basename(path):
 
 _FULLWIDTH = u"，；：（）｛｝【】“”‘’！？"
 
+# 英文消息里指出"应该改成哪个半角字符"
+_HALFWIDTH = {u"，": ",", u"；": ";", u"：": ":", u"（": "(", u"）": ")",
+              u"｛": "{", u"｝": "}", u"【": "[", u"】": "]",
+              u"“": '"', u"”": '"', u"‘": "'", u"’": "'",
+              u"！": "!", u"？": "?"}
+
 
 def basic_checks(code):
-    """返回 [(line, col, severity, message)]"""
+    """返回 [(line, col, severity, 英文消息, 中文消息)]
+
+    两种语言一起给，显示哪一种由调用方按 display_language 在渲染时决定。
+    """
     problems = []
     stack = []
     pairs = {")": "(", "]": "[", "}": "{"}
     closer_name = {")": "')'", "]": "']'", "}": "'}'"}
     opener_name = {"(": "')'", "[": "']'", "{": "'}'"}
+    _UNCLOSED_EN = "Unclosed bracket: missing matching %s"
+    _UNCLOSED_ZH = u"括号未闭合：缺少对应的 %s"
 
     class Ctx(object):
         pass
@@ -1099,10 +1092,15 @@ def basic_checks(code):
             i += 1
             if ctx.str:
                 ln, cl = ctx.pos
-                problems.append((ln, cl, "warning", u"字符串缺少结尾双引号"))
+                problems.append((ln, cl, "warning",
+                                 u'Unterminated string: missing closing "',
+                                 u"字符串缺少结尾双引号"))
                 ctx.str = False
             if ctx.chr:
-                problems.append(ctx.pos + ("warning", u"字符常量缺少结尾单引号"))
+                problems.append(ctx.pos + (
+                    "warning",
+                    u"Unterminated character literal: missing closing '",
+                    u"字符常量缺少结尾单引号"))
                 ctx.chr = False
             continue
         col += 1
@@ -1142,6 +1140,8 @@ def basic_checks(code):
             continue
         if c in _FULLWIDTH:
             problems.append((line, col - 1, "warning",
+                             u"Full-width character '%s'; use the ASCII '%s'"
+                             % (c, _HALFWIDTH.get(c, "?")),
                              u"疑似全角标点 '%s'，应改为半角" % c))
             i += 1
             continue
@@ -1190,21 +1190,29 @@ def basic_checks(code):
                         oc, ol, ocl = stack.pop()
                         problems.append(
                             (ol, ocl, "error",
-                             u"括号未闭合：缺少对应的 %s" % opener_name[oc]))
+                             _UNCLOSED_EN % opener_name[oc],
+                             _UNCLOSED_ZH % opener_name[oc]))
                     stack.pop()
                 else:
                     problems.append(
                         (line, col - 1, "error",
+                         u"Extra closing bracket %s: no matching opener"
+                         % closer_name[c],
                          u"多余的右括号 %s（没有与之匹配的左括号）" % closer_name[c]))
         i += 1
 
     if ctx.raw:
-        problems.append((line, col, "warning", u"原始字符串未闭合"))
+        problems.append((line, col, "warning",
+                         u"Unterminated raw string literal",
+                         u"原始字符串未闭合"))
     if ctx.block:
-        problems.append((line, col, "warning", u"块注释 /* 未闭合"))
+        problems.append((line, col, "warning",
+                         u"Unterminated block comment: missing closing */",
+                         u"块注释 /* 未闭合"))
     for oc, ol, ocl in stack:
         problems.append((ol, ocl, "error",
-                         u"括号未闭合：缺少对应的 %s" % opener_name[oc]))
+                         _UNCLOSED_EN % opener_name[oc],
+                         _UNCLOSED_ZH % opener_name[oc]))
     problems.sort(key=lambda t: (t[0], t[1]))
     return problems
 

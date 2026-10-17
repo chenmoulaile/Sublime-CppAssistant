@@ -1,5 +1,45 @@
 # CppAssistant —— Sublime Text 4 C++ 辅助插件（内嵌真实 clangd 引擎 + 全汉化）
 
+C++ assistance for Sublime Text 4 with a real clangd engine embedded. The
+plugin ships a minimal LSP client that drives clangd directly (no LSP
+framework required) for compiler-grade semantic completions, and falls back
+to a pure-Python built-in database when clangd is not present, so it works
+out of the box. The UI, comments and defaults are English-first; Chinese is
+kept as an optional diagnostic display mode.
+
+## Features
+
+- clangd-backed semantic completions (signatures, overloads, container
+  members, local variables) with smart `#include` insertion
+- Hover documentation and function signature help
+- Live diagnostics from the compiler or from clangd
+- F12 go-to-definition with a standard-library fallback
+- jiangly-style formatting via clang-format or a built-in fallback
+- Optional Chinese or bilingual diagnostic text
+
+## Installation
+
+- Package Control: install the package named **CppAssistant**
+  (`Ctrl+Shift+P` -> Package Control: Install Package).
+- Or git clone into `Data/Packages`:
+  `git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant`
+
+Every command is available from the Command Palette; type `CppAssistant:` to
+list them. No key bindings are registered by default.
+
+## Key settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `display_language` | `"en"` | Diagnostic text: `en`, `zh`, or `both` |
+| `clangd_completion_wait_ms` | `0` | `0` never blocks the editor; raise it to wait for clangd |
+| `cxx_standard` | `"c++14"` | Standard used for checks and completions |
+| `lint_engine` | `"compiler"` | `compiler` (g++/clang++) or `clangd` |
+| `enable_clangd_engine` | `true` | Use the real clangd engine |
+
+Detailed documentation follows in Chinese below.
+
+
 > **v1.4.0 起内置移植 LSP-clangd**：插件自带最小 LSP 客户端，直接驱动真实的 clangd 语言服务器（无需安装 LSP 主框架），补全达到编译器级语义准确度；同时保留纯 Python 内置数据库兜底，零配置可用。诊断信息完整中文化。
 >
 > **v1.5.0 补全力度对齐 LSP-clangd**：**智能头文件插入**（补全被接受时自动补 `#include <vector>`，已有 `bits/stdc++.h` 万能头则不插）、**悬停文档**（鼠标悬停显示 clangd 类型/文档）、**函数签名提示**（光标在调用括号内显示重载签名）。
@@ -41,7 +81,7 @@
     当前 C++ 标准；C++14 下不会混入 C++17/20/23 符号）
   - clangd 结果未就绪时（打开文件后约 1~2s 内）先弹内置数据库兜底，
     结果到达后自动刷新弹窗（与 LSP 插件行为一致）；等待上限
-    `clangd_completion_wait_ms`（默认 60ms）可调，设 0 完全异步
+    `clangd_completion_wait_ms`（默认 0ms）可调，设 0 完全异步
   - 找不到 clangd 自动回退内置数据库并状态栏提示；路径可用 `clangd_binary` 指定
   - 补全条目类型全部中文标注（函数 / 成员函数 / 成员变量 / 类 / 常量…）
   - **智能头文件插入**（v1.5.0，`auto_insert_includes` 默认开启）：补全被接受时
@@ -158,8 +198,8 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `lint_timeout` | `12` | 编译器单次检查超时（秒），超时不清空已有标记 |
 | `enable_pch` | `true` | PCH 预编译头加速（bits/stdc++.h） |
 | `show_phantoms` | `true` | 错误行下方显示提示条 |
-| `display_language` | `"zh"` | 诊断信息显示语言: `zh` 仅中文 / `en` 仅英文 / `both` 中英双语 |
-| `cxx_standard` | `"c++17"` | 语法检查使用的标准（本机默认配置为 c++23） |
+| `display_language` | `"en"` | 诊断信息显示语言: `en` 仅英文（默认）/ `zh` 仅中文 / `both` 中英双语 |
+| `cxx_standard` | `"c++14"` | 语法检查与补全使用的标准（CSP-S / NOIP 考 c++14；需要 C++20/23 特性时自行调高） |
 | `compiler_path` | `""` | 编译器路径，留空自动查找 g++ / clang++ |
 | `compiler_extra_args` | `[]` | 额外编译参数 |
 | `include_paths` | `[]` | 额外头文件目录（同时用于跳转定义） |
@@ -169,20 +209,20 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## 诊断显示语言
 
-支持 **中文 / 英文 / 中英双语** 三种模式，可通过以下任一方式切换：
+支持 **英文 / 中文 / 中英双语** 三种模式（默认英文），可通过以下任一方式切换：
 
-1. **命令面板** 搜索 `CppAssistant: 切换诊断语言为 ...`
-2. **菜单** `Preferences → Package Settings → CppAssistant → 诊断显示语言`
+1. **命令面板** 搜索 `CppAssistant: Diagnostic Language - ...`
+2. **菜单** `Preferences → Package Settings → CppAssistant → Diagnostic language`
 3. **手动编辑** `Packages/User/CppAssistant.sublime-settings` 里的 `display_language` 字段：
    ```json
    {
-       "display_language": "zh"     // 仅中文 (默认)
-       // "display_language": "en"   // 仅英文
+       "display_language": "en"     // 仅英文 (默认)
+       // "display_language": "zh"   // 仅中文
        // "display_language": "both" // 中英双语, 形如 "use of foo（未声明的标识符 'foo'）"
    }
    ```
 
-切换后即时生效（自动失效诊断缓存并重渲染当前文件的所有诊断）。状态栏、诊断面板、幽灵提示条中的提示文字会同步切换。
+切换后即时生效：诊断条目本身同时保存中英文两种文本，语言只在渲染时选定，因此切换不会重跑编译器检查，只重渲染状态栏、诊断面板与幽灵提示条。
 
 ### 翻译覆盖范围
 
@@ -198,6 +238,12 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 英文模式下会保留 `gcc/clang` 原始报错信息，方便复制搜索；中文模式适合日常学习；双语模式适合教学/对比。
 
 ## 更新日志
+
+### v1.7.0（全部文案与默认语言改为英文）
+- 全部面向用户的文案与默认语言改为英文（settings 注释 / 菜单 / 命令面板 / 补全类型标签 / 状态消息），`display_language` 默认 `en`
+- 设置改用 `sublime.load_settings` / `save_settings` API 写入，不再整体重写 User 配置文件
+- 移除设置监听，缓存按设置签名自愈
+- hover、签名提示、补全改为工作线程异步，不再占用 UI 线程
 
 ### v1.6.1（补全短名显示 + zip 包菜单兼容）
 - **补全条目改为短名显示（对齐 LSP-clangd）**：clangd 返回的 label 带

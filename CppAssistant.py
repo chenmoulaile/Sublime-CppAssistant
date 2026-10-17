@@ -33,7 +33,7 @@ import sublime_plugin
 from .cppassistant import ca_clangd  # noqa: E402
 from .cppassistant import ca_engine  # noqa: E402
 from .cppassistant import ca_user_snippets  # noqa: E402
-from .cppassistant.ca_stdlib_data import SNIPPETS  # noqa: E402
+from .cppassistant.ca_stdlib_data import SNIPPETS, en_detail  # noqa: E402
 
 
 def _hidden_window_startupinfo():
@@ -49,7 +49,9 @@ def _hidden_window_startupinfo():
 
 _SETTINGS = "CppAssistant.sublime-settings"
 _settings_obj = None
-_compiler_cache = {"path": None, "done": False}
+# 按“用户配置的编译器路径”作缓存键：改设置即刻换编译器，
+# 无需监听设置变更事件。
+_compiler_cache = {"configured": None, "path": None, "done": False}
 
 CPP_SCOPE = "source.c++, source.c"
 
@@ -69,22 +71,44 @@ _LINT_CACHE = {}       # view_id -> (缓存键, 诊断)；文本与设置未变�
 # 设置
 # ---------------------------------------------------------------------------
 
-def _on_settings_changed():
-    _compiler_cache["done"] = False
-    _compiler_cache["path"] = None
-    _LINT_CACHE.clear()
-    # 通知引擎失效缓存
-    ca_engine.invalidate_cache()
-    ca_user_snippets.invalidate_cache()
-    # clangd 相关设置变化时重启语言服务器（下次补全时懒重启）
-    if _clangd_state["sig"] is not None and \
-            _clangd_state["sig"] != _clangd_settings_sig():
-        _stop_clangd_client()
+def _settings():
+    """设置对象（Sublime 内部缓存同一个对象，可随手读，无需自备监听）。"""
+    global _settings_obj
+    if _settings_obj is None:
+        _settings_obj = sublime.load_settings(_SETTINGS)
+    return _settings_obj
+
+
+def _set_setting(key, value):
+    """写一项设置并落盘。
+
+    走 API 只写用户覆盖项；自己 decode/encode 整个 User 文件会把用户
+    写在里面的注释和键序一起丢掉。
+    """
+    settings = _settings()
+    if settings.get(key) == value:
+        return False
+    settings.set(key, value)
+    sublime.save_settings(_SETTINGS)
+    return True
+
+
+def _refresh_cpp_views(rerun_lint=False):
+    """设置变更后刷新已打开的 C++ 视图（无设置监听，由命令显式触发）。"""
+    for w in sublime.windows():
+        for v in w.views():
+            try:
+                if not _is_cpp(v):
+                    continue
+                if rerun_lint:
+                    run_lint(v)
+                else:
+                    render_diagnostics(v.id())
+            except Exception as e:
+                _log_error("view refresh", e)
 
 
 def plugin_unloaded():
-    if _settings_obj is not None:
-        _settings_obj.clear_on_change("cppassistant")
     # 清理所有运行中的编译器进程
     for vid, proc in list(_lint_procs.items()):
         try:
@@ -97,9 +121,7 @@ def plugin_unloaded():
 
 
 def _s(key, default=None):
-    if _settings_obj is None:
-        return default
-    return _settings_obj.get(key, default)
+    return _settings().get(key, default)
 
 
 # 控制台日志限频：同一位置最多打印 3 次，避免每敲一键刷屏
@@ -113,8 +135,9 @@ def _log_error(where, exc):
     if n < 3:
         _log_counts[where] = n + 1
         import traceback
-        print("[CppAssistant] %s 出错%s: %r" % (
-            where, ("（该位置继续出错将不再打印）" if n == 2 else ""), exc))
+        print("[CppAssistant] error in %s%s: %r" % (
+            where, (" (further errors from here are suppressed)"
+                    if n == 2 else ""), exc))
         traceback.print_exc()
 
 
@@ -137,17 +160,61 @@ def _kind_default():
     return sublime.KIND_AMBIGUOUS
 
 
-# 全中文类型标签
-_KIND_MAP = {
-    "f": lambda: (sublime.KIND_ID_FUNCTION, "f", u"函数"),
-    "m": lambda: (sublime.KIND_ID_FUNCTION, "m", u"成员函数"),
-    "v": lambda: (sublime.KIND_ID_VARIABLE, "v", u"成员变量"),
-    "c": lambda: (sublime.KIND_ID_CONSTANT, "c", u"常量"),
-    "t": lambda: (sublime.KIND_ID_TYPE, "T", u"类型"),
-    "k": lambda: (sublime.KIND_ID_KEYWORD, "k", u"关键字"),
-    "u": lambda: (sublime.KIND_ID_FUNCTION, "u", u"自定义"),
-    "s": lambda: (sublime.KIND_ID_SNIPPET, "S", u"代码片段"),
+# 类型标签按 display_language 取用：en 英文 / zh 中文 / both 双语
+_KIND_LABEL = {
+    "f": (u"function", u"函数"),
+    "m": (u"member function", u"成员函数"),
+    "v": (u"member variable", u"成员变量"),
+    "c": (u"constant", u"常量"),
+    "t": (u"type", u"类型"),
+    "k": (u"keyword", u"关键字"),
+    "u": (u"custom", u"自定义"),
+    "s": (u"snippet", u"代码片段"),
 }
+
+
+def _kind_label(code):
+    """按当前显示语言取 kind 标签（弹窗里每次展开时求值）。"""
+    pair = _KIND_LABEL.get(code)
+    if pair is None:
+        return u""
+    lang = _display_language()
+    if lang == "zh":
+        return pair[1]
+    if lang == "both":
+        return pair[0] + u" / " + pair[1]
+    return pair[0]
+
+
+_KIND_MAP = {
+    "f": lambda: (sublime.KIND_ID_FUNCTION, "f", _kind_label("f")),
+    "m": lambda: (sublime.KIND_ID_FUNCTION, "m", _kind_label("m")),
+    "v": lambda: (sublime.KIND_ID_VARIABLE, "v", _kind_label("v")),
+    "c": lambda: (sublime.KIND_ID_CONSTANT, "c", _kind_label("c")),
+    "t": lambda: (sublime.KIND_ID_TYPE, "T", _kind_label("t")),
+    "k": lambda: (sublime.KIND_ID_KEYWORD, "k", _kind_label("k")),
+    "u": lambda: (sublime.KIND_ID_FUNCTION, "u", _kind_label("u")),
+    "s": lambda: (sublime.KIND_ID_SNIPPET, "S", _kind_label("s")),
+}
+
+
+def _annotation(d):
+    """补全弹窗右侧短注释：数据同时带中英，语言在渲染时选定。
+
+    没有 annotation_en 的条目（clangd、用户片段）本来就是英文文本，原样用。
+    """
+    if "annotation_en" not in d:
+        return d.get("annotation") or u""
+    zh = d.get("annotation") or u""
+    en = d.get("annotation_en") or u""
+    lang = _display_language()
+    if lang == "en":
+        return en
+    if lang == "both":
+        if en and zh and en != zh:
+            return u"%s / %s" % (en, zh)
+        return en or zh
+    return zh
 
 
 def _make_item(d):
@@ -158,7 +225,7 @@ def _make_item(d):
     fmt = (sublime.COMPLETION_FORMAT_SNIPPET if is_snippet
            else sublime.COMPLETION_FORMAT_TEXT)
     details = d.get("detail", "")
-    ann = d.get("annotation", "")
+    ann = _annotation(d)
     return sublime.CompletionItem(
         trigger=d["trigger"],
         annotation=ann,
@@ -298,7 +365,7 @@ def _cdb_update(fname, std, force=False):
         os.replace(tmp_path, path)
         _CDB_CACHE["mtime"] = os.path.getmtime(path)
     except Exception as e:
-        _log_error("clangd compile_commands 写入", e)
+        _log_error("clangd compile_commands write", e)
 
 
 def _compiler_include_dirs():
@@ -310,10 +377,10 @@ def _compiler_include_dirs():
     把 g++ 的真实 include 列表喂给 fallbackFlags 后，fallback 也能
     正确解析标准库。
     """
-    if _include_dirs_cache["done"]:
+    compiler = find_compiler()
+    if _include_dirs_cache["done"] and _include_dirs_cache["compiler"] == compiler:
         return list(_include_dirs_cache["dirs"])
     dirs = []
-    compiler = find_compiler()
     if compiler:
         try:
             creationflags = 0x08000000 if os.name == "nt" else 0
@@ -336,12 +403,12 @@ def _compiler_include_dirs():
                     if d and os.path.isdir(d) and d not in dirs:
                         dirs.append(d)
         except Exception as e:
-            _log_error("编译器 include 路径探测", e)
-    _include_dirs_cache.update(dirs=dirs, done=True)
+            _log_error("compiler include path probe", e)
+    _include_dirs_cache.update(compiler=compiler, dirs=dirs, done=True)
     return list(dirs)
 
 
-_include_dirs_cache = {"done": False, "dirs": []}
+_include_dirs_cache = {"compiler": None, "dirs": [], "done": False}
 
 
 def _stop_clangd_client():
@@ -354,6 +421,8 @@ def _stop_clangd_client():
     _clangd_state["client"] = None
     _clangd_state["sig"] = None
     _clangd_state["ready_announced"] = False
+    # 缓存的补全条目属于即将退役的服务端，必须一起丢弃
+    _clangd_state["async_cache"].clear()
 
 
 def _view_for_uri(uri):
@@ -391,27 +460,19 @@ def _apply_clangd_diagnostics(uri):
         items = client.diagnostics_for(view.file_name())
         if items is None:
             return
-        lang = _display_language()
         entries = []
         for (ln, cl, sev, msg) in items:
             sev_en = "error" if sev == 1 else "warning"
-            zh = msg
+            # 只存双语原文，语言留给渲染层（translate_message 返回 (en, zh)）
             try:
-                zh = ca_engine.translate_message(msg)
+                en, zh = ca_engine.translate_message(msg)
             except Exception:
-                pass
-            if lang == "en":
-                text = msg
-            elif lang == "both":
-                text = msg + (u"（%s）" % zh if zh and zh != msg else "")
-            else:
-                text = zh
+                en, zh = msg, msg
             entries.append({
                 "line": ln + 1, "col": cl + 1,
-                "sev": ca_engine.severity_label(sev_en, lang),
                 "sev_en": sev_en,
-                "msg": msg, "zh": zh, "text": text,
-                "ctx": "", "notes": [], "tier": "compiler",
+                "msg": en, "zh": zh,
+                "ctx": "", "ctx_zh": "", "notes": [], "tier": "compiler",
             })
         vid = view.id()
 
@@ -422,11 +483,11 @@ def _apply_clangd_diagnostics(uri):
                 st["compiler_src_hash"] = None  # clangd 诊断无 src hash
                 render_diagnostics(vid)
             except Exception as e:
-                _log_error("clangd 诊断渲染", e)
+                _log_error("clangd diagnostics render", e)
 
         sublime.set_timeout(done, 0)
     except Exception as e:
-        _log_error("clangd 诊断转换", e)
+        _log_error("clangd diagnostics parse", e)
 
 
 def _on_clangd_notify(method, params):
@@ -443,7 +504,8 @@ def _on_clangd_notify(method, params):
             try:
                 sublime.set_timeout(
                     lambda: sublime.status_message(
-                        u"CppAssistant: clangd 引擎已就绪（语义补全已接管）"),
+                        u"[CppAssistant] clangd engine ready "
+                        u"(semantic completion active)"),
                     0)
             except Exception:
                 pass
@@ -452,7 +514,7 @@ def _on_clangd_notify(method, params):
             try:
                 _apply_clangd_diagnostics(uri)
             except Exception as e:
-                _log_error("clangd 诊断回调", e)
+                _log_error("clangd notify callback", e)
 
 
 def _get_clangd_client(view):
@@ -477,8 +539,9 @@ def _get_clangd_client(view):
     if not binary:
         st["no_server"] = True
         sublime.status_message(
-            u"CppAssistant: 未找到 clangd，补全使用内置数据库"
-            u"（可设置 clangd_binary 指定路径）")
+            u"[CppAssistant] clangd not found (not in PATH), "
+            u"completion uses the builtin database. "
+            u"Set clangd_binary to point at the executable.")
         return None
     root = _clangd_root_for(view)
     std = _s("cxx_standard", "c++14")
@@ -513,7 +576,7 @@ def _get_clangd_client(view):
         c.start()
     except Exception as e:
         st["last_fail"] = now
-        _log_error("clangd 启动", e)
+        _log_error("clangd start", e)
         return None
     st["client"] = c
     st["root"] = root
@@ -542,7 +605,7 @@ def _warm_clangd_document(view):
         else:
             client.open_document(fname, text)
     except Exception as e:
-        _log_error("clangd 预热", e)
+        _log_error("clangd document warm-up", e)
 
 
 def _snippet_items_for_prefix(prefix):
@@ -560,7 +623,8 @@ def _snippet_items_for_prefix(prefix):
     for trig, body, desc, kd in SNIPPETS:
         if trig.lower().startswith(low):
             out.append({"trigger": trig, "insert": body,
-                        "annotation": desc, "kind": kd,
+                        "annotation": desc, "annotation_en": en_detail(trig)
+                        or u"", "kind": kd,
                         "detail": desc, "snippet": True})
     return out
 
@@ -626,7 +690,7 @@ def _stash_includes(view, dicts):
             "items": items,
         }
     except Exception as e:
-        _log_error("头文件插入暂存", e)
+        _log_error("include insertion staging", e)
 
 
 def _apply_pending_includes(view, hdrs):
@@ -644,7 +708,7 @@ def _apply_pending_includes(view, hdrs):
         view.run_command("ca_insert_pending_includes",
                          {"includes": [str(h) for h in hdrs]})
     except Exception as e:
-        _log_error("头文件插入", e)
+        _log_error("include insertion apply", e)
 
 
 class CaInsertPendingIncludesCommand(sublime_plugin.TextCommand):
@@ -734,7 +798,7 @@ class CaEventListener(sublime_plugin.EventListener):
                     cache_version=view.change_count(),
                     clangd_style=clangd_style)
             except Exception as e:
-                _log_error("补全引擎", e)
+                _log_error("completion engine", e)
                 return None
             dicts = _tier_sort_static(results, prefix)
             _clangd_state["stats"]["builtin"] += 1
@@ -765,7 +829,9 @@ class CaEventListener(sublime_plugin.EventListener):
         if not fname:
             return None
         std = _s("cxx_standard", "c++14")
-        key = (view.buffer_id(), view.change_count(), off)
+        # 键含 C++ 标准：改标准后 clangd 的答案集会变，不能让旧标准下
+        # 生成的候选继续命中（文本未变时也必须重来）。
+        key = (view.buffer_id(), view.change_count(), off, std)
         cache = st["async_cache"]
         if key in cache:
             items = cache.get(key)
@@ -774,9 +840,10 @@ class CaEventListener(sublime_plugin.EventListener):
                 _stash_includes(view, dicts)
                 return dicts
             return None
-        # 同步等待上限压到 30ms（clangd 热路径 5~30ms 大概率命中）；
-        # 未命中走兜底 + 异步刷新，不阻塞打字节奏（等待越久每键越卡）
-        wait_ms = int(_s("clangd_completion_wait_ms", 30) or 0)
+        # 默认完全异步：UI 线程零阻塞，首弹窗为内置数据库结果，clangd
+        # 结果到达后自动刷新（on_arrival -> _maybe_refresh_popup）。
+        # 需要更准的首弹窗可把 clangd_completion_wait_ms 调大。
+        wait_ms = int(_s("clangd_completion_wait_ms", 0) or 0)
 
         def on_arrival(parsed):
             if not parsed:
@@ -864,7 +931,7 @@ class CaEventListener(sublime_plugin.EventListener):
                 return
             _apply_pending_includes(view, hit)
         except Exception as e:
-            _log_error("头文件插入检测", e)
+            _log_error("include insertion detect", e)
 
     def on_pre_save(self, view):
         if _s("format_on_save", False) and _is_cpp(view):
@@ -887,7 +954,7 @@ class CaEventListener(sublime_plugin.EventListener):
             sublime.set_timeout(
                 lambda: run_hover(view, point), 0)
         except Exception as e:
-            _log_error("hover 触发", e)
+            _log_error("hover trigger", e)
 
     # ---- signature help 触发（80ms 防抖）----
     def _maybe_signature_help(self, view):
@@ -905,7 +972,7 @@ class CaEventListener(sublime_plugin.EventListener):
             tmr.start()
             _sig_timers[vid] = tmr
         except Exception as e:
-            _log_error("签名提示触发", e)
+            _log_error("signature help trigger", e)
 
     def _maybe_lint(self, view, debounce=False):
         if not _is_cpp(view):
@@ -987,7 +1054,7 @@ _PCH_LOCK = threading.Lock()
 
 # PCH 内容：仅用于生成 .gch；后续通过 -include 命令行挂载
 PCH_HEADER_TEXT = (
-    "// CppAssistant 预编译头（jiangly 风格）\n"
+    "// CppAssistant precompiled header (jiangly style)\n"
     "#ifndef CA_ASSISTANT_PCH_H\n"
     "#define CA_ASSISTANT_PCH_H\n"
     "#include <bits/stdc++.h>\n"
@@ -1022,7 +1089,7 @@ def _compiler_version(compiler):
         if proc.returncode == 0 and out:
             ver = out.decode("utf-8", "replace").strip() or "unknown"
     except Exception as e:
-        _log_error("编译器版本查询", e)
+        _log_error("compiler version query", e)
     _compiler_version_cache[compiler] = ver
     return ver
 
@@ -1079,7 +1146,7 @@ def _build_pch(compiler, std):
             _PCH_READY.add(sig)
             _sweep_old_pch(sig)
     except Exception as e:
-        _log_error("PCH 构建", e)
+        _log_error("PCH build", e)
     finally:
         with _PCH_LOCK:
             _PCH_BUILDING.discard(sig)
@@ -1090,7 +1157,7 @@ def _warm_pch_async():
         compiler = find_compiler()
         if compiler is None:
             return
-        std = str(_s("cxx_standard", "c++17"))
+        std = str(_s("cxx_standard", "c++14"))
         _, _, gch = _pch_paths(compiler, std)
         if not os.path.isfile(gch):
             _build_pch(compiler, std)
@@ -1101,10 +1168,8 @@ def _warm_pch_async():
 
 
 def plugin_loaded():
-    global _settings_obj
-    _settings_obj = sublime.load_settings(_SETTINGS)
-    _settings_obj.clear_on_change("cppassistant")
-    _settings_obj.add_on_change("cppassistant", _on_settings_changed)
+    # 只做 PCH 预热。设置全部按需从 API 读取，缓存按设置签名自愈，
+    # 因此不需要 add_on_change 监听。
     if _s("enable_linting", True) and _s("enable_pch", True):
         # 尽早后台预热 PCH，让首次编译器检查就享受加速
         sublime.set_timeout(_warm_pch_async, 1200)
@@ -1115,41 +1180,44 @@ def plugin_loaded():
 # ---------------------------------------------------------------------------
 
 def find_compiler():
-    if _compiler_cache["done"]:
+    configured = _s("compiler_path", "") or ""
+    if _compiler_cache["done"] and _compiler_cache["configured"] == configured:
         return _compiler_cache["path"]
-    path = _s("compiler_path", "") or ""
-    if path and os.path.isfile(path):
-        _compiler_cache.update(path=path, done=True)
-        return path
+    if configured and os.path.isfile(configured):
+        _compiler_cache.update(configured=configured, path=configured,
+                               done=True)
+        return configured
     for cand in ("g++", "clang++"):
         w = shutil.which(cand)
         if w:
-            _compiler_cache.update(path=w, done=True)
+            _compiler_cache.update(configured=configured, path=w, done=True)
             return w
-    _compiler_cache.update(path=None, done=True)
+    _compiler_cache.update(configured=configured, path=None, done=True)
     return None
 
 
 def _settings_sig(compiler):
-    """影响诊断结果的设置签名，用于结果缓存失效判断。"""
-    return (str(_s("cxx_standard", "c++17")),
+    """影响诊断"内容"的设置签名，用于结果缓存失效判断。
+
+    显示语言与幽灵提示条不在其中：它们只影响渲染，不影响 clangd/编译器
+    的产出，因此切换语言不会作废缓存（渲染时按当前语言取用）。
+    """
+    return (str(_s("cxx_standard", "c++14")),
             repr(_s("compiler_extra_args", [])),
             repr(_s("include_paths", [])),
             bool(_s("enable_pch", True)),
-            bool(_s("show_phantoms", True)),
-            str(_s("display_language", "zh")),
             compiler or "")
 
 
 def _display_language():
     """读取用户设置的诊断显示语言。
 
-    合法值: 'zh' (中文, 默认), 'en' (英文), 'both' (双语)
+    合法值: 'en' (英文, 默认), 'zh' (中文), 'both' (双语)
     """
-    v = str(_s("display_language", "zh")).lower().strip()
+    v = str(_s("display_language", "en")).lower().strip()
     if v in ("zh", "en", "both"):
         return v
-    return "zh"
+    return "en"
 
 
 def _compile_with_cmd(cmd, src, workdir, view_id):
@@ -1183,7 +1251,7 @@ def _compile_with_cmd(cmd, src, workdir, view_id):
                 except Exception:
                     pass
     except Exception as e:
-        _log_error("编译器启动", e)
+        _log_error("compiler launch", e)
         out = None
         if proc is not None:
             try:
@@ -1224,7 +1292,7 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
         return
 
     cmd = [compiler, "-fsyntax-only",
-           "-std=" + str(_s("cxx_standard", "c++17")),
+           "-std=" + str(_s("cxx_standard", "c++14")),
            "-Wall", "-fno-diagnostics-show-caret", "-x", "c++"]
     cmd += [str(a) for a in _s("compiler_extra_args", [])]
     for inc in _s("include_paths", []):
@@ -1232,7 +1300,7 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
     # PCH 加速：使用 -include 直接挂载
     pch_hdr = pch_gch = None
     if _s("enable_pch", True) and "bits/stdc++.h" in src:
-        std = str(_s("cxx_standard", "c++17"))
+        std = str(_s("cxx_standard", "c++14"))
         sig, hdr, gch = _pch_paths(compiler, std)
         if os.path.isfile(gch):
             cmd += ["-include", hdr]
@@ -1261,8 +1329,8 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
             except OSError:
                 pass
             _PCH_READY.discard(
-                _pch_paths(compiler, str(_s("cxx_standard", "c++17")))[0])
-            std = str(_s("cxx_standard", "c++17"))
+                _pch_paths(compiler, str(_s("cxx_standard", "c++14")))[0])
+            std = str(_s("cxx_standard", "c++14"))
             threading.Thread(
                 target=_build_pch, args=(compiler, std), daemon=True).start()
             cmd_nopch = [c for c in cmd]
@@ -1275,7 +1343,7 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
         # 超时或被新检查取代：保留旧标记，不清屏
         return
     text = _decode(out)
-    entries = ca_engine.parse_compiler_output(text, _display_language())
+    entries = ca_engine.parse_compiler_output(text)
     diags = []
     for e in entries:
         e["tier"] = "compiler"
@@ -1303,17 +1371,17 @@ def _decode(b):
 
 
 def _basic_diags(problems):
-    """把 basic_checks 的输出包装为统一诊断结构（tier=basic）。"""
-    lang = _display_language()
+    """把 basic_checks 的输出包装为统一诊断结构（tier=basic）。
+
+    basic_checks 每条给出 (行, 列, 级别, 英文, 中文)，语言仍由渲染层选定。
+    """
     out = []
-    for (ln, cl, sv, msg) in problems:
-        # 基础检查消息已是中文，但 sev 标签需按语言处理
-        sev_en = "error" if sv == "error" else "warning"
+    for (ln, cl, sv, en, zh) in problems:
         out.append({
             "line": ln, "col": cl,
-            "sev": ca_engine.severity_label(sev_en, lang),
-            "sev_en": sev_en,
-            "msg": msg, "zh": msg, "text": msg, "ctx": "", "notes": [],
+            "sev_en": "error" if sv == "error" else "warning",
+            "msg": en, "zh": zh,
+            "ctx": "", "ctx_zh": "", "notes": [],
             "tier": "basic",
         })
     return out
@@ -1336,7 +1404,7 @@ def run_basic_check(view):
         try:
             problems = ca_engine.basic_checks(src)
         except Exception as e:
-            _log_error("基础检查", e)
+            _log_error("basic check", e)
             return
         diags = _basic_diags(problems)
 
@@ -1404,13 +1472,7 @@ def run_lint(view):
         except Exception:
             pass
     if compiler is not None:
-        lang = _display_language()
-        if lang == "en":
-            view.set_status("ca_diag", u"\u23f3 linting...")
-        elif lang == "both":
-            view.set_status("ca_diag", u"\u23f3 正在语法检查(linting)...")
-        else:
-            view.set_status("ca_diag", u"\u23f3 正在语法检查…")
+        view.set_status("ca_diag", _STATUS_LINTING[_display_language()])
     th = threading.Thread(target=_lint_work,
                           args=(vid, src, workdir, fname, gen, ckey))
     th.daemon = True
@@ -1426,6 +1488,32 @@ _PHANTOM_TMPL = (
     '<div class="ca">{icon} {text}</div>'
     '</body>'
 )
+
+
+# 诊断文本里按语言取用的固定片段（诊断内容本身由 ca_engine 提供双语）
+_BASIC_TAG = {"en": u"[instant]", "zh": u"[即时检查]",
+              "both": u"[instant / 即时检查]"}
+_STATUS_COUNT = {"en": u"\u2716 %d error  \u26a0 %d warning",
+                 "zh": u"\u2716 %d 错误  \u26a0 %d 警告",
+                 "both": u"\u2716 %d 错误(error)  \u26a0 %d 警告(warning)"}
+_STATUS_CLEAN = {"en": u"\u2714 no syntax errors",
+                 "zh": u"\u2714 无语法错误",
+                 "both": u"\u2714 无语法错误(no errors)"}
+_STATUS_LINTING = {"en": u"linting...",
+                   "zh": u"正在语法检查...",
+                   "both": u"正在语法检查(linting)..."}
+_SEV_TAG = {"en": {True: u"[error]", False: u"[warning]"},
+            "zh": {True: u"[错误]", False: u"[警告]"},
+            "both": {True: u"[error / 错误]", False: u"[warning / 警告]"}}
+
+
+def _loc_str(lang, line, col):
+    """诊断面板里的位置前缀，按显示语言生成。"""
+    if lang == "zh":
+        return u"第%d行%d列" % (line, col)
+    if lang == "both":
+        return u"line %d:%d (第%d行%d列)" % (line, col, line, col)
+    return u"line %d:%d" % (line, col)
 
 
 def render_diagnostics(view_id):
@@ -1449,6 +1537,7 @@ def render_diagnostics(view_id):
     panel_lines = []
     n_err = n_warn = 0
     max_pt = view.size()
+    lang = _display_language()
 
     for d in diags:
         ln = max(int(d["line"]) - 1, 0)
@@ -1467,7 +1556,7 @@ def render_diagnostics(view_id):
         if end == pt:
             end = min(pt + 1, max_pt)
         region = sublime.Region(pt, end)
-        is_err = (d.get("sev_en") == "error")
+        is_err = d.get("sev_en") in ("error", "fatal error")
         if is_err:
             err_regions.append(region)
             n_err += 1
@@ -1475,33 +1564,21 @@ def render_diagnostics(view_id):
             warn_regions.append(region)
             n_warn += 1
 
-        # 按用户语言偏好选择显示文本
-        text = d.get("text") or (d.get("zh") if d.get("zh") else d.get("msg", ""))
+        # 语言在渲染时才决定：诊断缓存因此与 display_language 无关
+        text = ca_engine.format_message(d.get("msg"), d.get("zh"), lang)
         if d.get("tier") == "basic":
-            # 即时检查消息前面标记
-            if _display_language() == "en":
-                text = "[instant] " + text
-            elif _display_language() == "both":
-                text = "[instant / 即时检查] " + text
-            else:
-                text = "[即时检查] " + text
+            text = u"%s %s" % (_BASIC_TAG[lang], text)
         icon = u"\u2716" if is_err else u"\u26a0"
         color = "redish" if is_err else "yellowish"
         if _s("show_phantoms", True) and len(phantoms) < 40:
             body = _PHANTOM_TMPL.format(color=color, icon=icon, text=text)
             phantoms.append(sublime.Phantom(
                 region, body, sublime.LAYOUT_BELOW))
-        # 面板输出与状态栏标签
-        sev = d.get("sev", "")
-        if _display_language() == "en":
-            tag = "[error]" if is_err else "[warning]"
-        elif _display_language() == "both":
-            tag = "[error / 错误]" if is_err else "[warning / 警告]"
-        else:
-            tag = "[错误]" if is_err else "[警告]"
-        ctx = d.get("ctx") or ""
-        panel_lines.append(u"%s %s第%d行%d列  %s" %
-                           (tag, ctx, d["line"], d["col"], text))
+        # 面板输出
+        tag = _SEV_TAG[lang][bool(is_err)]
+        ctx = ca_engine.format_message(d.get("ctx"), d.get("ctx_zh"), lang)
+        panel_lines.append(u"%s %s%s  %s" % (
+            tag, ctx, _loc_str(lang, d["line"], d["col"]), text))
 
     flags = (sublime.DRAW_SQUIGGLY_UNDERLINE | sublime.DRAW_NO_FILL |
              sublime.DRAW_NO_OUTLINE)
@@ -1524,24 +1601,9 @@ def render_diagnostics(view_id):
         ps.update(phantoms)
 
     if n_err or n_warn:
-        lang = _display_language()
-        if lang == "en":
-            view.set_status("ca_diag",
-                            u"\u2716 %d error  \u26a0 %d warning" % (n_err, n_warn))
-        elif lang == "both":
-            view.set_status("ca_diag",
-                            u"\u2716 %d 错误(error)  \u26a0 %d 警告(warning)" % (n_err, n_warn))
-        else:
-            view.set_status("ca_diag",
-                            u"\u2716 %d 错误  \u26a0 %d 警告" % (n_err, n_warn))
+        view.set_status("ca_diag", _STATUS_COUNT[lang] % (n_err, n_warn))
     elif comp or st.get("basic"):
-        lang = _display_language()
-        if lang == "en":
-            view.set_status("ca_diag", u"\u2714 no syntax errors")
-        elif lang == "both":
-            view.set_status("ca_diag", u"\u2714 无语法错误(no errors)")
-        else:
-            view.set_status("ca_diag", u"\u2714 无语法错误")
+        view.set_status("ca_diag", _STATUS_CLEAN[lang])
     else:
         view.set_status("ca_diag", "")
 
@@ -1618,7 +1680,7 @@ class CaHoverText(sublime_plugin.TextCommand):
                             location=point, max_width=640)
             _clangd_state["sig_active"] = False
         except Exception as e:
-            _log_error("hover 弹窗", e)
+            _log_error("hover popup", e)
 
 
 class CaSignaturePopupText(sublime_plugin.TextCommand):
@@ -1646,11 +1708,14 @@ class CaSignaturePopupText(sublime_plugin.TextCommand):
                             sublime.HIDE_ON_MOUSE_MOVE_AWAY, max_width=640)
             _clangd_state["sig_active"] = True
         except Exception as e:
-            _log_error("签名弹窗", e)
+            _log_error("signature popup", e)
 
 
 def run_hover(view, point):
-    """后台线程：请求 clangd hover 并回到 UI 线程弹窗。"""
+    """Read the hovered symbol on the UI thread, then request the hover
+    document on a worker thread. Only the finished popup hops back with
+    set_timeout, so a slow clangd can never stall typing.
+    """
     try:
         if not view.is_valid() or not _is_cpp(view):
             return
@@ -1671,25 +1736,33 @@ def run_hover(view, point):
         if view.is_popup_visible() and st.get("hover_word") == word:
             return
         st["hover_word"] = word
+        seq = st["hover_seq"] = st.get("hover_seq", 0) + 1
         size = view.size()
         text = view.substr(sublime.Region(0, min(size, 400000)))
-        got = _clangd_fetch(fname, "hover", text, point)
-        if not got:
-            return
 
-        def show():
+        def work():
             try:
-                if not view.is_valid():
+                got = _clangd_fetch(fname, "hover", text, point)
+                if not got:
                     return
-                # 鼠标已移到别的符号：丢弃过期结果
-                if st.get("hover_word") != word:
-                    return
-                view.run_command("ca_hover", {"point": point,
-                                              "body": got[1]})
-            except Exception as e:
-                _log_error("hover 展示", e)
 
-        sublime.set_timeout(show, 0)
+                def show():
+                    try:
+                        if not view.is_valid() or \
+                                _clangd_state.get("hover_seq") != seq:
+                            return
+                        view.run_command("ca_hover", {"point": point,
+                                                      "body": got[1]})
+                    except Exception as e:
+                        _log_error("hover popup show", e)
+
+                sublime.set_timeout(show, 0)
+            except Exception as e:
+                _log_error("hover", e)
+
+        th = threading.Thread(target=work)
+        th.daemon = True
+        th.start()
     except Exception as e:
         _log_error("hover", e)
 
@@ -1757,12 +1830,41 @@ def run_signature_help(view):
             return
         size = view.size()
         text = view.substr(sublime.Region(0, min(size, 400000)))
-        got = _clangd_fetch(fname, "signature", text, pt)
-        if not got:
-            return
-        view.run_command("ca_signature_popup", {"got": got})
+        cc = view.change_count()
+        seq = _clangd_state["sig_seq"] = \
+            _clangd_state.get("sig_seq", 0) + 1
+
+        def work():
+            try:
+                got = _clangd_fetch(fname, "signature", text, pt)
+                if not got:
+                    return
+
+                def show():
+                    try:
+                        st = _clangd_state
+                        if not view.is_valid() or \
+                                st.get("sig_seq") != seq:
+                            return
+                        # 结果生成期间又打了字或移动了光标：作废
+                        if view.change_count() != cc:
+                            return
+                        sel = view.sel()
+                        if not sel or sel[0].begin() != pt:
+                            return
+                        view.run_command("ca_signature_popup", {"got": got})
+                    except Exception as e:
+                        _log_error("signature popup", e)
+
+                sublime.set_timeout(show, 0)
+            except Exception as e:
+                _log_error("signature help", e)
+
+        th = threading.Thread(target=work)
+        th.daemon = True
+        th.start()
     except Exception as e:
-        _log_error("签名提示", e)
+        _log_error("signature help", e)
 
 
 # ---------------------------------------------------------------------------
@@ -1770,188 +1872,89 @@ def run_signature_help(view):
 # ---------------------------------------------------------------------------
 
 class CaSetDisplayLanguageCommand(sublime_plugin.ApplicationCommand):
-    """通过命令面板或菜单项直接设置 display_language。
+    """Set display_language through the settings API and re-render open views.
 
-    行为：直接改写 User/CppAssistant.sublime-settings 里的 display_language 字段。
-    设置变更会触发 _on_settings_changed，自动清空诊断缓存并重渲染。
+    诊断条目同时携带中英文文本，语言在渲染时才选定，所以切换语言
+    不需要作废任何缓存。
     """
 
     def run(self, lang):
-        if lang not in ("zh", "en", "both"):
-            sublime.status_message("[CppAssistant] 非法语言: %s" % lang)
+        if lang not in ("en", "zh", "both"):
+            sublime.status_message(
+                "[CppAssistant] invalid language: %s" % lang)
             return
-        path = os.path.join(sublime.packages_path(), "User",
-                            "CppAssistant.sublime-settings")
-        data = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = sublime.decode_value(f.read()) or {}
-            except Exception:
-                data = {}
-        if not isinstance(data, dict):
-            data = {}
-        old = data.get("display_language", "zh")
-        if old == lang:
+        if not _set_setting("display_language", lang):
             return
-        data["display_language"] = lang
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(sublime.encode_value(data, True))
-        except Exception as e:
-            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
-            return
-        if _display_language() == lang:
-            label = {"zh": "中文", "en": "English", "both": "中英双语"}.get(lang)
-            sublime.status_message("[CppAssistant] 诊断显示语言已切换: %s" % label)
+        _refresh_cpp_views()
+        sublime.status_message("[CppAssistant] diagnostic language: %s" % lang)
+
+    def is_checked(self, lang=None):
+        return _display_language() == lang
 
 
 class CaSetCompletionModeCommand(sublime_plugin.ApplicationCommand):
-    """通过命令面板或菜单项直接切换补全模式。
+    """Switch the completion matching style.
 
-    模式说明：
-      - clangd   （LSP-clangd 风格，默认）：所有以当前前缀开头、属于当前作用域
-                的补全立即弹出；额外允许子串/子序列模糊匹配。
-      - basic    （严格前缀基础模式）：只保留严格前缀匹配，过滤掉所有
-                子串/子序列模糊结果，行为最简洁最可预测。
-
-    行为：直接改写 User/CppAssistant.sublime-settings 里的
-    enable_clangd_style_completion 字段。设置变更会触发 _on_settings_changed，
-    自动清空补全/诊断缓存并立即生效。
+    clangd = LSP-clangd 风格（作用域内前缀 + 模糊匹配）；
+    basic  = 仅严格前缀匹配。补全缓存键含该模式，改完自愈。
     """
 
     def run(self, mode):
         if mode not in ("clangd", "basic"):
-            sublime.status_message("[CppAssistant] 非法补全模式: %s" % mode)
+            sublime.status_message(
+                "[CppAssistant] invalid completion mode: %s" % mode)
             return
-        path = os.path.join(sublime.packages_path(), "User",
-                            "CppAssistant.sublime-settings")
-        data = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = sublime.decode_value(f.read()) or {}
-            except Exception:
-                data = {}
-        if not isinstance(data, dict):
-            data = {}
-        new_value = (mode == "clangd")
-        old_value = data.get("enable_clangd_style_completion", True)
-        if old_value == new_value:
-            label = {"clangd": "LSP-clangd 风格", "basic": "严格前缀基础模式"}[mode]
-            sublime.status_message("[CppAssistant] 补全模式已是: %s" % label)
+        if not _set_setting("enable_clangd_style_completion",
+                            mode == "clangd"):
             return
-        data["enable_clangd_style_completion"] = new_value
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(sublime.encode_value(data, True))
-        except Exception as e:
-            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
-            return
-        label = {"clangd": "LSP-clangd 风格（模糊匹配）",
-                 "basic": "严格前缀基础模式（仅前缀匹配）"}[mode]
-        sublime.status_message("[CppAssistant] 补全模式已切换: %s" % label)
+        sublime.status_message("[CppAssistant] completion mode: %s" % mode)
+
+    def is_checked(self, mode=None):
+        return bool(_s("enable_clangd_style_completion", True)) == \
+            (mode == "clangd")
 
 
 class CaSetCompletionEngineCommand(sublime_plugin.ApplicationCommand):
-    """切换补全引擎。
+    """Switch the completion engine.
 
-    引擎说明：
-      - clangd  （默认，推荐）：内嵌最小 LSP 客户端直接驱动真实 clangd
-                语言服务器，编译器级语义补全（签名/重载/局部变量）。
-                用户片段排最前，结果遵循当前 C++ 标准（CSP-S 推荐 c++14）。
-      - builtin ：内置 STL 数据库兜底（零依赖，无 clangd 也可用）。
-                用户片段排最前，C++14 档排前面，C++17/20/23 档排后面。
-
-    行为：改写 User/CppAssistant.sublime-settings 里的
-    enable_clangd_engine 字段，设置变更自动重启引擎并立即生效。
+    clangd  = 内嵌 LSP 客户端驱动真实 clangd（语义补全）；
+    builtin = 内置 STL 数据库兜底（零依赖）。
     """
 
     def run(self, engine):
         if engine not in ("clangd", "builtin"):
-            sublime.status_message("[CppAssistant] 非法补全引擎: %s" % engine)
+            sublime.status_message(
+                "[CppAssistant] invalid completion engine: %s" % engine)
             return
-        path = os.path.join(sublime.packages_path(), "User",
-                            "CppAssistant.sublime-settings")
-        data = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = sublime.decode_value(f.read()) or {}
-            except Exception:
-                data = {}
-        if not isinstance(data, dict):
-            data = {}
-        new_value = (engine == "clangd")
-        old_value = data.get("enable_clangd_engine", True)
-        if old_value == new_value:
-            label = {"clangd": "真实 clangd 引擎", "builtin": "内置数据库"}[engine]
-            sublime.status_message("[CppAssistant] 补全引擎已是: %s" % label)
+        if not _set_setting("enable_clangd_engine", engine == "clangd"):
             return
-        data["enable_clangd_engine"] = new_value
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(sublime.encode_value(data, True))
-        except Exception as e:
-            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
-            return
-        _stop_clangd_client()  # 强制下次按新引擎重建
-        label = {"clangd": u"真实 clangd 引擎（LSP-clangd 移植）",
-                 "builtin": u"内置数据库（C++14 档优先）"}[engine]
-        sublime.status_message("[CppAssistant] 补全引擎已切换: %s" % label)
+        # 客户端和它的补全缓存都属于上一个引擎，一起退役；
+        # 切回 clangd 时由首次补全懒启动。
+        _stop_clangd_client()
+        sublime.status_message("[CppAssistant] completion engine: %s" % engine)
+
+    def is_checked(self, engine=None):
+        return bool(_s("enable_clangd_engine", True)) == (engine == "clangd")
 
 
 class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
-    """切换诊断引擎（lint_engine）。
+    """Switch the diagnostics source (lint_engine).
 
-    - compiler（默认）：后台调用 g++/clang++ 完整检查（现有行为）
-    - clangd：LSP 式代码审查——直接使用 clangd 推送的
-      publishDiagnostics（与 LSP-clangd 的诊断一致），不再启动编译器
-      进程；诊断消息仍经过插件翻译表本地化。clangd 模式要求
-      enable_clangd_engine 开启（clangd 未运行时退回即时基础检查）
+    compiler = 后台调用 g++/clang++ 完整检查；
+    clangd   = 直接用 clangd 推送的 publishDiagnostics（要求
+               enable_clangd_engine 开启）。
     """
 
     def run(self, engine):
         if engine not in ("compiler", "clangd"):
-            sublime.status_message("[CppAssistant] 非法诊断引擎: %s" % engine)
+            sublime.status_message(
+                "[CppAssistant] invalid lint engine: %s" % engine)
             return
-        path = os.path.join(sublime.packages_path(), "User",
-                            "CppAssistant.sublime-settings")
-        data = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = sublime.decode_value(f.read()) or {}
-            except Exception:
-                data = {}
-        if not isinstance(data, dict):
-            data = {}
-        if data.get("lint_engine", "compiler") == engine:
-            label = {"compiler": u"编译器检查", "clangd": u"clangd 诊断 (LSP 式)"}[engine]
-            sublime.status_message("[CppAssistant] 诊断引擎已是: %s" % label)
+        if not _set_setting("lint_engine", engine):
             return
-        data["lint_engine"] = engine
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(sublime.encode_value(data, True))
-        except Exception as e:
-            sublime.status_message("[CppAssistant] 写入设置失败: %s" % e)
-            return
-        label = {"compiler": u"编译器检查 (g++/clang++)",
-                 "clangd": u"clangd 诊断 (LSP 式代码审查)"}[engine]
-        sublime.status_message("[CppAssistant] 诊断引擎已切换: %s" % label)
-        # 立即刷新所有视图（clangd 模式下等 clangd 下一轮推送；
-        # compiler 模式触发一次完整检查）
-        for w in sublime.windows():
-            for v in w.views():
-                try:
-                    if engine == "compiler" and _is_cpp(v):
-                        render_diagnostics(v.id())
-                        run_lint(v)
-                    else:
-                        render_diagnostics(v.id())
-                except Exception:
-                    pass
+        # clangd 模式等它推下一轮；compiler 模式立刻补一次检查
+        _refresh_cpp_views(rerun_lint=(engine == "compiler"))
+        sublime.status_message("[CppAssistant] lint engine: %s" % engine)
 
     def is_checked(self, engine=None):
         return str(_s("lint_engine", "compiler")) == engine
@@ -1972,7 +1975,7 @@ class CaShowDiagnosticsCommand(sublime_plugin.WindowCommand):
         panel = self.window.create_output_panel("ca_diagnostics")
         panel.settings().set("word_wrap", True)
         panel.run_command("ca_panel_clear")
-        txt = "\n".join(lines) if lines else u"当前没有诊断信息。"
+        txt = "\n".join(lines) if lines else u"No diagnostics."
         panel.run_command("append", {"characters": txt, "force": True})
         self.window.run_command("show_panel",
                                 {"panel": "output.ca_diagnostics"})
@@ -1992,67 +1995,59 @@ class CaShowEngineStatusCommand(sublime_plugin.TextCommand):
         binary = ca_clangd.find_clangd(_s("clangd_binary", "") or None)
         c = st["client"]
         lines = [
-            u"CppAssistant 补全引擎诊断",
+            u"CppAssistant completion engine status",
             u"-----------------------------",
-            u"clangd 程序: %s" % (binary or u"未找到（PATH 里没有 clangd）"),
+            u"clangd binary: %s" % (
+                binary or u"not found (no clangd in PATH)"),
         ]
         if c is None:
-            lines.append(u"clangd 客户端: 未启动")
+            lines.append(u"clangd client: not started")
         else:
             try:
-                lines.append(u"clangd 客户端: alive=%s ready=%s" %
+                lines.append(u"clangd client: alive=%s ready=%s" %
                              (c.is_alive(), c.is_ready()))
                 try:
                     fname = view.file_name()
                     pre = c.is_preamble_ready(fname) if fname else False
                 except Exception:
                     pre = False
-                lines.append(u"preamble 就绪（诊断已到达）: %s" % pre)
+                lines.append(u"preamble ready (diagnostics received): %s"
+                             % pre)
                 if not pre:
-                    lines.append(u"（preamble 构建中：c++23 等高档标准 + "
-                                 u"bits/stdc++.h 冷启动需 10s 左右，"
-                                 u"期间补全由内置数据库兜底）")
+                    lines.append(u"(preamble still building: high standards "
+                                 u"such as c++23 plus bits/stdc++.h need "
+                                 u"about 10s from a cold start; completion "
+                                 u"uses the builtin database meanwhile)")
             except Exception:
-                lines.append(u"clangd 客户端: 状态异常")
-        lines.append(u"无服务器标志 no_server: %s" % st.get("no_server"))
-        lines.append(u"引擎开关 enable_clangd_engine: %s" %
+                lines.append(u"clangd client: status unavailable")
+        lines.append(u"no_server flag: %s" % st.get("no_server"))
+        lines.append(u"enable_clangd_engine: %s" %
                      _s("enable_clangd_engine", True))
-        lines.append(u"补全模式 clangd_style: %s" %
+        lines.append(u"clangd_style: %s" %
                      _s("enable_clangd_style_completion", True))
-        lines.append(u"C++ 标准 cxx_standard: %s" %
+        lines.append(u"cxx_standard: %s" %
                      _s("cxx_standard", "c++14"))
-        lines.append(u"本次会话补全来源统计: clangd %d 次 / 内置兜底 %d 次"
+        lines.append(u"completion source this session: clangd %d / "
+                     u"builtin %d"
                      % (stats.get("clangd", 0), stats.get("builtin", 0)))
-        lines.append(u"当前文件已保存: %s（未保存时 clangd 不接管）"
+        lines.append(u"current file saved: %s (clangd skips unsaved files)"
                      % bool(view.file_name()))
-        lines.append(u"当前文件识别为 C++: %s" % _is_cpp(view))
+        lines.append(u"current file detected as C++: %s" % _is_cpp(view))
         msg = u"\n".join(lines)
-        print("[CppAssistant] ===== 引擎诊断 =====")
+        print("[CppAssistant] engine status")
         print(msg)
         sublime.message_dialog(msg)
 
 
 class CaTogglePhantomsCommand(sublime_plugin.ApplicationCommand):
-    """显示/隐藏错误幽灵提示条（即时生效，不改默认设置文件之外的东西）。"""
+    """显示/隐藏行内幽灵提示条（状态栏与波浪线不受影响）。"""
 
     def run(self):
-        cur = bool(_s("show_phantoms", True))
-        new = not cur
-        if _settings_obj is not None:
-            _settings_obj.set("show_phantoms", new)
-            try:
-                sublime.save_settings("CppAssistant.sublime-settings")
-            except Exception:
-                pass
-        for w in sublime.windows():
-            for v in w.views():
-                try:
-                    render_diagnostics(v.id())
-                except Exception:
-                    pass
-        sublime.status_message(
-            u"CppAssistant: 幽灵提示条已%s（状态栏与波浪线不受影响）"
-            % (u"显示" if new else u"隐藏"))
+        new = not bool(_s("show_phantoms", True))
+        _set_setting("show_phantoms", new)
+        _refresh_cpp_views()
+        sublime.status_message("[CppAssistant] inline phantoms: %s" %
+                               ("on" if new else "off"))
 
     def is_checked(self):
         return bool(_s("show_phantoms", True))
@@ -2087,7 +2082,7 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
         if not _is_cpp(view):
-            view.set_status("ca_fmt", u"仅支持 C/C++ 文件")
+            view.set_status("ca_fmt", u"only C/C++ files are supported")
             return
         src = view.substr(sublime.Region(0, view.size()))
         if not src.strip():
@@ -2115,17 +2110,17 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
                 out, err = None, b"timeout/error"
             if out is not None and proc.returncode == 0:
                 new_text = _decode(out)
-                engine_name = u"clang-format 引擎"
+                engine_name = u"clang-format"
             elif err:
-                print("[CppAssistant] clang-format 调用失败:",
+                print("[CppAssistant] clang-format failed:",
                       _decode(err).strip())
         if new_text is None:
             width = int(_s("indent_width", 4))
             new_text = ca_engine.format_code(src, width)
-            engine_name = u"内置兜底格式化引擎"
+            engine_name = u"builtin fallback engine"
 
         if new_text == src:
-            view.set_status("ca_fmt", u"格式无变化，已是 jiangly 码风")
+            view.set_status("ca_fmt", u"no changes, already jiangly style")
             return
         anchor_row = view.rowcol(view.sel()[0].begin())[0]
         view.run_command("ca_format_apply", {"text": new_text})
@@ -2135,7 +2130,7 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
         view.sel().add(sublime.Region(pt, pt))
         view.show_at_center(pt)
         view.set_status("ca_fmt",
-                        u"已按 jiangly 码风格式化 (%s)" % engine_name)
+                        u"formatted with jiangly style (%s)" % engine_name)
 
 
 class CaFormatApplyCommand(sublime_plugin.TextCommand):
@@ -2150,6 +2145,36 @@ class CaFormatApplyCommand(sublime_plugin.TextCommand):
 # F12 跳转定义
 # ---------------------------------------------------------------------------
 
+# ca_engine 的定义类型标签以英文为主，中文按 display_language 还原
+_DEF_LABEL_ZH = {
+    u"type definition": u"类型定义",
+    u"macro definition": u"宏定义",
+    u"type alias": u"类型别名",
+    u"function definition": u"函数定义",
+    u"variable definition": u"变量定义",
+}
+
+
+def _goto_label(label, extra):
+    lang = _display_language()
+    if lang == "en":
+        return label
+    zh = extra.get("label_zh") or _DEF_LABEL_ZH.get(label, label)
+    if lang == "both":
+        return u"%s / %s" % (label, zh)
+    return zh
+
+
+def _goto_detail(detail, extra):
+    lang = _display_language()
+    zh = extra.get("detail_zh")
+    if not zh or lang == "en":
+        return detail
+    if lang == "both":
+        return u"%s / %s" % (detail, zh)
+    return zh
+
+
 class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
@@ -2162,7 +2187,7 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
             return
         symbol = view.substr(word_region).strip()
         if not re.match(r"^[A-Za-z_]\w*$", symbol):
-            view.set_status("ca_goto", u"光标处不是有效的标识符")
+            view.set_status("ca_goto", u"no valid identifier under the cursor")
             return
 
         # 优先取整段文本（不超 800KB），便于在全文搜索定义
@@ -2210,6 +2235,9 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
         # 转换为内部 candidate 格式
         candidates = []
         for prio, src, line, col, label, detail_or_preview, extra in candidates_raw:
+            extra = extra or {}
+            label = _goto_label(label, extra)
+            detail_or_preview = _goto_detail(detail_or_preview, extra)
             if src in ("local", "open", "file"):
                 # 真实文件位置
                 if src == "open":
@@ -2247,7 +2275,8 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
         if not candidates:
             window.run_command("goto_definition")
             view.set_status("ca_goto",
-                            u"未找到 '%s' 的定义（包括本地与标准库）" % symbol)
+                            u"definition of '%s' not found "
+                            u"(local files and standard library)" % symbol)
             return
 
         def jump(idx):
@@ -2269,41 +2298,38 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
                                      sublime.ENCODED_POSITION)
                 except Exception:
                     view.set_status("ca_goto",
-                                    u"无法打开 '%s'" % path)
+                                    u"cannot open '%s'" % path)
                 return
             # 3. 标准库符号提示（无路径可打开）
             if src in ("std_symbol", "std_header"):
-                hdr = None
-                for c2 in candidates:
-                    _, _, _, _, _, _, s2, _ = c2
-                    if s2 == src:
-                        hdr = c2
-                        break
+                # 标准库符号只给提示，没有可跳转的本地位置
                 return
 
         if len(candidates) == 1:
             jump(0)
             c = candidates[0]
             src_label = {
-                "local": u"本文件", "open": u"已打开文件",
-                "file": u"本地头", "std_symbol": u"标准库",
-                "std_header": u"系统头", "system_header_path": u"系统头"
+                "local": u"This file", "open": u"Open file",
+                "file": u"Local header", "std_symbol": u"Standard library",
+                "std_header": u"System header",
+                "system_header_path": u"System header"
             }.get(c[6], c[6])
             view.set_status("ca_goto",
-                            u"跳转到 '%s' (%s)" % (symbol, src_label))
+                            u"jumped to '%s' (%s)" % (symbol, src_label))
             return
 
         shown = []
         for vid, path, line, col, label, preview, src, prio in candidates:
             src_label = {
-                "local": u"本文件", "open": u"已打开文件",
-                "file": u"本地头", "std_symbol": u"标准库",
-                "std_header": u"系统头", "system_header_path": u"系统头"
+                "local": u"This file", "open": u"Open file",
+                "file": u"Local header", "std_symbol": u"Standard library",
+                "std_header": u"System header",
+                "system_header_path": u"System header"
             }.get(src, src)
             if path:
                 where = os.path.basename(path)
             else:
-                where = u"<未保存>"
+                where = u"<unsaved>"
             shown.append([u"%s · %s · %s:%d" % (label, src_label, where, line),
                           preview])
 
