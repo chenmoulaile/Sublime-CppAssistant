@@ -1,6 +1,8 @@
 ﻿* text=auto eol=lf
 *.png binary
 
-# 打包为 .sublime-package 时排除非运行文件
+# Exclude non-runtime files when packaging as .sublime-package
 .gitattributes export-ignore
 .gitignore export-ignore
+.github/ export-ignore
+tests/ export-ignore

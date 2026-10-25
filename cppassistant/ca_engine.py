@@ -14,9 +14,9 @@ import re
 
 from .ca_stdlib_data import (
     MEMBERS_DB_FAST, GENERIC_MEMBERS_FAST, STD_ITEMS_ALL,
-    KEYWORDS, KEYWORDS_SET, SNIPPETS, SNIPPETS_BY_TRIG,
-    HEADERS, HEADERS_SET, TRANSLATIONS, QUOTE_NORMALIZE,
-    SEVERITY_MAP, WARNING_FLAG_ZH, _ELEM_RULES,
+    KEYWORDS, SNIPPETS,
+    HEADERS, TRANSLATIONS, QUOTE_NORMALIZE,
+    WARNING_FLAG_ZH, _ELEM_RULES,
     STD_SYMBOL_HEADER, STD_HEADERS_SET, en_detail,
 )
 
@@ -468,7 +468,11 @@ _ALIAS_RE = re.compile(r"\busing\s+([A-Za-z_]\w*)\s*=")
 
 
 def user_symbols(text):
-    """从源码提取用户定义符号: {name: 描述}"""
+    """从源码提取用户定义符号: {name: (英文类型, 中文类型)}。
+
+    补全弹窗的语言在渲染时决定，所以这里同时保留两种文案，不能只存
+    中文——英文模式下用户符号的右侧注释会变成中文。
+    """
     syms = {}
     for m in _FUNC_LINE_RE.finditer(text):
         name = m.group(2)
@@ -481,15 +485,15 @@ def user_symbols(text):
         after = rest[close + 1:].lstrip() if close != -1 else ""
         if after.startswith(";"):
             continue
-        syms.setdefault(name, u"自定义函数")
+        syms.setdefault(name, ("function", u"自定义函数"))
     for m in _STRUCT_RE.finditer(text):
-        syms.setdefault(m.group(1), u"结构体/类")
+        syms.setdefault(m.group(1), ("type", u"结构体/类"))
     for m in _ENUM_RE.finditer(text):
-        syms.setdefault(m.group(1), u"枚举")
+        syms.setdefault(m.group(1), ("enum", u"枚举"))
     for m in _DEFINE_RE.finditer(text):
-        syms.setdefault(m.group(1), u"宏定义")
+        syms.setdefault(m.group(1), ("macro", u"宏定义"))
     for m in _ALIAS_RE.finditer(text):
-        syms.setdefault(m.group(1), u"类型别名")
+        syms.setdefault(m.group(1), ("type alias", u"类型别名"))
     return syms
 
 
@@ -600,27 +604,36 @@ def analyze(text, offset, cache_key=None, cache_version=None,
         members = MEMBERS_DB_FAST.get(key) if key else None
         if members is None:
             members = [] if key else GENERIC_MEMBERS_FAST
-        raw_items.extend((it["trigger"], it["insert"], it["annotation"],
-                          it["kind"], False,
-                          en_detail(it["insert"], key)
-                          or en_detail(it["insert"]) or u"")
-                         for it in members)
+        raw_items.extend(
+            (it["trigger"], it["insert"], it["annotation"], it["kind"],
+             False, en_detail(it["insert"], key) or en_detail(it["insert"])
+             or u"", it["trigger"], it["trigger"])
+            for it in members)
     elif accessor == "scope":
         raw_items = [(it["trigger"], it["insert"], it["annotation"],
-                      it["kind"], False,
-                      en_detail(it["insert"]) or u"") for it in STD_ITEMS_ALL]
+                      it["kind"], False, en_detail(it["insert"]) or u"",
+                      it["trigger"], it["trigger"])
+                     for it in STD_ITEMS_ALL]
     else:
         for trig, body, desc, kd in SNIPPETS:
-            raw_items.append((trig, body, desc, kd, False,
-                              en_detail(trig) or u""))
+            en = en_detail(trig) or u""
+            raw_items.append((trig, body, desc, kd, False, en, en or desc,
+                              desc))
         for kw in KEYWORDS:
-            raw_items.append((kw, kw, u"关键字", "k", False, u"keyword"))
+            raw_items.append((kw, kw, u"关键字", "k", False, u"keyword",
+                              kw, kw))
         for name, desc in syms.items():
-            raw_items.append((name, name, desc, "u", False, desc or u""))
+            if isinstance(desc, tuple):
+                en, zh = desc
+            else:
+                en, zh = desc, desc
+            raw_items.append((name, name, zh, "u", False, en or u"",
+                              en or u"", zh or u""))
         for it in STD_ITEMS_ALL:
             raw_items.append((it["trigger"], it["insert"], it["annotation"],
                               it["kind"], it["want_std"],
-                              en_detail(it["insert"]) or u""))
+                              en_detail(it["insert"]) or u"",
+                              it["trigger"], it["trigger"]))
 
     already_std = (accessor == "scope" and receiver == "std")
     need_prefix = not env["using_std"]
@@ -629,19 +642,20 @@ def analyze(text, offset, cache_key=None, cache_version=None,
     seen = set()
     # 基础模式下只保留严格前缀匹配（score < 5），过滤掉子串/子序列模糊结果
     max_score = 999 if clangd_style else 5
-    for trigger, insert, ann, kd, want_std, ann_en in raw_items:
+    for (trigger, insert, ann, kd, want_std, ann_en,
+         detail_en, detail_zh) in raw_items:
         sc = _score(trigger, prefix)
         if sc >= max_score or trigger in seen:
             continue
         seen.add(trigger)
         if want_std and need_prefix and not already_std:
             insert = "std::" + insert
-            detail = "std::" + trigger
-        else:
-            detail = trigger
+            detail_en = "std::" + trigger
+            detail_zh = detail_en
         results.append({"trigger": trigger, "insert": insert,
                         "annotation": ann, "annotation_en": ann_en,
-                        "kind": kd, "detail": detail,
+                        "kind": kd, "detail": detail_zh,
+                        "detail_en": detail_en,
                         "_score": sc})
     results.sort(key=lambda d: (d["_score"], len(d["trigger"]),
                                 d["trigger"]))
@@ -723,6 +737,38 @@ def find_definitions(text, symbol):
     return out
 
 
+_HEADER_EXTS = (".h", ".hh", ".hpp", ".hxx", ".h++", ".inl", ".ipp")
+
+
+def _header_files_in_dir(path):
+    """列出 include 目录下的头文件（直接子文件 + bits/ 子目录）。
+
+    之前 include_paths 被当成文件路径传给 open()，目录全部抛异常，
+    所以 F12 实际上从未搜索过 include_paths。这里只扫一层，避免
+    把整个编译器 include 树递归一遍拖慢 F12。
+    """
+    import os
+    out = []
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return out
+    for name in names:
+        p = os.path.join(path, name)
+        if os.path.isfile(p) and name.lower().endswith(_HEADER_EXTS):
+            out.append(p)
+    bits = os.path.join(path, "bits")
+    if os.path.isdir(bits):
+        try:
+            for name in os.listdir(bits):
+                p = os.path.join(bits, name)
+                if os.path.isfile(p) and name.lower().endswith(_HEADER_EXTS):
+                    out.append(p)
+        except OSError:
+            pass
+    return out
+
+
 def find_definitions_in_files(symbol, file_paths, depth_limit=3):
     """在本地头文件中查找定义。返回 [(path, line, col, label, preview)]"""
     import os
@@ -733,7 +779,14 @@ def find_definitions_in_files(symbol, file_paths, depth_limit=3):
     while queue and depth <= depth_limit:
         nextq = []
         for path in queue:
-            rp = path.replace("\\", "/").lower()
+            if os.path.isdir(path):
+                # include_paths 是目录：展开成头文件再搜
+                for p in _header_files_in_dir(path):
+                    rp = os.path.normcase(p.replace("\\", "/"))
+                    if rp not in visited:
+                        nextq.append(p)
+                continue
+            rp = os.path.normcase(path.replace("\\", "/"))
             if rp in visited:
                 continue
             visited.add(rp)
@@ -799,7 +852,6 @@ def find_definition_std_fallback(symbol, include_paths=None):
       - header: 头文件名（不含尖括号）
       - path: 实际文件路径（仅 system_header_path）
     """
-    import os
     results = []
     if not symbol:
         return results
@@ -843,7 +895,7 @@ def find_definition_std_fallback(symbol, include_paths=None):
 
 
 def goto_definition_advanced(symbol, view_text, view, include_paths=None,
-                              all_views_text=None):
+                              all_views_text=None, system_include_paths=None):
     """F12 跳转定义 - 多源合并查找。
 
     按以下顺序返回候选：
@@ -852,6 +904,10 @@ def goto_definition_advanced(symbol, view_text, view, include_paths=None,
       3. 本地头文件（递归 #include "..."）中的定义
       4. 标准库符号 fallback（std 命名空间下的类型/函数）
       5. 已知系统头文件本身
+
+    include_paths 用于本地头文件搜索；system_include_paths 是编译器
+    自带的标准库搜索路径，只用于把 std 符号定位到真实头文件，避免
+    把整个编译器 include 树当成项目头文件扫描。
 
     返回 [(priority, src, line, col, label, preview_or_detail, extra)]
     src: 'local' | 'open' | 'file' | 'std_symbol' | 'std_header'
@@ -898,7 +954,8 @@ def goto_definition_advanced(symbol, view_text, view, include_paths=None,
             results.append((2, "file", line, col, label, preview, {"path": path}))
 
     # 4. 标准库 fallback
-    std_hits = find_definition_std_fallback(symbol, include_paths)
+    std_hits = find_definition_std_fallback(
+        symbol, system_include_paths or include_paths)
     for hit in std_hits:
         zh = {"label_zh": hit.get("label_zh"), "detail_zh": hit.get("detail_zh")}
         # 优先看是否能找到系统头文件路径
@@ -1024,12 +1081,25 @@ def parse_compiler_output(output):
         m = _DIAG_RE.match(line)
         if not m:
             continue
+        sev = m.group(4)
         en, zh = translate_message(m.group(5))
+        if sev == "note":
+            if entries:
+                # note 是上一条诊断的补充（"did you mean ...?"），
+                # 不能单独算成一条警告。
+                entries[-1]["notes"].append({
+                    "line": int(m.group(2)),
+                    "col": int(m.group(3)) if m.group(3) else 1,
+                    "msg": en,
+                    "zh": zh,
+                })
+            pending_ctx = ("", "")
+            continue
         entries.append({
             "file": m.group(1),
             "line": int(m.group(2)),
             "col": int(m.group(3)) if m.group(3) else 1,
-            "sev_en": m.group(4),
+            "sev_en": sev,
             "msg": en,
             "zh": zh,
             "ctx": pending_ctx[0],

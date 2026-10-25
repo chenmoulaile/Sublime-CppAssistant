@@ -3,6 +3,9 @@
 *.pyo
 *.swp
 *.swo
+.pytest_cache/
+.coverage
+htmlcov/
 .DS_Store
 Thumbs.db
 .omo/

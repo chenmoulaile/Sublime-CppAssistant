@@ -16,23 +16,15 @@
 						"id": "cppassistant-settings",
 						"children":
 						[
-						{
-							"caption": "Settings",
-							"command": "edit_settings",
-							"args": {
-								"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
-								"default": "{\n\t$0\n}\n"
-							}
-						},
-						{
-							"caption": "Settings – User",
-							"command": "edit_settings",
-							"args": {
-								"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
-								"default": "{\n\t$0\n}\n"
-							}
-						},
-						{ "caption": "-" },
+							{
+								"caption": "Settings",
+								"command": "edit_settings",
+								"args": {
+									"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
+									"default": "{\n\t$0\n}\n"
+								}
+							},
+							{ "caption": "-" },
 							{
 								"caption": "Diagnostic language",
 								"id": "cppassistant-language",
@@ -128,9 +120,9 @@
 									}
 								]
 							},
-						{ "caption": "-" },
-						{
-							"caption": "Key Bindings – User",
+							{ "caption": "-" },
+							{
+								"caption": "Key Bindings – User",
 								"command": "edit_settings",
 								"args": {
 									"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
@@ -138,7 +130,7 @@
 									"default": "[\n\t$0\n]\n"
 								}
 							}
-					]
+						]
 					}
 				]
 			}

@@ -104,12 +104,12 @@
     "enable_pch": true,
     // Show inline error phantoms below the error line.
     "show_phantoms": true,
-    // Diagnostic display language:
+    // Diagnostic display language and completion detail language:
     //   "en"   English only (default)
     //   "zh"   Chinese only
     //   "both" English with Chinese appended
-    // Takes effect immediately (changing the setting clears the diagnostic
-    // result cache).
+    // Takes effect immediately: existing diagnostics are re-rendered in the
+    // new language without rerunning the compiler or clangd.
     "display_language": "en",
     // C++ standard (used both for the -std= flag in syntax checking and for
     // clangd's fallbackFlags). The CSP-S / NOIP contest series uses C++14,
@@ -121,8 +121,8 @@
     "compiler_path": "",
     // Extra arguments passed to the compiler, e.g. ["-I", "D:/libs/include"]
     "compiler_extra_args": [],
-    // Extra header search directories (also used for F12 cross-file
-    // go-to-definition).
+    // Extra header search directories. Used by clangd's compile database,
+    // PCH builds, and F12 cross-file go-to-definition.
     "include_paths": [],
 
     // ==================== Formatting (jiangly style) ====================
@@ -134,7 +134,7 @@
     // clang-format path; when empty it is looked up on PATH. If it is not
     // found, the built-in fallback formatter is used.
     "clang_format_path": "",
-    // jiangly-style clang-format config: 4-space indent, K&R braces, and no
-    // wrapping of long lines.
+    // jiangly-style clang-format config: 4-space indent, K&R braces, and a
+    // 100-column limit.
     "clang_format_style": "{ BasedOnStyle: Google, IndentWidth: 4, ColumnLimit: 100, AccessModifierOffset: -4, DerivePointerAlignment: false, PointerAlignment: Left, AllowShortIfStatementsOnASingleLine: false, AllowShortLoopsOnASingleLine: false, AllowShortCaseLabelsOnASingleLine: false, AllowShortFunctionsOnASingleLine: Inline, SortIncludes: Never, FixNamespaceComments: false, AlignConsecutiveAssignments: false, AlignConsecutiveDeclarations: false, AlignTrailingComments: false, InsertBraces: false }"
 }

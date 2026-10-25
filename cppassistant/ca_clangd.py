@@ -6,7 +6,8 @@ JSON-RPC 通信，把 clangd 的真实语义补全（编译器级准确度）接
 替代纯静态数据库方案。
 
 设计约束：
-  - 兼容 Sublime Text 4 的 Python 3.3 插件宿主（无 f-string / pathlib / typing）。
+  - 保持与旧版 ST4 插件宿主（Python 3.3）兼容的语法；Sublime Text
+    4215 使用 Python 3.14。不使用 f-string / pathlib / typing。
   - 不依赖 sublime，可独立单元测试。
   - 服务器发现逻辑与 LSP-clangd 一致：优先 PATH 中的 clangd，
     支持常见版本名（clangd / clangd-18 ...）与自定义路径。
@@ -29,12 +30,14 @@ JSON-RPC 通信，把 clangd 的真实语义补全（编译器级准确度）接
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
 import urllib.parse
 
-# ST 嵌入式 Python 3.3 没有 subprocess.CREATE_NO_WINDOW 命名常量，直接用数值
+# 旧版 ST4 插件宿主（Python 3.3）没有 subprocess.CREATE_NO_WINDOW，
+# 直接用数值以保持兼容。
 CREATE_NO_WINDOW = 0x08000000
 
 # clangd 常见二进制名（覆盖 Linux 发行版分版本打包的习惯）
@@ -140,6 +143,9 @@ def _norm_uri(u):
 
     clangd 会把我们的 file:///C%3A/... 规范化为 file:///C:/... 再回发
     （diagnostics 等通知），直接字符串比较永远匹配不上。
+
+    只在 Windows 上忽略大小写：Linux / macOS 的文件名区分大小写，
+    统一 lower() 会把 /tmp/Foo.cpp 和 /tmp/foo.cpp 当成同一个文件。
     """
     if not u:
         return ""
@@ -147,7 +153,10 @@ def _norm_uri(u):
         u = urllib.parse.unquote(u)
     except Exception:
         pass
-    return u.replace("\\", "/").lower()
+    u = u.replace("\\", "/")
+    if os.name == "nt":
+        u = u.lower()
+    return u
 
 
 def _clamp_insert(it):
@@ -156,12 +165,15 @@ def _clamp_insert(it):
     if isinstance(te, dict):
         new = te.get("newText")
         if new:
-            return new, bool(it.get("insertTextFormat", 1) == 2)
+            fmt = te.get("insertTextFormat", it.get("insertTextFormat", 1))
+            return new, bool(fmt == 2)
     insert = it.get("insertText") or it.get("label") or ""
     return insert, bool(it.get("insertTextFormat", 1) == 2)
 
 
 _INCLUDE_RE_TEXT = u"#include"
+_INCLUDE_RE = re.compile(
+    r'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.M)
 
 
 def _extract_includes(it):
@@ -171,6 +183,9 @@ def _extract_includes(it):
     additionalTextEdits 附在补全项上，由客户端在补全被接受时应用。
     这里只提取 include 型编辑（其余类型的附加编辑忽略），返回头文件
     名列表，如 ["vector", "utility"]。
+
+    一个 additionalTextEdit 里可能同时包含多行 include（clangd 合并
+    编辑时会出现），所以逐行扫描而不是只取第一个尖括号。
     """
     edits = it.get("additionalTextEdits")
     if not isinstance(edits, list):
@@ -182,18 +197,10 @@ def _extract_includes(it):
         new = e.get("newText") or ""
         if _INCLUDE_RE_TEXT not in new:
             continue
-        # 提取 #include <X> / #include "X" 中的 X
-        lt = new.find("<")
-        if lt == -1:
-            lt = new.find('"')
-            rt = new.find('"', lt + 1)
-        else:
-            rt = new.find(">", lt)
-        if lt == -1 or rt == -1:
-            continue
-        hdr = new[lt + 1:rt].strip()
-        if hdr:
-            out.append(hdr)
+        for m in _INCLUDE_RE.finditer(new):
+            hdr = m.group(1).strip()
+            if hdr and hdr not in out:
+                out.append(hdr)
     return out
 
 
@@ -210,6 +217,10 @@ def _short_label(label):
     "operator<"（无参数列表、非 name<...> 形式）-> 原样保留
     完整签名由调用方放进详情面板显示。
     """
+    # 运算符名字里本身就可能带 < / >（operator<、operator<<、
+    # operator<=>），不能按模板参数裁剪，否则会变成 "operator"。
+    if label.startswith("operator"):
+        return label
     i = label.find("(")
     if i > 0:
         return label[:i].rstrip()
@@ -322,12 +333,15 @@ def parse_signature_help(result):
         ap = 0
     lines = []
     doc = None
+    active_line = 0
     for i, sig in enumerate(sigs):
         if not isinstance(sig, dict):
             continue
         label = sig.get("label") or ""
         if not label:
             continue
+        if i == act:
+            active_line = len(lines)
         lines.append((label, i == act))
         if i == act:
             d = sig.get("documentation")
@@ -337,7 +351,9 @@ def parse_signature_help(result):
                 doc = d or None
     if not lines:
         return None
-    return {"active": lines[act][0] if act < len(lines) else "",
+    if active_line >= len(lines):
+        active_line = 0
+    return {"active": lines[active_line][0],
             "param": ap, "lines": lines, "doc": doc}
 
 
@@ -591,8 +607,14 @@ class ClangdClient(object):
         rid = msg.get("id")
         method = msg.get("method")
         if rid is not None and method is not None:
-            # 服务器反向请求：一律回空结果，避免 clangd 等待
-            self._write_frame({"jsonrpc": "2.0", "id": rid, "result": None})
+            # 服务器反向请求。workspace/configuration 必须回数组，否则
+            # 部分 clangd 版本会报错或卡住初始化；其它请求回 null。
+            if method == "workspace/configuration":
+                params = msg.get("params") or {}
+                result = [{} for _ in (params.get("items") or [])]
+            else:
+                result = None
+            self._write_frame({"jsonrpc": "2.0", "id": rid, "result": result})
             return
         if rid is not None:
             entry = self._pending.get(rid)
