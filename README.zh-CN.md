@@ -2,7 +2,7 @@
 
 Sublime Text 4 的 C++ 辅助插件：内嵌真实 clangd 引擎，没有 clangd 时自动退回纯 Python 内置数据库，零配置可用。
 
-插件自带一个精简 LSP 客户端，通过 stdio JSON-RPC 直接驱动 `clangd`，提供编译器级语义补全、悬停文档、函数签名提示和实时诊断；也可以用 `g++` / `clang++` 做完整语法检查。格式化优先调用 `clang-format`，没有时使用内置的 jiangly 风格兜底格式化器。
+插件自带一个精简 LSP 客户端，通过 stdio JSON-RPC 直接驱动 `clangd`，提供编译器级语义补全、悬停文档、函数签名提示、实时诊断、代码操作、语义重命名和查找引用；也可以用 `g++` / `clang++` 做完整语法检查。格式化优先调用 `clang-format`，没有时使用内置的 jiangly 风格兜底格式化器，并支持只格式化选中的行。
 
 界面与默认提示为英文，中文和双语诊断是可选项。英文文档见 [README.md](README.md)，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -11,9 +11,11 @@ Sublime Text 4 的 C++ 辅助插件：内嵌真实 clangd 引擎，没有 clangd
 - **clangd 语义补全**：函数签名、重载、容器成员、局部变量；用户片段和内置片段排在最前。
 - **智能头文件插入**：接受补全时自动补对应的 `#include`，会识别 `bits/stdc++.h` 和已包含的头文件。
 - **悬停文档**与**函数签名提示**：由 clangd 提供。
+- **代码操作**：clangd 的快速修复、`#include` 建议，以及提取函数等重构。
+- **语义重命名**与**查找引用**：跨当前文件和项目头文件。
 - **实时诊断**：编译器检查（`g++` / `clang++`）或 clangd 的 `publishDiagnostics`，另有毫秒级的括号、全角标点、未闭合字符串基础检查。
 - **F12 跳转定义**：当前文件、已打开文件、本地头文件、`include_paths`，最后回退到标准库符号表。
-- **格式化**：clang-format 或内置保守格式化器。
+- **格式化**：clang-format 或内置保守格式化器，可格式化整个文档或仅格式化选区。
 - **英文 / 中文 / 中英双语**诊断文本与补全详情。
 - **PCH 加速**与重复检查结果缓存。
 
@@ -55,14 +57,18 @@ Linux / macOS 的 Packages 目录通常是 `~/.config/sublime-text/Packages`。�
 2. 开始输入。如果安装了 clangd，会得到语义补全；首次弹窗可能先显示内置数据库结果，clangd 的 preamble 准备好后会自动刷新。
 3. 在命令面板搜索 `CppAssistant:` 可以查看全部命令。
 
-插件默认不注册快捷键，避免和其他包冲突。`Example.sublime-keymap` 提供了 F12、`Shift+Alt+F`、`Ctrl+Alt+D` 的可选条目，按需复制到用户键位文件即可。
+插件默认不注册快捷键，避免和其他包冲突。`Example.sublime-keymap` 提供了 F12、`Shift+Alt+F`、`Ctrl+Alt+F`、`Ctrl+.`、`Ctrl+Alt+R`、`Shift+F12`、`Ctrl+Alt+D` 的可选条目，按需复制到用户键位文件即可。
 
 ## 命令
 
 | 命令 | 功能 |
 | --- | --- |
 | `CppAssistant: Format Document (jiangly style)` | 格式化整个文档 |
+| `CppAssistant: Format Selection` | 只格式化选中的行 |
 | `CppAssistant: Go to Definition` | 跳转到定义（F12 风格） |
+| `CppAssistant: Code Actions` | 显示 clangd 快速修复与重构 |
+| `CppAssistant: Rename Symbol` | 跨项目重命名符号 |
+| `CppAssistant: Find References` | 列出光标处符号的引用 |
 | `CppAssistant: Show Diagnostics` | 显示诊断面板 |
 | `CppAssistant: Diagnostic Language - English` | 英文诊断与补全详情 |
 | `CppAssistant: Diagnostic Language - Chinese` | 中文诊断与补全详情 |
@@ -134,9 +140,17 @@ clangd 关闭、未安装或尚未就绪时，使用内置数据库。它包含�
 
 F12 风格查找依次搜索当前文件、其他已打开文件、当前文件包含的头文件、`include_paths` 目录，最后回退到标准库符号表。找到系统头文件路径时可以直接打开真实头文件。
 
+### 代码操作、重命名与查找引用
+
+这些命令需要文件已保存并运行 clangd。**Code Actions** 对光标或选区发送 `textDocument/codeAction`，用 quick panel 列出快速修复和重构。自带编辑的操作直接应用；延迟计算的操作走 `codeAction/resolve`；提取函数等 tweak 走 `workspace/executeCommand` 和 `workspace/applyEdit`。
+
+**Rename Symbol** 发送 `textDocument/rename`，把返回的 `WorkspaceEdit` 应用到已打开缓冲区和未打开的项目头文件。**Find References** 发送 `textDocument/references`，在 quick panel 中列出结果，选中后跳转。`WorkspaceEdit` 中的文件创建、改名、删除操作暂不支持；遇到这类操作会整体拒绝，避免只应用一半。
+
 ### 格式化
 
 优先使用 clang-format 和 jiangly 风格配置（4 空格缩进、K&R 大括号、100 列限制、不排序 include）。没有 clang-format 时，内置格式化器只做保守整理：缩进归一化、大括号空格、标点空格，不破坏字符串、注释和模板嵌套。
+
+**Format Selection** 优先请求 clangd 的 `textDocument/rangeFormatting`；clangd 不可用时执行 clang-format `--lines`，最后使用内置范围格式化器。只修改选区覆盖的完整行，缓冲区其余部分保持不变。
 
 ## 常见问题
 
@@ -153,6 +167,8 @@ F12 风格查找依次搜索当前文件、其他已打开文件、当前文件�
 
 **格式化没有变化。** 没有 clang-format 时，内置格式化器只做安全整理。安装 clang-format 或设置 `clang_format_path` 可获得完整格式化。
 
+**代码操作、重命名或查找引用没有反应。** 这些功能依赖 clangd。先保存文件，再用 **CppAssistant: Completion Engine Status** 确认 clangd 已运行。快速修复还需要 clangd 已为当前文档版本推送诊断；编辑后稍等片刻再试。
+
 **更新后诊断突然停了。** 重启一次 Sublime Text。若仍异常，打开 **View -> Show Console**，查看以 `[CppAssistant]` 开头的消息。
 
 ## 开发
@@ -165,9 +181,9 @@ python -m unittest discover -s tests -v
 
 测试不会被打进安装包。主要文件：
 
-- `CppAssistant.py`：Sublime 集成、命令、诊断、格式化。
-- `cppassistant/ca_engine.py`：补全分析、定义查找、兜底格式化、编译器输出解析。
-- `cppassistant/ca_clangd.py`：精简 clangd LSP 客户端。
+- `CppAssistant.py`：Sublime 集成、命令、诊断、格式化、代码操作、重命名与查找引用。
+- `cppassistant/ca_engine.py`：补全分析、定义查找、整篇与范围兜底格式化、编译器输出解析。
+- `cppassistant/ca_clangd.py`：精简 clangd LSP 客户端，包含 WorkspaceEdit 与代码操作辅助函数。
 - `cppassistant/ca_stdlib_data.py`：STL 补全数据与翻译表。
 - `cppassistant/ca_user_snippets.py`：用户 `.sublime-snippet` 加载器。
 

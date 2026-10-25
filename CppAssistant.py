@@ -684,7 +684,8 @@ def _get_clangd_client(view):
     try:
         c = ca_clangd.ClangdClient(binary, args, root,
                                    fallback_flags=fallback,
-                                   on_notify=_on_clangd_notify)
+                                   on_notify=_on_clangd_notify,
+                                   on_apply_edit=_on_clangd_apply_edit)
         c.start()
     except Exception as e:
         st["last_fail"] = now
@@ -2298,39 +2299,63 @@ def _find_clang_format():
     return shutil.which("clang-format")
 
 
+def _run_clang_format(src, clang_format, style, extra_args=None):
+    """运行 clang-format；成功返回文本，失败返回 None。"""
+    if clang_format is None:
+        return None
+    # 旧版 ST4（Python 3.3）没有 subprocess.CREATE_NO_WINDOW 命名常量
+    creationflags = 0x08000000 if os.name == "nt" else 0
+    startupinfo = _hidden_window_startupinfo()
+    proc = None
+    try:
+        cmd = [clang_format, "--assume-filename=x.cpp",
+               "--style=" + style] + list(extra_args or [])
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, creationflags=creationflags,
+            startupinfo=startupinfo)
+        out, err = proc.communicate(input=src.encode("utf-8"), timeout=15)
+    except Exception:
+        out, err = None, b"timeout/error"
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    if out is not None and proc is not None and proc.returncode == 0:
+        return _decode(out)
+    if err:
+        print("[CppAssistant] clang-format failed:",
+              _decode(err).strip())
+    return None
+
+
 def _format_source(src, clang_format, style, width):
     """在工作线程里跑格式化，返回 (新文本, 引擎名)。
 
     只做纯计算，不碰 Sublime API；clang-format 不可用或失败时退回
     内置 jiangly 风格引擎。
     """
-    if clang_format is not None:
-        # 旧版 ST4（Python 3.3）没有 subprocess.CREATE_NO_WINDOW 命名常量
-        creationflags = 0x08000000 if os.name == "nt" else 0
-        startupinfo = _hidden_window_startupinfo()
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                [clang_format, "--assume-filename=x.cpp",
-                 "--style=" + style],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, creationflags=creationflags,
-                startupinfo=startupinfo)
-            out, err = proc.communicate(
-                input=src.encode("utf-8"), timeout=15)
-        except Exception:
-            out, err = None, b"timeout/error"
-            if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        if out is not None and proc is not None and proc.returncode == 0:
-            return _decode(out), u"clang-format"
-        if err:
-            print("[CppAssistant] clang-format failed:",
-                  _decode(err).strip())
+    formatted = _run_clang_format(src, clang_format, style)
+    if formatted is not None:
+        return formatted, u"clang-format"
     return ca_engine.format_code(src, width), u"builtin fallback engine"
+
+
+def _format_range_source(src, clang_format, style, width,
+                         start_line, end_line, start_offset, end_offset):
+    """只格式化选区覆盖的完整行，返回 (新文本, 引擎名)。
+
+    clang-format 的 ``--lines`` 会输出完整文件（选区外的行保持不变）；
+    不可用时退回 ca_engine 的范围格式化器，同样只改选中的行。
+    """
+    formatted = _run_clang_format(
+        src, clang_format, style,
+        ["--lines=%d:%d" % (start_line, end_line)])
+    if formatted is not None:
+        return formatted, u"clang-format"
+    return (ca_engine.format_code_range(
+        src, start_offset, end_offset, width), u"builtin fallback engine")
 
 
 class CaFormatDocumentCommand(sublime_plugin.TextCommand):
@@ -2413,6 +2438,119 @@ class CaFormatApplyCommand(sublime_plugin.TextCommand):
             return
         view = self.view
         view.replace(edit, sublime.Region(0, view.size()), text)
+
+
+def _range_line_bounds(view, region):
+    """把选区扩展成完整行，返回 (start_row, end_row, start_pt, end_pt)。
+
+    结束位置在行首时向前退一行，避免三击选中整行后把下一行也格式化。
+    """
+    start_row = view.rowcol(region.begin())[0]
+    end_row = view.rowcol(region.end())[0]
+    if region.end() > region.begin():
+        end_col = view.rowcol(region.end())[1]
+        if end_col == 0 and end_row > start_row:
+            end_row -= 1
+    start_pt = view.text_point(start_row, 0)
+    end_pt = view.line(view.text_point(end_row, 0)).end()
+    return start_row, end_row, start_pt, end_pt
+
+
+class CaFormatSelectionCommand(sublime_plugin.TextCommand):
+    """只格式化当前选区（或光标所在行）。
+
+    优先请求 clangd 的 textDocument/rangeFormatting；clangd 未就绪时
+    退回 clang-format --lines，再退回内置范围格式化器。选区外的文本
+    不会被修改。
+    """
+
+    def run(self, edit, sync=False):
+        view = self.view
+        if not _is_cpp(view):
+            view.set_status("ca_fmt", u"only C/C++ files are supported")
+            return
+        selections = view.sel()
+        if not selections:
+            return
+        region = selections[0]
+        start_row, end_row, start_pt, end_pt = _range_line_bounds(view, region)
+        src = view.substr(sublime.Region(0, view.size()))
+        if not src.strip():
+            return
+        change_count = view.change_count()
+        width = int(_s("indent_width", 4))
+        clang_format = _find_clang_format()
+        style = _s("clang_format_style", CLANG_FORMAT_STYLE_DEFAULT)
+        fname = view.file_name()
+        # 设置读取留在 UI 线程，工作线程只碰纯数据与客户端
+        client = (_clangd_state["client"]
+                  if _s("enable_clangd_engine", True) else None)
+
+        if sync:
+            result = self._compute(fname, src, start_pt, end_pt,
+                                   start_row, end_row, clang_format,
+                                   style, width, client)
+            self._apply(view, src, change_count, start_pt, end_pt, *result)
+            return
+
+        view.set_status("ca_fmt", u"formatting selection...")
+
+        def worker():
+            try:
+                result = self._compute(
+                    fname, src, start_pt, end_pt, start_row, end_row,
+                    clang_format, style, width, client)
+            except Exception as e:
+                _log_error("format selection", e)
+                sublime.set_timeout(
+                    lambda: view.set_status("ca_fmt", u"format failed"), 0)
+                return
+            sublime.set_timeout(
+                lambda: self._apply(view, src, change_count, start_pt,
+                                    end_pt, *result), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _compute(fname, src, start_pt, end_pt, start_row, end_row,
+                 clang_format, style, width, client):
+        """返回 (新文本, 引擎名)；clangd 不可用/失败时走本地格式化。"""
+        if (fname and client is not None
+                and client.is_ready() and len(src) <= _CLANGD_MAX_CHARS):
+            edits = client.range_formatting(
+                fname, src, start_pt, end_pt, timeout=2.5)
+            if edits is not None:
+                if not edits:
+                    return src, u"clangd (no changes)"
+                return (ca_clangd.apply_text_edits(src, edits),
+                        u"clangd")
+        return _format_range_source(
+            src, clang_format, style, width,
+            start_row + 1, end_row + 1, start_pt, end_pt)
+
+    def _apply(self, view, src, change_count, start_pt, end_pt,
+               new_text, engine_name):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status("ca_fmt", u"cancelled: buffer changed")
+                return
+            if new_text == src:
+                view.set_status("ca_fmt", u"no changes in selection")
+                return
+            delta = len(new_text) - len(src)
+            view.run_command("ca_format_apply", {"text": new_text})
+            size = view.size()
+            new_start = min(max(start_pt, 0), size)
+            new_end = min(max(end_pt + delta, new_start), size)
+            view.sel().clear()
+            view.sel().add(sublime.Region(new_start, new_end))
+            view.show_at_center(new_start)
+            view.set_status(
+                "ca_fmt", u"formatted selection with %s" % engine_name)
+        except Exception as e:
+            _log_error("format selection apply", e)
 
 
 # ---------------------------------------------------------------------------
@@ -2603,3 +2741,625 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
                 jump(idx)
 
         window.show_quick_panel(shown, on_done, sublime.MONOSPACE_FONT)
+
+
+# ---------------------------------------------------------------------------
+# clangd 代码操作 / 重命名 / 查找引用
+# ---------------------------------------------------------------------------
+
+def _clangd_client_for(view, status_key):
+    """取得已就绪的 clangd 客户端；不可用时在状态栏说明原因。"""
+    if not _s("enable_clangd_engine", True):
+        view.set_status(status_key, u"clangd engine is disabled")
+        return None
+    if not view.file_name():
+        view.set_status(status_key,
+                        u"save the file before using clangd features")
+        return None
+    client = _get_clangd_client(view)
+    if client is None or not client.is_ready():
+        view.set_status(status_key, u"clangd is not ready")
+        return None
+    return client
+
+
+def _read_text_file(path):
+    """读取 UTF-8 文本文件，保留 BOM 信息；无法解码时抛出异常。
+
+    工作区编辑会写回文件，因此这里不做替换字符解码，避免破坏非
+    UTF-8 源文件。引用预览会捕获异常并显示空行。
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig"), "utf-8-sig"
+    return data.decode("utf-8"), "utf-8"
+
+
+def _newline_style(text):
+    if "\r\n" in text:
+        return "\r\n"
+    if "\r" in text:
+        return "\r"
+    return "\n"
+
+
+def _find_open_view(path):
+    """在所有窗口中查找已打开的视图；找不到返回 None。"""
+    if not path:
+        return None
+    for window in sublime.windows():
+        try:
+            view = window.find_open_file(path)
+        except Exception:
+            view = None
+        if view is not None:
+            return view
+    return None
+
+
+def _on_clangd_apply_edit(params, respond):
+    """clangd 读线程调用：把 workspace/applyEdit 排到 UI 线程执行。
+
+    clangd 的 ``clangd.applyTweak`` 等命令通过这个反向请求落地编辑；
+    必须回复 ``{"applied": bool}``，否则 executeCommand 会报错。
+    """
+    edit = params.get("edit") if isinstance(params, dict) else None
+    if not isinstance(edit, dict):
+        respond(False, "missing edit")
+        return
+
+    def apply():
+        try:
+            changed, edits, error = _apply_workspace_edit(
+                None, edit, None)
+            if error:
+                respond(False, error)
+                return
+            respond(True)
+            try:
+                window = sublime.active_window()
+                view = window.active_view() if window is not None else None
+                if view is not None:
+                    view.set_status(
+                        "ca_action", u"applied clangd edit (%d file(s), "
+                        u"%d edit(s))" % (changed, edits))
+            except Exception:
+                pass
+        except Exception as e:
+            _log_error("apply clangd edit", e)
+            try:
+                respond(False, "apply failed")
+            except Exception:
+                pass
+
+    sublime.set_timeout(apply, 0)
+
+
+def _apply_workspace_edit(view, edit, change_count):
+    """应用 clangd 的 WorkspaceEdit。
+
+    返回 ``(changed_files, edit_count, error)``。打开的文件整缓冲区替换
+    （一次 undo），未打开的文件直接写回磁盘；包含文件创建/改名/删除的
+    复杂重构暂不支持，会整体拒绝，避免只应用一半。所有目标先完成读取
+    与编辑计算，再统一写回，避免解码失败时只改了一部分文件。
+    """
+    parsed = ca_clangd.parse_workspace_edit(edit)
+    if parsed["resource_ops"]:
+        return (0, 0, u"this action needs unsupported file operations")
+    files = parsed["files"]
+    if not files:
+        return (0, 0, u"clangd returned no edits")
+    if view is not None and change_count is not None:
+        if not view.is_valid() or view.change_count() != change_count:
+            return (0, 0, u"cancelled: buffer changed")
+
+    pending_views = []
+    pending_files = []
+    for uri, edits in files:
+        path = ca_clangd.uri_to_path(uri)
+        if not path:
+            continue
+        target = _find_open_view(path)
+        if target is not None:
+            try:
+                text = target.substr(sublime.Region(0, target.size()))
+                new_text = ca_clangd.apply_text_edits(text, edits)
+            except Exception as e:
+                _log_error("workspace edit view", e)
+                return (0, 0, u"could not apply clangd edits")
+            if new_text != text:
+                pending_views.append((target, new_text, len(edits)))
+        else:
+            try:
+                text, encoding = _read_text_file(path)
+                newline = _newline_style(text)
+                normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+                new_text = ca_clangd.apply_text_edits(normalized, edits)
+                if new_text == normalized:
+                    continue
+                if newline != "\n":
+                    new_text = new_text.replace("\n", newline)
+                data = new_text.encode(encoding)
+            except Exception as e:
+                _log_error("workspace edit file", e)
+                return (0, 0, u"could not read or write %s"
+                        % os.path.basename(path))
+            pending_files.append((path, data, len(edits)))
+
+    changed_files = 0
+    edit_count = 0
+    for target, new_text, count in pending_views:
+        try:
+            target.run_command("ca_format_apply", {"text": new_text})
+            changed_files += 1
+            edit_count += count
+        except Exception as e:
+            _log_error("workspace edit apply view", e)
+    for path, data, count in pending_files:
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            changed_files += 1
+            edit_count += count
+        except Exception as e:
+            _log_error("workspace edit apply file", e)
+    return (changed_files, edit_count, None)
+
+
+def _apply_edit_status(view, edit, change_count, status_key, title):
+    """应用 WorkspaceEdit 并写状态栏，供代码操作和重命名共用。"""
+    changed, edits, error = _apply_workspace_edit(
+        view, edit, change_count)
+    if error:
+        view.set_status(status_key, error)
+        return
+    if changed == 0:
+        view.set_status(status_key, u"no changes from: %s" % title)
+        return
+    view.set_status(
+        status_key, u"applied '%s' (%d file(s), %d edit(s))"
+        % (title, changed, edits))
+
+
+def _location_start(loc):
+    rng = loc.get("range") if isinstance(loc, dict) else None
+    start = rng.get("start") if isinstance(rng, dict) else None
+    if not isinstance(start, dict):
+        return (0, 0)
+    try:
+        return (int(start.get("line", 0) or 0),
+                int(start.get("character", 0) or 0))
+    except Exception:
+        return (0, 0)
+
+
+def _location_preview(loc, cache):
+    """取引用所在行的文本作为 quick panel 的第二行。"""
+    path = ca_clangd.uri_to_path(loc.get("uri"))
+    line0, _ = _location_start(loc)
+    target = _find_open_view(path)
+    if target is not None:
+        try:
+            pt = target.text_point(line0, 0)
+            return target.substr(target.line(pt)).strip()[:160]
+        except Exception:
+            pass
+    if path not in cache:
+        try:
+            text, _ = _read_text_file(path)
+            cache[path] = text.split("\n")
+        except Exception:
+            cache[path] = []
+    lines = cache[path]
+    if 0 <= line0 < len(lines):
+        return lines[line0].strip()[:160]
+    return ""
+
+
+def _jump_to_location(window, loc):
+    """在已打开视图或新标签页中跳到引用位置。"""
+    if window is None:
+        return
+    path = ca_clangd.uri_to_path(loc.get("uri"))
+    if not path:
+        return
+    line0, char0 = _location_start(loc)
+    target = _find_open_view(path)
+    if target is None:
+        window.open_file("%s:%d:%d" % (path, line0 + 1, char0 + 1),
+                         sublime.ENCODED_POSITION)
+        return
+    try:
+        text = target.substr(sublime.Region(0, target.size()))
+        point = ca_clangd.offset_from_position(
+            text, {"line": line0, "character": char0})
+        target_window = target.window()
+        if target_window is not None:
+            target_window.focus_view(target)
+        target.sel().clear()
+        target.sel().add(sublime.Region(point, point))
+        target.show_at_center(point)
+    except Exception as e:
+        _log_error("jump to reference", e)
+
+
+def _find_workspace_edit(value, depth=0):
+    """在命令参数里递归查找 WorkspaceEdit（兼容 clangd.applyFix）。"""
+    if depth > 4:
+        return None
+    if isinstance(value, dict):
+        if "changes" in value or "documentChanges" in value:
+            return value
+        for item in value.values():
+            found = _find_workspace_edit(item, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_workspace_edit(item, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+class CaCodeActionsCommand(sublime_plugin.TextCommand):
+    """列出光标/选区处的 clangd 代码操作并应用。"""
+
+    def run(self, edit):
+        view = self.view
+        if not _is_cpp(view):
+            view.set_status("ca_action",
+                            u"only C/C++ files are supported")
+            return
+        client = _clangd_client_for(view, "ca_action")
+        if client is None:
+            return
+        selections = view.sel()
+        if not selections:
+            return
+        region = selections[0]
+        text = view.substr(sublime.Region(0, view.size()))
+        if len(text) > _CLANGD_MAX_CHARS:
+            view.set_status("ca_action", u"file is too large for clangd")
+            return
+        fname = view.file_name()
+        start, end = region.begin(), region.end()
+        change_count = view.change_count()
+        view.set_status("ca_action", u"loading code actions...")
+
+        def worker():
+            try:
+                actions = client.code_actions(
+                    fname, text, start, end, timeout=2.5)
+            except Exception as e:
+                _log_error("code actions", e)
+                actions = None
+            sublime.set_timeout(
+                lambda: self._show(view, actions, change_count, client), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show(self, view, actions, change_count, client):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status("ca_action", u"cancelled: buffer changed")
+                return
+            if actions is None:
+                view.set_status(
+                    "ca_action", u"clangd did not return code actions")
+                return
+            if not actions:
+                view.set_status(
+                    "ca_action", u"no code actions at this position")
+                return
+            items = []
+            for action in actions:
+                note = action.get("kind") or ""
+                if action.get("preferred"):
+                    note = (note + u" · preferred").strip(u" ·")
+                if action.get("disabled"):
+                    note = u"unavailable: " + action["disabled"]
+                items.append([action.get("title") or "", note])
+
+            def on_done(idx):
+                if idx >= 0:
+                    self._execute(view, actions[idx], change_count, client)
+
+            window = view.window()
+            if window is not None:
+                window.show_quick_panel(
+                    items, on_done, sublime.MONOSPACE_FONT)
+        except Exception as e:
+            _log_error("show code actions", e)
+
+    def _execute(self, view, action, change_count, client):
+        if action.get("disabled"):
+            view.set_status(
+                "ca_action", u"unavailable: " + action["disabled"])
+            return
+        title = (action.get("title") or u"code action").splitlines()[0]
+        edit = action.get("edit")
+        if edit:
+            _apply_edit_status(
+                view, edit, change_count, "ca_action", title)
+            return
+        command = action.get("command")
+        if command:
+            self._run_command(view, command, change_count, title, client)
+            return
+        view.set_status("ca_action", u"resolving code action...")
+        raw = action.get("action") or {}
+
+        def worker():
+            try:
+                resolved = client.resolve_code_action(raw, timeout=2.5)
+            except Exception as e:
+                _log_error("resolve code action", e)
+                resolved = None
+            sublime.set_timeout(
+                lambda: self._after_resolve(
+                    view, resolved, title, change_count, client), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_resolve(self, view, resolved, title, change_count, client):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status("ca_action", u"cancelled: buffer changed")
+                return
+            if not resolved:
+                view.set_status(
+                    "ca_action", u"clangd could not resolve this action")
+                return
+            edit = resolved.get("edit")
+            if edit:
+                _apply_edit_status(
+                    view, edit, change_count, "ca_action", title)
+                return
+            command = resolved.get("command")
+            if command:
+                self._run_command(
+                    view, command, change_count, title, client)
+                return
+            view.set_status("ca_action", u"this action returned no edits")
+        except Exception as e:
+            _log_error("apply resolved code action", e)
+
+    @staticmethod
+    def _run_command(view, command, change_count, title, client):
+        if not isinstance(command, dict):
+            view.set_status("ca_action", u"unsupported code action command")
+            return
+        name = command.get("command") or u""
+        arguments = command.get("arguments") or []
+        edit = _find_workspace_edit(arguments)
+        if edit is not None:
+            _apply_edit_status(
+                view, edit, change_count, "ca_action", title)
+            return
+        if not name or client is None:
+            view.set_status(
+                "ca_action", u"unsupported clangd command: %s" % name)
+            return
+        # clangd.applyTweak 等命令通过 workspace/executeCommand 执行，
+        # 编辑由服务端反向请求 workspace/applyEdit 送回。
+        view.set_status("ca_action", u"running %s..." % name)
+
+        def worker():
+            try:
+                result, error = client.execute_command(
+                    name, arguments, timeout=15.0)
+            except Exception as e:
+                _log_error("execute code action command", e)
+                result, error = None, u"command failed"
+            sublime.set_timeout(
+                lambda: CaCodeActionsCommand._after_command(
+                    view, result, error, title), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _after_command(view, result, error, title):
+        try:
+            if not view.is_valid():
+                return
+            if error:
+                view.set_status(
+                    "ca_action", u"clangd command failed: %s" % error)
+            elif result:
+                view.set_status(
+                    "ca_action", u"clangd command applied: %s" % title)
+            else:
+                view.set_status(
+                    "ca_action", u"clangd command finished: %s" % title)
+        except Exception as e:
+            _log_error("code action command finished", e)
+
+
+class CaRenameCommand(sublime_plugin.TextCommand):
+    """用 clangd 做语义重命名（跨文件，含头文件）。"""
+
+    def run(self, edit):
+        view = self.view
+        if not _is_cpp(view):
+            view.set_status("ca_rename",
+                            u"only C/C++ files are supported")
+            return
+        client = _clangd_client_for(view, "ca_rename")
+        if client is None:
+            return
+        selections = view.sel()
+        if not selections:
+            return
+        point = selections[0].begin()
+        word = view.substr(view.word(point)).strip()
+        if not re.match(r"^[A-Za-z_]\w*$", word):
+            view.set_status(
+                "ca_rename", u"place the cursor on an identifier")
+            return
+        window = view.window()
+        if window is None:
+            return
+        change_count = view.change_count()
+
+        def on_done(new_name):
+            new_name = (new_name or "").strip()
+            if not new_name or new_name == word:
+                return
+            if not re.match(r"^[A-Za-z_]\w*$", new_name):
+                view.set_status(
+                    "ca_rename", u"invalid C++ identifier: %s" % new_name)
+                return
+            if view.change_count() != change_count:
+                view.set_status(
+                    "ca_rename", u"buffer changed; try rename again")
+                return
+            self._start(view, client, point, word, new_name, change_count)
+
+        window.show_input_panel(
+            u"Rename '%s' to:" % word, word, on_done, None, None)
+
+    @staticmethod
+    def _start(view, client, point, old_name, new_name, change_count):
+        fname = view.file_name()
+        text = view.substr(sublime.Region(0, view.size()))
+        if len(text) > _CLANGD_MAX_CHARS:
+            view.set_status("ca_rename", u"file is too large for clangd")
+            return
+        view.set_status("ca_rename", u"renaming...")
+
+        def worker():
+            try:
+                edit, error = client.rename(
+                    fname, text, point, new_name, timeout=3.0)
+            except Exception as e:
+                _log_error("rename", e)
+                edit, error = None, u"rename failed"
+            sublime.set_timeout(
+                lambda: CaRenameCommand._finish(
+                    view, edit, error, old_name, new_name, change_count), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _finish(view, edit, error, old_name, new_name, change_count):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status("ca_rename", u"cancelled: buffer changed")
+                return
+            if error:
+                view.set_status(
+                    "ca_rename", u"rename failed: %s" % error)
+                return
+            if not edit:
+                view.set_status("ca_rename", u"clangd returned no edits")
+                return
+            window = view.window()
+            if window is None:
+                return
+            changed, edits, err = _apply_workspace_edit(
+                view, edit, change_count)
+            if err:
+                view.set_status("ca_rename", err)
+                return
+            view.set_status(
+                "ca_rename", u"renamed '%s' to '%s' (%d file(s), %d edit(s))"
+                % (old_name, new_name, changed, edits))
+        except Exception as e:
+            _log_error("rename apply", e)
+
+
+class CaFindReferencesCommand(sublime_plugin.TextCommand):
+    """用 clangd 查找符号引用，并在 quick panel 中选择跳转。"""
+
+    def run(self, edit):
+        view = self.view
+        if not _is_cpp(view):
+            view.set_status("ca_refs",
+                            u"only C/C++ files are supported")
+            return
+        client = _clangd_client_for(view, "ca_refs")
+        if client is None:
+            return
+        selections = view.sel()
+        if not selections:
+            return
+        point = selections[0].begin()
+        text = view.substr(sublime.Region(0, view.size()))
+        if len(text) > _CLANGD_MAX_CHARS:
+            view.set_status("ca_refs", u"file is too large for clangd")
+            return
+        fname = view.file_name()
+        change_count = view.change_count()
+        view.set_status("ca_refs", u"finding references...")
+
+        def worker():
+            try:
+                refs = client.references(
+                    fname, text, point, include_declaration=True,
+                    timeout=2.5)
+            except Exception as e:
+                _log_error("find references", e)
+                refs = None
+            sublime.set_timeout(
+                lambda: self._show(view, refs, change_count), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show(self, view, refs, change_count):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status("ca_refs", u"cancelled: buffer changed")
+                return
+            if refs is None:
+                view.set_status(
+                    "ca_refs", u"clangd did not return references")
+                return
+            # 去重：同一文件同一位置只显示一次
+            seen = set()
+            unique = []
+            for loc in refs:
+                key = (loc.get("uri"),
+                       _location_start(loc))
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(loc)
+            if not unique:
+                view.set_status("ca_refs", u"no references found")
+                return
+            shown = unique[:1000]
+            cache = {}
+            items = []
+            for loc in shown:
+                path = ca_clangd.uri_to_path(loc.get("uri"))
+                line0, char0 = _location_start(loc)
+                where = os.path.basename(path) or loc.get("uri") or u"?"
+                items.append([
+                    u"%s:%d:%d" % (where, line0 + 1, char0 + 1),
+                    _location_preview(loc, cache),
+                ])
+
+            def on_done(idx):
+                if idx >= 0:
+                    _jump_to_location(view.window(), shown[idx])
+
+            window = view.window()
+            if window is not None:
+                window.show_quick_panel(
+                    items, on_done, sublime.MONOSPACE_FONT)
+            suffix = u"" if len(unique) <= len(shown) else \
+                u" (showing first %d)" % len(shown)
+            view.set_status(
+                "ca_refs", u"%d reference(s)%s" % (len(unique), suffix))
+        except Exception as e:
+            _log_error("show references", e)

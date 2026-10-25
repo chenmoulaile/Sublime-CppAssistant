@@ -1,6 +1,10 @@
 [
 	{ "caption": "CppAssistant: Format Document (jiangly style)", "command": "ca_format_document" },
+	{ "caption": "CppAssistant: Format Selection", "command": "ca_format_selection" },
 	{ "caption": "CppAssistant: Go to Definition", "command": "ca_goto_definition" },
+	{ "caption": "CppAssistant: Code Actions", "command": "ca_code_actions" },
+	{ "caption": "CppAssistant: Rename Symbol", "command": "ca_rename" },
+	{ "caption": "CppAssistant: Find References", "command": "ca_find_references" },
 	{ "caption": "CppAssistant: Show Diagnostics", "command": "ca_show_diagnostics" },
 	{ "caption": "CppAssistant: Diagnostic Language - Chinese", "command": "ca_set_display_language", "args": { "lang": "zh" } },
 	{ "caption": "CppAssistant: Diagnostic Language - English", "command": "ca_set_display_language", "args": { "lang": "en" } },

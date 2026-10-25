@@ -11,6 +11,30 @@
 			"operand": "source.c++, source.c" }
 		]
 	},
+	{ "keys": ["ctrl+alt+f"], "command": "ca_format_selection",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			"operand": "source.c++, source.c" }
+		]
+	},
+	{ "keys": ["ctrl+."], "command": "ca_code_actions",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			"operand": "source.c++, source.c" }
+		]
+	},
+	{ "keys": ["ctrl+alt+r"], "command": "ca_rename",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			"operand": "source.c++, source.c" }
+		]
+	},
+	{ "keys": ["shift+f12"], "command": "ca_find_references",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			"operand": "source.c++, source.c" }
+		]
+	},
 	{ "keys": ["ctrl+alt+d"], "command": "ca_show_diagnostics",
 		"context": [
 			{ "key": "selector", "operator": "equal",

@@ -4,11 +4,12 @@ C++ assistance for Sublime Text 4, built around a real clangd engine with a
 zero-configuration fallback.
 
 CppAssistant ships a small LSP client that talks to `clangd` directly for
-compiler-grade completions, hover documentation, signature help, and live
-diagnostics. When clangd is not installed it falls back to a pure-Python STL
-database, so completion still works out of the box. The compiler can also be
-used for full syntax checks, and `clang-format` (or a built-in formatter) is
-used for jiangly-style formatting.
+compiler-grade completions, hover documentation, signature help, live
+diagnostics, code actions, semantic rename, and find references. When clangd is
+not installed it falls back to a pure-Python STL database, so completion still
+works out of the box. The compiler can also be used for full syntax checks, and
+`clang-format` (or a built-in formatter) is used for jiangly-style formatting,
+including formatting only the selected lines.
 
 The UI and default messages are English. Chinese and bilingual diagnostic
 text are available as an option. Chinese documentation is in
@@ -22,12 +23,17 @@ text are available as an option. Chinese documentation is in
 - **Smart `#include` insertion**: accepting a completion can add the matching
   header, while respecting `bits/stdc++.h` and headers already present.
 - **Hover documentation** and **signature help** powered by clangd.
+- **Code actions** from clangd: quick fixes, `#include` suggestions, and
+  refactors such as extracting a function.
+- **Semantic rename** and **find references** across the current file and
+  project headers.
 - **Live diagnostics** from either the compiler (`g++` / `clang++`) or
   clangd's `publishDiagnostics`, plus instant bracket/punctuation/string
   checks that do not wait for a compiler.
 - **F12 go-to-definition** across the current file, other open files, local
   headers, `include_paths`, and a standard-library fallback.
-- **Formatting** with clang-format or a conservative built-in fallback.
+- **Formatting** with clang-format or a conservative built-in fallback, for
+  the whole document or only the selected lines.
 - **English, Chinese, or bilingual** diagnostic text and completion details.
 - **PCH acceleration** for compiler checks and a cache for repeated results.
 
@@ -80,14 +86,19 @@ the folder to `CppAssistant`, and restart Sublime Text.
 
 No key bindings are registered by default, to avoid conflicts with other
 packages. `Example.sublime-keymap` contains optional entries for F12,
-`Shift+Alt+F`, and `Ctrl+Alt+D`; copy the ones you want into your user keymap.
+`Shift+Alt+F`, `Ctrl+Alt+F`, `Ctrl+.`, `Ctrl+Alt+R`, `Shift+F12`, and
+`Ctrl+Alt+D`; copy the ones you want into your user keymap.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `CppAssistant: Format Document (jiangly style)` | Format the whole file |
+| `CppAssistant: Format Selection` | Format only the selected lines |
 | `CppAssistant: Go to Definition` | Jump to the symbol definition (F12-style) |
+| `CppAssistant: Code Actions` | Show clangd quick fixes and refactors |
+| `CppAssistant: Rename Symbol` | Rename a symbol across the project |
+| `CppAssistant: Find References` | List references to the symbol at the cursor |
 | `CppAssistant: Show Diagnostics` | Show the diagnostics panel |
 | `CppAssistant: Diagnostic Language - English` | English diagnostics and completion details |
 | `CppAssistant: Diagnostic Language - Chinese` | Chinese diagnostics and completion details |
@@ -179,6 +190,22 @@ by the current file, `include_paths` directories, and finally the standard
 library symbol table. If a system header can be found, the command can open
 the real header file.
 
+### Code actions, rename, and references
+
+These commands require a saved file and a running clangd. **Code Actions**
+requests `textDocument/codeAction` for the cursor or selection and shows the
+available quick fixes and refactors in a quick panel. Actions that carry an
+edit are applied directly; actions that clangd resolves lazily use
+`codeAction/resolve`, and refactor tweaks use `workspace/executeCommand` plus
+`workspace/applyEdit`.
+
+**Rename Symbol** sends `textDocument/rename` and applies the returned
+`WorkspaceEdit` to open buffers and to project headers that are not open.
+**Find References** sends `textDocument/references` and lists the results in a
+quick panel; selecting an entry jumps to that location. File creation, rename,
+and deletion operations in a `WorkspaceEdit` are not applied; the command
+reports the action as unsupported instead of applying half of it.
+
 ### Formatting
 
 CppAssistant runs clang-format with a jiangly-style configuration (4-space
@@ -186,6 +213,11 @@ indent, K&R braces, 100-column limit, no include sorting). If clang-format is
 missing, a conservative built-in formatter normalizes indentation, brace
 spacing, and punctuation without changing strings, comments, or template
 nesting.
+
+**Format Selection** first asks clangd for `textDocument/rangeFormatting`.
+When clangd is unavailable it runs clang-format with `--lines`, and finally
+uses the built-in range formatter. Only the lines touched by the selection are
+changed; the rest of the buffer is preserved.
 
 ## Troubleshooting
 
@@ -212,6 +244,12 @@ completions with Tab or punctuation instead:
 formatter only performs safe normalizations. Install clang-format or set
 `clang_format_path` for full formatting.
 
+**Code actions, rename, or references do nothing.** These features require
+clangd. Save the file first and check **CppAssistant: Completion Engine
+Status** to confirm that clangd is running. Quick fixes also need clangd to
+have published diagnostics for the current document version; wait a moment
+after the last edit and try again.
+
 **Diagnostics stopped after an update.** Restart Sublime Text once. If the
 problem persists, open **View -> Show Console** and look for messages starting
 with `[CppAssistant]`.
@@ -227,10 +265,12 @@ python -m unittest discover -s tests -v
 
 Tests are not included in the installed package. The main files are:
 
-- `CppAssistant.py`: Sublime integration, commands, diagnostics, formatting.
+- `CppAssistant.py`: Sublime integration, commands, diagnostics, formatting,
+  code actions, rename, and references.
 - `cppassistant/ca_engine.py`: completion analysis, definition lookup,
-  formatting fallback, and compiler output parsing.
-- `cppassistant/ca_clangd.py`: minimal LSP client for clangd.
+  whole-file and range formatting fallbacks, and compiler output parsing.
+- `cppassistant/ca_clangd.py`: minimal LSP client for clangd, including
+  WorkspaceEdit and code-action helpers.
 - `cppassistant/ca_stdlib_data.py`: STL completion data and translations.
 - `cppassistant/ca_user_snippets.py`: user `.sublime-snippet` loader.
 

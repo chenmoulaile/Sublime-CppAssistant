@@ -3,6 +3,45 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v1.8.0
+
+Code actions, semantic rename, find references, and range formatting, plus a
+fix for clangd diagnostics parsing.
+
+### Features
+
+- **Code actions** (`ca_code_actions`): request `textDocument/codeAction` for
+  the cursor or selection and show quick fixes and refactors in a quick panel.
+  Supports actions with an immediate `edit`, lazy actions through
+  `codeAction/resolve`, and refactor tweaks through `workspace/executeCommand`
+  with `workspace/applyEdit`.
+- **Rename Symbol** (`ca_rename`): semantic rename through
+  `textDocument/rename`, applying the returned `WorkspaceEdit` to open buffers
+  and unopened project files.
+- **Find References** (`ca_find_references`): list references from
+  `textDocument/references` in a quick panel and jump to the selected location.
+- **Format Selection** (`ca_format_selection`): format only the selected lines.
+  Tries clangd `textDocument/rangeFormatting`, then clang-format `--lines`,
+  then the built-in range formatter. Text outside the selection is preserved.
+- Added command palette entries, an optional CppAssistant menu, and optional
+  key bindings for the new commands.
+- Workspace edits containing file create, rename, or delete operations are
+  rejected as a whole instead of being applied partially.
+
+### clangd
+
+- Parse `textDocument/publishDiagnostics` from the top-level `uri` field as
+  defined by LSP; previously diagnostics sent by clangd were not stored, which
+  also prevented quick fixes from receiving their diagnostic context.
+- Pass the current document's raw diagnostics in the code-action context, and
+  only when the diagnostic version matches the document version.
+- Reply to `workspace/applyEdit` with `{"applied": bool}` so clangd tweaks can
+  complete instead of failing to decode the reply.
+- Skip redundant `didChange` notifications when the text is unchanged, keeping
+  diagnostic versions aligned with the document version.
+- Added UTF-16 position conversion and TextEdit/WorkspaceEdit helpers for
+  applying clangd edits safely.
+
 ## v1.7.1
 
 Documentation cleanup and bug fixes. No new user-facing features.

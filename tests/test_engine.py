@@ -75,6 +75,108 @@ class ClangdHelperTests(unittest.TestCase):
             ca_clangd._norm_uri("file:///tmp/Foo.cpp"),
             ca_clangd._norm_uri("file:///tmp/foo.cpp"))
 
+    def test_offset_from_position_handles_utf16(self):
+        text = u"a\U0001F600b\nc"
+        self.assertEqual(
+            ca_clangd.offset_from_position(
+                text, {"line": 0, "character": 1}), 1)
+        self.assertEqual(
+            ca_clangd.offset_from_position(
+                text, {"line": 0, "character": 3}), 2)
+        self.assertEqual(
+            ca_clangd.offset_from_position(
+                text, {"line": 0, "character": 4}), 3)
+        self.assertEqual(
+            ca_clangd.offset_from_position(
+                text, {"line": 1, "character": 1}), 5)
+
+    def test_offset_from_position_clamps_and_ignores_cr(self):
+        text = u"a\r\nb"
+        self.assertEqual(
+            ca_clangd.offset_from_position(
+                text, {"line": 0, "character": 2}), 1)
+        self.assertEqual(
+            ca_clangd.offset_from_position(
+                text, {"line": 9, "character": 0}), len(text))
+
+    def test_apply_text_edits_uses_descending_offsets(self):
+        text = u"one two three"
+        edits = [
+            {"range": {"start": {"line": 0, "character": 0},
+                       "end": {"line": 0, "character": 3}},
+             "newText": u"1"},
+            {"range": {"start": {"line": 0, "character": 8},
+                       "end": {"line": 0, "character": 13}},
+             "newText": u"3"},
+        ]
+        self.assertEqual(
+            ca_clangd.apply_text_edits(text, edits), u"1 two 3")
+
+    def test_parse_workspace_edit_supports_document_changes(self):
+        edit = {
+            "documentChanges": [
+                {
+                    "textDocument": {"uri": "file:///a.cpp", "version": 1},
+                    "edits": [{
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 1},
+                        },
+                        "newText": u"x",
+                    }],
+                },
+                {"kind": "create", "uri": "file:///b.cpp"},
+            ]
+        }
+        parsed = ca_clangd.parse_workspace_edit(edit)
+        self.assertEqual(len(parsed["files"]), 1)
+        self.assertEqual(parsed["files"][0][0], "file:///a.cpp")
+        self.assertEqual(len(parsed["files"][0][1]), 1)
+        self.assertEqual(len(parsed["resource_ops"]), 1)
+
+    def test_parse_code_actions_reports_disabled_and_preferred(self):
+        actions = ca_clangd.parse_code_actions([
+            {"title": "Add include", "kind": "quickfix",
+             "isPreferred": True, "edit": {"changes": {}}},
+            {"title": "Unavailable",
+             "disabled": {"reason": "no symbol"}},
+        ])
+        self.assertEqual(len(actions), 2)
+        self.assertTrue(actions[0]["preferred"])
+        self.assertEqual(actions[0]["kind"], "quickfix")
+        self.assertEqual(actions[1]["disabled"], "no symbol")
+
+    def test_parse_publish_diagnostics_uses_top_level_uri(self):
+        uri, items = ca_clangd.parse_publish_diagnostics({
+            "uri": "file:///a.cpp",
+            "diagnostics": [{
+                "range": {"start": {"line": 2, "character": 3},
+                          "end": {"line": 2, "character": 5}},
+                "severity": 2,
+                "message": "unused variable",
+            }],
+        })
+        self.assertEqual(uri, "file:///a.cpp")
+        self.assertEqual(items, [(2, 3, 2, "unused variable")])
+
+    def test_parse_locations_supports_location_links(self):
+        locations = ca_clangd.parse_locations([
+            {"uri": "file:///a.cpp",
+             "range": {"start": {"line": 1, "character": 2},
+                       "end": {"line": 1, "character": 5}}},
+            {"targetUri": "file:///b.cpp",
+             "targetRange": {"start": {"line": 3, "character": 0},
+                             "end": {"line": 3, "character": 4}},
+             "targetSelectionRange": {
+                 "start": {"line": 3, "character": 1},
+                 "end": {"line": 3, "character": 3}}},
+        ])
+        self.assertEqual(len(locations), 2)
+        self.assertEqual(locations[0]["uri"], "file:///a.cpp")
+        self.assertEqual(locations[1]["uri"], "file:///b.cpp")
+        self.assertEqual(
+            locations[1]["range"]["start"]["character"], 1)
+
 
 class EngineTests(unittest.TestCase):
     def test_user_symbols_keep_both_languages(self):
@@ -139,6 +241,33 @@ class EngineTests(unittest.TestCase):
             hits = ca_engine.find_definition_std_fallback("vector", [tmp])
             self.assertTrue(hits)
             self.assertEqual(hits[0]["path"], header)
+
+    def test_format_code_range_only_changes_selected_lines(self):
+        src = (u"int main() {\n"
+               u"int x=1;\n"
+               u"if(x){x=2;}\n"
+               u"return 0;\n"
+               u"}\n")
+        start = src.index(u"int x=1;")
+        end = src.index(u"\n", src.index(u"if(x){x=2;}"))
+        out = ca_engine.format_code_range(src, start, end, 4)
+        self.assertTrue(out.startswith(u"int main() {\n"))
+        self.assertIn(u"    int x = 1;", out)
+        self.assertIn(u"    if(x) {x = 2; }", out)
+        self.assertTrue(out.endswith(u"return 0;\n}\n"))
+
+    def test_format_code_range_keeps_text_outside_range(self):
+        src = (u"void f(){\n"
+               u"int  a=1;\n"
+               u"}\n"
+               u"void g(){\n"
+               u"int  b=2;\n"
+               u"}\n")
+        start = src.index(u"int  b=2;")
+        end = src.index(u"\n", start)
+        out = ca_engine.format_code_range(src, start, end, 4)
+        self.assertIn(u"int  a=1;", out)
+        self.assertIn(u"    int b = 2;", out)
 
 
 if __name__ == "__main__":

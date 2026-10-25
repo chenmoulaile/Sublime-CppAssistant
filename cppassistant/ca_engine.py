@@ -1466,6 +1466,95 @@ class _FmtState(object):
         return spans
 
 
+def _format_one_line(raw_line, st, depth, indent_width):
+    """格式化一行并推进词法状态，返回 ``(文本, 新深度, 是否空行)``。
+
+    ``format_code`` / ``format_code_range`` 共用同一套行内规则，保证
+    整篇格式化与选区格式化的结果一致。
+    """
+    pre = _copy_state(st)
+    code_spans, prot_spans = _replay(raw_line, pre)
+    st.block, st.sstr, st.chr, st.raw = (
+        pre.block, pre.sstr, pre.chr, pre.raw)
+
+    prot_mask = bytearray(len(raw_line))
+    for a, b in prot_spans:
+        for x in range(a, b):
+            if x < len(prot_mask):
+                prot_mask[x] = 1
+
+    stripped = raw_line.strip()
+    if not stripped:
+        return "", depth, True
+
+    if (pre.block or pre.raw) and not any(
+            raw_line[a:b].strip() for a, b in code_spans):
+        return raw_line.rstrip(), max(depth, 0), False
+
+    if _PREPROC_RE.match(raw_line):
+        return stripped, depth, False
+
+    opens = closes = 0
+    for idx, ch in enumerate(raw_line):
+        if not prot_mask[idx]:
+            if ch == "{":
+                opens += 1
+            elif ch == "}":
+                closes += 1
+
+    lead_closes = 0
+    for ch in stripped:
+        if ch == "}":
+            lead_closes += 1
+        elif ch in " \t":
+            continue
+        else:
+            break
+    base = max(depth - lead_closes, 0)
+    indent = base * indent_width
+    t = stripped.lstrip("}").strip()
+    if _CASE_RE.match(t) or _LABEL_RE.match(t):
+        indent = max(indent - indent_width, 0)
+
+    pieces = []
+    last = 0
+    for a, b in code_spans:
+        if a > last:
+            pieces.append(("prot", raw_line[last:a]))
+        pieces.append(("code", raw_line[a:b]))
+        last = b
+    if last < len(raw_line):
+        pieces.append(("code" if not prot_mask[len(raw_line) - 1]
+                       else "prot", raw_line[last:]))
+
+    buf = []
+    mask = bytearray(len(raw_line))
+    pos = 0
+    for tag, seg in pieces:
+        seg = seg.expandtabs(indent_width)
+        if tag == "prot":
+            mask[pos:pos + len(seg)] = b"\x01" * len(seg)
+        buf.append(seg)
+        pos += len(seg)
+    line = "".join(buf)
+
+    rules = _LINE_RULES or _build_line_rules()
+    for rx, rep in rules:
+        line, mask = _safe_sub(line, rx, rep, mask)
+    # >> 仅在整行无裸 '<' 时按移位运算符加空格
+    has_bare_lt = False
+    for idx in range(len(line)):
+        if line[idx] == "<" and not mask[idx]:
+            has_bare_lt = True
+            break
+    if not has_bare_lt:
+        line, mask = _safe_sub(line, _SHIFT_R_RE, " >> ", mask)
+
+    new_line = line.strip()
+    return (" " * indent + new_line if new_line else "",
+            max(depth + opens - closes, 0), False)
+
+
 def format_code(src, indent_width=4):
     src = src.replace("\r\n", "\n").replace("\r", "\n")
     lines = src.split("\n")
@@ -1474,98 +1563,71 @@ def format_code(src, indent_width=4):
     depth = 0
     blank_run = 0
     for raw_line in lines:
-        pre = _copy_state(st)
-        code_spans, prot_spans = _replay(raw_line, pre)
-        st.block, st.sstr, st.chr, st.raw = (
-            pre.block, pre.sstr, pre.chr, pre.raw)
-
-        prot_mask = bytearray(len(raw_line))
-        for a, b in prot_spans:
-            for x in range(a, b):
-                if x < len(prot_mask):
-                    prot_mask[x] = 1
-
-        stripped = raw_line.strip()
-
-        if not stripped:
+        text, depth, blank = _format_one_line(
+            raw_line, st, depth, indent_width)
+        if blank:
             blank_run += 1
             if blank_run <= 1:
                 out.append("")
             continue
         blank_run = 0
-
-        if (pre.block or pre.raw) and not any(
-                raw_line[a:b].strip() for a, b in code_spans):
-            out.append(raw_line.rstrip())
-            depth = max(depth, 0)
-            continue
-
-        if _PREPROC_RE.match(raw_line):
-            out.append(stripped)
-            continue
-
-        opens = closes = 0
-        for idx, ch in enumerate(raw_line):
-            if not prot_mask[idx]:
-                if ch == "{":
-                    opens += 1
-                elif ch == "}":
-                    closes += 1
-
-        lead_closes = 0
-        for ch in stripped:
-            if ch == "}":
-                lead_closes += 1
-            elif ch in " \t":
-                continue
-            else:
-                break
-        base = max(depth - lead_closes, 0)
-        indent = base * indent_width
-        t = stripped.lstrip("}").strip()
-        if _CASE_RE.match(t) or _LABEL_RE.match(t):
-            indent = max(indent - indent_width, 0)
-
-        pieces = []
-        last = 0
-        for a, b in code_spans:
-            if a > last:
-                pieces.append(("prot", raw_line[last:a]))
-            pieces.append(("code", raw_line[a:b]))
-            last = b
-        if last < len(raw_line):
-            pieces.append(("code" if not prot_mask[len(raw_line) - 1]
-                           else "prot", raw_line[last:]))
-
-        buf = []
-        mask = bytearray(len(raw_line))
-        pos = 0
-        for tag, seg in pieces:
-            seg = seg.expandtabs(indent_width)
-            if tag == "prot":
-                mask[pos:pos + len(seg)] = b"\x01" * len(seg)
-            buf.append(seg)
-            pos += len(seg)
-        line = "".join(buf)
-
-        rules = _LINE_RULES or _build_line_rules()
-        for rx, rep in rules:
-            line, mask = _safe_sub(line, rx, rep, mask)
-        # >> 仅在整行无裸 '<' 时按移位运算符加空格
-        has_bare_lt = False
-        for idx in range(len(line)):
-            if line[idx] == "<" and not mask[idx]:
-                has_bare_lt = True
-                break
-        if not has_bare_lt:
-            line, mask = _safe_sub(line, _SHIFT_R_RE, " >> ", mask)
-
-        new_line = line.strip()
-
-        out.append(" " * indent + new_line if new_line else "")
-        depth = max(depth + opens - closes, 0)
+        out.append(text)
     result = "\n".join(out).rstrip("\n") + "\n"
     return result
+
+
+def _state_depth_before(lines, end_line):
+    """扫描 ``lines[:end_line]``，返回起始词法状态与花括号深度。"""
+    st = _FmtState()
+    depth = 0
+    for raw_line in lines[:end_line]:
+        pre = _copy_state(st)
+        code_spans, _ = _replay(raw_line, pre)
+        st = pre
+        if _PREPROC_RE.match(raw_line):
+            continue
+        for a, b in code_spans:
+            segment = raw_line[a:b]
+            depth += segment.count("{") - segment.count("}")
+    return st, max(depth, 0)
+
+
+def format_code_range(src, start_offset, end_offset, indent_width=4):
+    """只格式化 ``[start_offset, end_offset)`` 覆盖的完整行。
+
+    选区外的文本原样保留；起始缩进深度由选区之前的代码推导，因此
+    在函数体、命名空间或类内部选中几行也能得到正确缩进。返回完整
+    新文本，调用方可直接替换整个缓冲区。
+    """
+    src = src.replace("\r\n", "\n").replace("\r", "\n")
+    n = len(src)
+    if start_offset < 0:
+        start_offset = 0
+    if end_offset > n:
+        end_offset = n
+    if end_offset < start_offset:
+        start_offset, end_offset = end_offset, start_offset
+    start_line = src.count("\n", 0, start_offset)
+    end_line = src.count("\n", 0, end_offset)
+    lines = src.split("\n")
+    if end_line >= len(lines):
+        end_line = len(lines) - 1
+    if start_line > end_line:
+        return src
+    st, depth = _state_depth_before(lines, start_line)
+    out = []
+    blank_run = 0
+    for raw_line in lines[start_line:end_line + 1]:
+        text, depth, blank = _format_one_line(
+            raw_line, st, depth, indent_width)
+        if blank:
+            blank_run += 1
+            if blank_run <= 1:
+                out.append("")
+            continue
+        blank_run = 0
+        out.append(text)
+    return "\n".join(lines[:start_line] + out + lines[end_line + 1:])
 
 
 def _copy_state(st):

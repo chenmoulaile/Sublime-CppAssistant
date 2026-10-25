@@ -17,12 +17,17 @@ JSON-RPC 通信，把 clangd 的真实语义补全（编译器级准确度）接
     initialization_options.fallbackFlags 相同机制），补全结果严格遵循
     当前 C++ 标准（CSP-S 推荐 c++14）。
 
-协议实现范围（补全所需最小集）：
+协议实现范围（补全所需最小集 + 代码操作）：
   initialize / initialized / shutdown / exit
   textDocument/didOpen / didChange / didClose
   textDocument/completion            （同步等待 + 异步回调双模式）
   textDocument/hover                 （悬停文档，调用方放工作线程等待）
   textDocument/signatureHelp         （函数签名提示，同上）
+  textDocument/codeAction            （快速修复 / 重构建议）
+  codeAction/resolve                 （延迟计算的代码操作编辑）
+  textDocument/rename                （语义重命名，返回 WorkspaceEdit）
+  textDocument/references            （查找引用）
+  textDocument/rangeFormatting       （只格式化选区）
   $/cancelRequest
   服务器反向请求（workspace/configuration、client/registerCapability、
   window/workDoneProgress/create）一律回空，避免 clangd 卡住。
@@ -136,6 +141,243 @@ def line_col_utf16(text, offset):
     for ch in text[line_start:offset]:
         col += 2 if ord(ch) > 0xFFFF else 1
     return line, col
+
+
+def offset_from_position(text, position):
+    """把 LSP (line, character) 换成 Python 字符偏移（UTF-16 码元）。
+
+    越界位置钳制到文本末尾；CRLF 的 ``\\r`` 不会被算进位置。
+    这是 line_col_utf16 的逆运算，rename / references / rangeFormatting
+    的返回位置都要经过它才能安全地映射回 Sublime 的 Region。
+    """
+    if not isinstance(position, dict):
+        return 0
+    try:
+        line = int(position.get("line", 0) or 0)
+        character = int(position.get("character", 0) or 0)
+    except Exception:
+        return 0
+    if line < 0:
+        line = 0
+    if character < 0:
+        character = 0
+    pos = 0
+    for _ in range(line):
+        nl = text.find("\n", pos)
+        if nl < 0:
+            return len(text)
+        pos = nl + 1
+    i = pos
+    units = 0
+    n = len(text)
+    while i < n and text[i] != "\n" and units < character:
+        width = 2 if ord(text[i]) > 0xFFFF else 1
+        if units + width > character:
+            break
+        units += width
+        i += 1
+    if i > pos and text[i - 1] == "\r":
+        i -= 1
+    return i
+
+
+def range_to_offsets(text, rng):
+    """LSP Range -> (start_offset, end_offset)，并保证 start <= end。"""
+    if not isinstance(rng, dict):
+        return (0, 0)
+    start = offset_from_position(text, rng.get("start") or {})
+    end = offset_from_position(text, rng.get("end") or {})
+    if end < start:
+        start, end = end, start
+    return (start, end)
+
+
+def uri_to_path(uri):
+    """file:// URI -> 本地路径（Windows 下去掉 /C:/ 的前导斜杠）。"""
+    if not uri:
+        return ""
+    path = uri
+    if path.startswith("file://"):
+        path = path[7:]
+    elif path.startswith("file:"):
+        path = path[5:]
+    try:
+        path = urllib.parse.unquote(path)
+    except Exception:
+        pass
+    if os.name == "nt":
+        if re.match(r"^/[A-Za-z]:", path):
+            path = path[1:]
+        path = path.replace("/", "\\")
+    return path
+
+
+def parse_text_edits(result):
+    """规范化 textDocument/rangeFormatting 等返回的 TextEdit 列表。"""
+    if not isinstance(result, list):
+        return []
+    out = []
+    for edit in result:
+        if not isinstance(edit, dict):
+            continue
+        rng = edit.get("range")
+        if not isinstance(rng, dict):
+            continue
+        out.append({"range": rng,
+                    "newText": edit.get("newText") or ""})
+    return out
+
+
+def apply_text_edits(text, edits):
+    """把一组 LSP TextEdit 应用到文本，返回新文本。
+
+    编辑按起始偏移从后往前应用，避免前面的编辑把后面的偏移推歪。
+    重叠编辑（协议上不应出现）会被跳过，保证结果可预测。
+    """
+    resolved = []
+    for edit in edits or []:
+        if not isinstance(edit, dict):
+            continue
+        start, end = range_to_offsets(text, edit.get("range") or {})
+        resolved.append((start, end, edit.get("newText") or ""))
+    resolved.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    out = text
+    last_start = len(text) + 1
+    for start, end, new_text in resolved:
+        if end > last_start:
+            continue
+        out = out[:start] + new_text + out[end:]
+        last_start = start
+    return out
+
+
+def parse_workspace_edit(edit):
+    """解析 WorkspaceEdit，返回 ``{"files": [(uri, edits)], "resource_ops": []}``。
+
+    同时支持 ``changes``（uri -> TextEdit[]）和 ``documentChanges``
+    （TextDocumentEdit[]，clangd 重命名时常用）。文件创建/改名/删除等
+    资源操作单独返回，由调用方决定是否支持。
+    """
+    files = []
+    resource_ops = []
+    if not isinstance(edit, dict):
+        return {"files": files, "resource_ops": resource_ops}
+    changes = edit.get("changes")
+    if isinstance(changes, dict):
+        for uri, edits in changes.items():
+            parsed = parse_text_edits(edits)
+            if uri and parsed:
+                files.append((uri, parsed))
+    docs = edit.get("documentChanges")
+    if isinstance(docs, list):
+        for change in docs:
+            if not isinstance(change, dict):
+                continue
+            if change.get("kind"):
+                resource_ops.append(change)
+                continue
+            td = change.get("textDocument") or {}
+            uri = td.get("uri") or ""
+            parsed = parse_text_edits(change.get("edits"))
+            if uri and parsed:
+                files.append((uri, parsed))
+    # 同一文件可能同时出现在两种字段里：合并后按首次出现顺序返回
+    merged = {}
+    order = []
+    for uri, edits in files:
+        if uri not in merged:
+            merged[uri] = []
+            order.append(uri)
+        merged[uri].extend(edits)
+    return {"files": [(uri, merged[uri]) for uri in order],
+            "resource_ops": resource_ops}
+
+
+def parse_code_actions(result):
+    """解析 textDocument/codeAction 的返回值。
+
+    返回 [{title, kind, preferred, disabled, edit, command, data, action}]。
+    ``disabled`` 是 clangd 给出的不可用原因（空串表示可用）。
+    """
+    if not isinstance(result, list):
+        return []
+    out = []
+    for action in result:
+        if not isinstance(action, dict):
+            continue
+        title = action.get("title") or action.get("label") or ""
+        if not title:
+            continue
+        disabled = action.get("disabled")
+        reason = ""
+        if isinstance(disabled, dict):
+            reason = disabled.get("reason") or ""
+        elif isinstance(disabled, str):
+            reason = disabled
+        out.append({
+            "title": title,
+            "kind": action.get("kind") or "",
+            "preferred": bool(action.get("isPreferred")),
+            "disabled": reason,
+            "edit": action.get("edit"),
+            "command": action.get("command"),
+            "data": action.get("data"),
+            "action": action,
+        })
+    return out
+
+
+def parse_locations(result):
+    """解析 references 返回的 Location / LocationLink 列表。"""
+    if not isinstance(result, list):
+        return []
+    out = []
+    for loc in result:
+        if not isinstance(loc, dict):
+            continue
+        uri = loc.get("uri") or ""
+        rng = loc.get("range")
+        if not uri and loc.get("targetUri"):
+            uri = loc.get("targetUri")
+            rng = loc.get("targetSelectionRange") or loc.get("targetRange")
+        if not uri or not isinstance(rng, dict):
+            continue
+        out.append({"uri": uri, "range": rng})
+    return out
+
+
+def parse_publish_diagnostics(params):
+    """解析 textDocument/publishDiagnostics 通知。
+
+    LSP 标准字段是顶层的 ``uri``；部分旧客户端把 uri 放在
+    ``textDocument`` 里，这里两种形态都兼容。返回 ``(uri, items)``，
+    items 为 ``[(line0, col0, severity, message)]``。
+    """
+    if not isinstance(params, dict):
+        return ("", [])
+    uri = params.get("uri") or ""
+    if not uri:
+        td = params.get("textDocument") or {}
+        uri = td.get("uri") or ""
+    items = []
+    for diag in params.get("diagnostics") or []:
+        if not isinstance(diag, dict):
+            continue
+        rng = diag.get("range") or {}
+        start = rng.get("start") or {}
+        try:
+            line = int(start.get("line", 0))
+            col = int(start.get("character", 0))
+        except Exception:
+            line, col = 0, 0
+        try:
+            severity = int(diag.get("severity", 1) or 1)
+        except Exception:
+            severity = 1
+        message = diag.get("message") or ""
+        if message:
+            items.append((line, col, severity, message))
+    return (uri, items)
 
 
 def _norm_uri(u):
@@ -368,17 +610,21 @@ class ClangdClient(object):
     """
 
     def __init__(self, binary, args, root_dir, fallback_flags=None,
-                 on_notify=None):
+                 on_notify=None, on_apply_edit=None):
         self.binary = binary
         self.args = list(args or [])
         self.root_dir = root_dir
         self.fallback_flags = list(fallback_flags or [])
         self.on_notify = on_notify  # fn(method, params)，读线程调用，谨慎使用
+        # fn(params, respond)：服务端 workspace/applyEdit 请求。respond
+        # 接受 (applied, reason)，由插件在 UI 线程应用编辑后调用。
+        self.on_apply_edit = on_apply_edit
         self.proc = None
         self._wlock = threading.Lock()
         self._pending = {}      # id -> {"event": Event, "resp": dict|None}
         self._idgen = [0]
         self._doc_versions = {}  # uri -> int
+        self._doc_texts = {}     # uri -> 最近一次同步的全文
         # 已收到 publishDiagnostics 的 uri 集合：首次诊断到达 ≈ 该文件的
         # preamble 构建完成（大标准 + bits/stdc++.h 冷启动可达 10s+，
         # 在此之前 clangd 补全返回空，客户端应先走本地兜底）
@@ -388,6 +634,10 @@ class ClangdClient(object):
         # clangd 诊断存储：norm_uri -> [(line0, col0, severity, message)]
         # 供诊断引擎模式（lint_engine=clangd）渲染 LSP 式代码审查
         self._diagnostics = {}
+        # 原始诊断（含 code/range），供 textDocument/codeAction 的
+        # context.diagnostics 使用；clangd 靠它筛选 quickfix。
+        # norm_uri -> (version, [diagnostic dict])
+        self._diagnostics_raw = {}
         self._ready = threading.Event()
         self._dead = threading.Event()
         self._send_init_id = [None]
@@ -432,8 +682,31 @@ class ClangdClient(object):
                     "signatureHelp": {"dynamicRegistration": False},
                     "hover": {"dynamicRegistration": False,
                               "contentFormat": ["plaintext"]},
+                    "codeAction": {
+                        "dynamicRegistration": False,
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "", "quickfix", "refactor",
+                                    "refactor.extract", "refactor.inline",
+                                    "refactor.rewrite", "source",
+                                    "source.organizeImports",
+                                ],
+                            },
+                        },
+                        "isPreferredSupport": True,
+                        "disabledSupport": True,
+                        "dataSupport": True,
+                        "resolveSupport": {"properties": ["edit"]},
+                    },
+                    "rename": {"dynamicRegistration": False,
+                               "prepareSupport": False},
+                    "references": {"dynamicRegistration": False},
+                    "rangeFormatting": {"dynamicRegistration": False},
                 },
                 "workspace": {
+                    "applyEdit": True,
+                    "workspaceEdit": {"documentChanges": True},
                     "configuration": True,
                     "didChangeConfiguration": {"dynamicRegistration": False},
                 },
@@ -514,8 +787,8 @@ class ClangdClient(object):
         self._write_frame(msg)
         return rid
 
-    def request(self, method, params, timeout=1.0):
-        """同步请求；超时或进程已死返回 None。"""
+    def request_full(self, method, params, timeout=1.0):
+        """同步请求，返回完整响应 dict（含 error），超时/进程退出返回 None。"""
         if self.proc is None or self._dead.is_set():
             return None
         rid = self._send_request(method, params, cb=None)
@@ -525,11 +798,14 @@ class ClangdClient(object):
         entry["event"].wait(timeout)
         resp = entry.get("resp")
         self._pending.pop(rid, None)
-        if resp is None:
+        return resp if isinstance(resp, dict) else None
+
+    def request(self, method, params, timeout=1.0):
+        """同步请求；超时、进程已死或服务端报错返回 None。"""
+        resp = self.request_full(method, params, timeout=timeout)
+        if resp is None or "error" in resp:
             return None
-        if isinstance(resp, dict) and "error" in resp:
-            return None
-        return resp.get("result") if isinstance(resp, dict) else None
+        return resp.get("result")
 
     def cancel_pending(self, method):
         """只取消指定方法的未完成请求。
@@ -597,6 +873,10 @@ class ClangdClient(object):
                 pass
         self._pending.clear()
 
+    def _respond(self, rid, result):
+        """回复服务器反向请求（workspace/configuration / applyEdit 等）。"""
+        self._write_frame({"jsonrpc": "2.0", "id": rid, "result": result})
+
     def _dispatch(self, body):
         try:
             msg = json.loads(body.decode("utf-8"))
@@ -608,13 +888,31 @@ class ClangdClient(object):
         method = msg.get("method")
         if rid is not None and method is not None:
             # 服务器反向请求。workspace/configuration 必须回数组，否则
-            # 部分 clangd 版本会报错或卡住初始化；其它请求回 null。
+            # 部分 clangd 版本会报错或卡住初始化；workspace/applyEdit
+            # 用于重构类代码操作，必须回 {"applied": bool} 对象。
+            params = msg.get("params") or {}
             if method == "workspace/configuration":
-                params = msg.get("params") or {}
                 result = [{} for _ in (params.get("items") or [])]
+                self._respond(rid, result)
+            elif method == "workspace/applyEdit":
+                if self.on_apply_edit is None:
+                    self._respond(
+                        rid, {"applied": False,
+                              "failureReason": "unsupported"})
+                else:
+                    def respond(applied, reason=None):
+                        result = {"applied": bool(applied)}
+                        if reason:
+                            result["failureReason"] = reason
+                        self._respond(rid, result)
+                    try:
+                        self.on_apply_edit(params, respond)
+                    except Exception:
+                        self._respond(
+                            rid, {"applied": False,
+                                  "failureReason": "applyEdit failed"})
             else:
-                result = None
-            self._write_frame({"jsonrpc": "2.0", "id": rid, "result": result})
+                self._respond(rid, None)
             return
         if rid is not None:
             entry = self._pending.get(rid)
@@ -633,30 +931,14 @@ class ClangdClient(object):
         # 通知
         if method == "textDocument/publishDiagnostics":
             params = msg.get("params") or {}
-            td = params.get("textDocument") or {}
-            uri = td.get("uri") or ""
+            uri, items = parse_publish_diagnostics(params)
             if uri:
                 nu = _norm_uri(uri)
                 self._preamble_ready.add(nu)
-                items = []
-                for d in (params.get("diagnostics") or []):
-                    if not isinstance(d, dict):
-                        continue
-                    rng = d.get("range") or {}
-                    start = rng.get("start") or {}
-                    try:
-                        ln = int(start.get("line", 0))
-                        cl = int(start.get("character", 0))
-                    except Exception:
-                        ln, cl = 0, 0
-                    try:
-                        sev = int(d.get("severity", 1) or 1)
-                    except Exception:
-                        sev = 1
-                    m = d.get("message") or ""
-                    if m:
-                        items.append((ln, cl, sev, m))
                 self._diagnostics[nu] = items
+                raw = [d for d in (params.get("diagnostics") or [])
+                       if isinstance(d, dict)]
+                self._diagnostics_raw[nu] = (params.get("version"), raw)
         if method and self.on_notify is not None:
             try:
                 self.on_notify(method, msg.get("params"))
@@ -673,6 +955,7 @@ class ClangdClient(object):
 
     def open_document(self, path, text):
         uri = path_to_uri(path)
+        self._doc_texts[uri] = text
         self.notify("textDocument/didOpen", {
             "textDocument": {
                 "uri": uri,
@@ -683,6 +966,12 @@ class ClangdClient(object):
 
     def change_document(self, path, text):
         uri = path_to_uri(path)
+        # 文本没变就不发 didChange：避免每次 hover / codeAction 都把
+        # 版本号推高，导致 publishDiagnostics 的 version 对不上，从而
+        # 丢失 codeAction 的 diagnostics context。
+        if self._doc_texts.get(uri) == text:
+            return
+        self._doc_texts[uri] = text
         self.notify("textDocument/didChange", {
             "textDocument": {"uri": uri,
                              "version": self._version_for(uri, True)},
@@ -694,6 +983,8 @@ class ClangdClient(object):
         self.notify("textDocument/didClose",
                     {"textDocument": {"uri": uri}})
         self._doc_versions.pop(uri, None)
+        self._doc_texts.pop(uri, None)
+        self._diagnostics_raw.pop(_norm_uri(uri), None)
 
     def has_document(self, path):
         return path_to_uri(path) in self._doc_versions
@@ -715,6 +1006,23 @@ class ClangdClient(object):
         if nu not in self._diagnostics:
             return None
         return list(self._diagnostics[nu])
+
+    def diagnostics_context_for(self, path):
+        """返回可用于 codeAction context 的原始诊断。
+
+        只在该诊断版本与当前文档版本一致时返回，避免把旧位置传给
+        clangd 导致 quickfix 落在错误位置。无诊断时返回空列表。
+        """
+        uri = path_to_uri(path)
+        nu = _norm_uri(uri)
+        entry = self._diagnostics_raw.get(nu)
+        if not entry:
+            return []
+        version, raw = entry
+        current = self._doc_versions.get(uri)
+        if version is not None and current is not None and version != current:
+            return []
+        return list(raw)
 
     # ---- 补全 ----
 
@@ -807,3 +1115,111 @@ class ClangdClient(object):
             "position": {"line": line, "character": col},
         }, timeout=timeout)
         return parse_signature_help(result)
+
+    # ---- 代码操作 / 重命名 / 查找引用 / 范围格式化 ----
+
+    def code_actions(self, path, text, start, end, timeout=2.0,
+                     diagnostics=None):
+        """请求 textDocument/codeAction；返回 parse_code_actions 的列表。
+
+        服务器未就绪或超时返回 None（与"没有可用操作"的空列表区分）。
+        """
+        pos = self._sync_and_position(path, text, start)
+        if pos is None:
+            return None
+        uri, line, col = pos
+        end_line, end_col = line_col_utf16(text, end)
+        if diagnostics is None:
+            diagnostics = self.diagnostics_context_for(path)
+        result = self.request("textDocument/codeAction", {
+            "textDocument": {"uri": uri},
+            "range": {
+                "start": {"line": line, "character": col},
+                "end": {"line": end_line, "character": end_col},
+            },
+            "context": {"diagnostics": diagnostics or []},
+        }, timeout=timeout)
+        return parse_code_actions(result)
+
+    def resolve_code_action(self, action, timeout=2.0):
+        """请求 codeAction/resolve，返回补全后的原始 CodeAction dict。"""
+        if not self.is_ready() or not isinstance(action, dict):
+            return None
+        result = self.request("codeAction/resolve", action, timeout=timeout)
+        return result if isinstance(result, dict) else None
+
+    def execute_command(self, command, arguments=None, timeout=10.0):
+        """执行 workspace/executeCommand。
+
+        clangd 的 ``clangd.applyTweak`` 通过服务端反向请求
+        workspace/applyEdit 落地，插件需提供 on_apply_edit 回调。
+        返回 ``(结果或 None, 错误消息或 None)``。
+        """
+        if not self.is_ready():
+            return (None, "clangd is not ready")
+        resp = self.request_full("workspace/executeCommand", {
+            "command": command,
+            "arguments": list(arguments or []),
+        }, timeout=timeout)
+        if resp is None:
+            return (None, "clangd did not respond")
+        err = resp.get("error")
+        if isinstance(err, dict):
+            return (None, err.get("message") or "command failed")
+        return (resp.get("result"), None)
+
+    def rename(self, path, text, offset, new_name, timeout=2.0):
+        """请求 textDocument/rename。
+
+        返回 ``(WorkspaceEdit 或 None, 错误消息或 None)``；错误消息来自
+        clangd 的 JSON-RPC error（例如该符号不允许重命名）。
+        """
+        pos = self._sync_and_position(path, text, offset)
+        if pos is None:
+            return (None, "clangd is not ready")
+        uri, line, col = pos
+        resp = self.request_full("textDocument/rename", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": col},
+            "newName": new_name,
+        }, timeout=timeout)
+        if resp is None:
+            return (None, "clangd did not respond")
+        err = resp.get("error")
+        if isinstance(err, dict):
+            return (None, err.get("message") or "rename failed")
+        result = resp.get("result")
+        if not isinstance(result, dict):
+            return (None, "clangd returned no edits")
+        return (result, None)
+
+    def references(self, path, text, offset, include_declaration=True,
+                   timeout=2.0):
+        """请求 textDocument/references；返回 parse_locations 的列表。"""
+        pos = self._sync_and_position(path, text, offset)
+        if pos is None:
+            return None
+        uri, line, col = pos
+        result = self.request("textDocument/references", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": col},
+            "context": {"includeDeclaration": bool(include_declaration)},
+        }, timeout=timeout)
+        return parse_locations(result)
+
+    def range_formatting(self, path, text, start, end, timeout=2.0):
+        """请求 textDocument/rangeFormatting；返回 TextEdit 列表或 None。"""
+        pos = self._sync_and_position(path, text, start)
+        if pos is None:
+            return None
+        uri, line, col = pos
+        end_line, end_col = line_col_utf16(text, end)
+        result = self.request("textDocument/rangeFormatting", {
+            "textDocument": {"uri": uri},
+            "range": {
+                "start": {"line": line, "character": col},
+                "end": {"line": end_line, "character": end_col},
+            },
+            "options": {"tabSize": 4, "insertSpaces": True},
+        }, timeout=timeout)
+        return parse_text_edits(result)
