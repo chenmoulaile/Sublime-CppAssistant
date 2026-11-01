@@ -17,6 +17,7 @@
 	{ "caption": "CppAssistant: Toggle Inline Error Phantoms", "command": "ca_toggle_phantoms" },
 	{ "caption": "CppAssistant: Diagnostic Engine - clangd", "command": "ca_set_lint_engine", "args": { "engine": "clangd" } },
 	{ "caption": "CppAssistant: Diagnostic Engine - Compiler", "command": "ca_set_lint_engine", "args": { "engine": "compiler" } },
+	{ "caption": "CppAssistant: Diagnostic Engine - libclang (PCH)", "command": "ca_set_lint_engine", "args": { "engine": "libclang" } },
 	{ "caption": "Preferences: CppAssistant Settings", "command": "edit_settings",
 	  "args": {
 		"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",

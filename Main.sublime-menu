@@ -117,6 +117,12 @@
 										"command": "ca_set_lint_engine",
 										"args": { "engine": "compiler" },
 										"checkbox": true
+									},
+									{
+										"caption": "libclang semantic engine (PCH)",
+										"command": "ca_set_lint_engine",
+										"args": { "engine": "libclang" },
+										"checkbox": true
 									}
 								]
 							},

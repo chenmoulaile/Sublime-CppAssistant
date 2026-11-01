@@ -3,6 +3,80 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.0.0
+
+Phase two: an optional libclang semantic engine on top of the zero-dependency
+FastEngine. The plugin now has three progressive layers — FastEngine, clangd,
+and libclang — and stays usable with none of the optional tools installed.
+
+### libclang semantic engine
+
+- **`cppassistant/ca_semantic.py`**: a `ctypes` wrapper around the libclang C
+  API with no Python package dependency. It discovers `libclang.dll` /
+  `libclang.so` / `libclang.dylib` from `LIBCLANG_PATH`, the plugin `libs/`
+  directory, the clangd/clang directory, and common LLVM, MSYS2, Xcode, and
+  Homebrew locations.
+- **`lint_engine: "libclang"`**: background diagnostics through libclang with
+  no compiler process. If libclang cannot be loaded, the compiler engine is
+  used instead.
+- **Automatic resource directory discovery**: builtin headers such as
+  `stddef.h`, `float.h`, and `mm_malloc.h` resolve correctly, so
+  `#include <bits/stdc++.h>` works with MSYS2/LLVM installations.
+- **PCH acceleration**: when a buffer includes `bits/stdc++.h` and a
+  `clang++` with the same major.minor version as libclang is available, a
+  precompiled header is built once in the background and reused via
+  `-include-pch`. Warm diagnostics drop from roughly 1.1 s to 210 ms, and
+  member completion from 630 ms to 12 ms in local measurements. A stale or
+  incompatible PCH is detected and disabled automatically.
+- **Warm-cache completion merge**: libclang results are merged ahead of
+  FastEngine/database results only when the translation unit is already
+  parsed. `is_busy()` and `allow_parse=False` keep libclang off the UI
+  thread's critical path.
+- **Cross-file F12 fallback**: libclang definitions (including standard
+  library and header locations) are added with higher priority when the
+  translation unit is warm. Word-end offsets are probed correctly.
+- **Engine status** now reports the libclang path/version, resource directory,
+  PCH state, parse/reparse/completion/definition counts, and timings.
+- New settings: `enable_libclang_engine`, `libclang_path`, `libclang_args`,
+  `libclang_pch`, `libclang_completion`, and `libclang_goto`.
+- New commands/menu entries: **Diagnostic Engine - libclang (PCH)**.
+
+### FastEngine (zero dependency)
+
+- **FastEngine** (`cppassistant/ca_fast.py`): a pure-Python incremental lexer
+  and tolerant structural parser. It needs no tree-sitter, libclang, clangd,
+  compiler, or third-party package.
+- **Scope-aware fallback completion**: same-file locals, parameters, class and
+  struct members, enum values, namespaces, aliases, macros, template
+  parameters, and qualified names are merged ahead of the existing STL and
+  snippet database. Member completion works after `.`, `->`, and `::`.
+- **Faster same-file F12**: structural definition candidates are prepended and
+  ranked by visibility and declaration/definition role before the text-based
+  search runs.
+- **Richer instant checks**: unterminated raw strings, malformed `#include`
+  directives, unbalanced `#if`/`#endif`, and full-width punctuation, in
+  addition to brackets, strings, and block comments.
+- **Incremental analysis cache**: per-buffer revisions are cached, and edits
+  re-lex only from the first changed line while reusing the unchanged token
+  prefix.
+- New setting `enable_fast_engine` (default `true`). Set it to `false` to use
+  the previous regex-only fallback path. clangd remains the semantic engine
+  whenever it is available.
+
+### Tests
+
+- Added `tests/test_fast_engine.py` with 44 tests covering the lexer, parser,
+  completion, definitions, diagnostics, caching, and incremental re-lexing.
+- Added `tests/test_semantic_engine.py` with 16 libclang tests covering
+  discovery/version, resource directories, diagnostics, member and STL
+  completion, local/cross-file/word-end definitions, reparse, cache/prewarm,
+  eviction, graceful failure, universal-header detection, and PCH status. The
+  slow PCH build test is opt-in through `CA_TEST_LIBCLANG_PCH=1`.
+- The full suite now has 89 tests, 2 skipped by default (libclang tests skip
+  when the library is unavailable).
+- CI now runs on pushes to `main` as well as `master`, across Python 3.9,
+  3.12, and 3.14, and includes a Python 3.3 syntax-compatibility check.
+
 ## v1.8.0
 
 Code actions, semantic rename, find references, and range formatting, plus a

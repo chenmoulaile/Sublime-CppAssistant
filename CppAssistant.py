@@ -5,8 +5,9 @@
   - 内嵌最小 LSP 客户端（cppassistant/ca_clangd.py）：stdio JSON-RPC 与
     clangd 通信，补全结果为编译器级语义准确度（签名、重载、成员、局部变量）
   - 用户代码片段（User 包里的 .sublime-snippet）+ 内置片段排最前面
-  - 内置数据库兜底模式下按 C++14 档排前面，C++17/20/23 档排后面
-  - 无 clangd 时自动回退内置 STL 数据库（零配置可用）
+  - 内置兜底由 FastEngine（cppassistant/ca_fast.py，零依赖增量结构引擎）
+    提供同文件局部符号，再合并内置 STL 数据库
+  - 无 clangd 时自动回退，零配置可用
 
 其他功能（沿用 LSP-clangd 架构设计）：
   - 实时语法检查：即时基础检查（毫秒级）+ 编译器完整检查（PCH + 结果缓存）
@@ -33,6 +34,8 @@ import sublime_plugin
 # 审查意见），也没有必要。
 from .cppassistant import ca_clangd  # noqa: E402
 from .cppassistant import ca_engine  # noqa: E402
+from .cppassistant import ca_fast  # noqa: E402
+from .cppassistant import ca_semantic  # noqa: E402
 from .cppassistant import ca_user_snippets  # noqa: E402
 from .cppassistant.ca_stdlib_data import SNIPPETS, en_detail  # noqa: E402
 
@@ -54,6 +57,11 @@ _settings_obj = None
 # 无需监听设置变更事件。
 _compiler_cache = {"configured": None, "path": None, "done": False,
                    "checked": 0.0}
+
+# libclang 语义引擎状态。只在后台线程加载，UI 线程仅复用已就绪的实例，
+# 避免首次 ctypes 加载/版本探测造成输入卡顿。
+_semantic_state = {"ready": False, "sig": None, "error": "",
+                   "checked": 0.0, "engine": None}
 
 CPP_SCOPE = "source.c++, source.c"
 
@@ -294,8 +302,8 @@ _clangd_state = {
     # on_modified 重入时重复发请求。
     "hover_inflight": None,
     "sig_inflight": None,
-    # 补全来源统计（诊断用）：clangd 结果次数 / 内置兜底次数
-    "stats": {"clangd": 0, "builtin": 0},
+    # 补全来源统计（诊断用）：clangd 结果次数 / 内置兜底次数 / libclang
+    "stats": {"clangd": 0, "builtin": 0, "libclang": 0},
 }
 
 # 内置数据库条目按版本分档：C++14 及以下排前面，C++17/20/23 排后面
@@ -924,16 +932,52 @@ class CaEventListener(sublime_plugin.EventListener):
         if _s("enable_clangd_engine", True):
             dicts = self._clangd_items(view, text, off, prefix)
         if dicts is None:
-            # 内置数据库兜底（clangd 未启用/未找到/本次超时）
+            # 内置兜底（clangd 未启用/未找到/本次超时）：
+            # FastEngine 先给出同文件局部符号，再合并 STL/片段数据库。
             try:
-                results = ca_engine.analyze(
-                    text, off,
-                    cache_key=view.buffer_id(),
-                    cache_version=view.change_count(),
-                    clangd_style=clangd_style)
+                if _s("enable_fast_engine", True):
+                    results = ca_fast.complete(
+                        text, off, prefix=prefix,
+                        cache_key=view.buffer_id(),
+                        version=view.change_count(),
+                        clangd_style=clangd_style)
+                else:
+                    results = ca_engine.analyze(
+                        text, off,
+                        cache_key=view.buffer_id(),
+                        cache_version=view.change_count(),
+                        clangd_style=clangd_style)
             except Exception as e:
-                _log_error("completion engine", e)
-                return None
+                _log_error("fast completion engine", e)
+                try:
+                    results = ca_engine.analyze(
+                        text, off,
+                        cache_key=view.buffer_id(),
+                        cache_version=view.change_count(),
+                        clangd_style=clangd_style)
+                except Exception as e2:
+                    _log_error("completion engine", e2)
+                    return None
+            # libclang 语义补全：只在后台已加载引擎且 TU 已缓存时使用，
+            # 绝不在 UI 线程冷启动/冷解析（PCH 预热后通常 <20ms）。
+            if (size <= 400000 and _s("enable_libclang_engine", True)
+                    and _s("libclang_completion", True)):
+                eng = _semantic_engine_if_ready()
+                if eng is not None and not eng.is_busy():
+                    try:
+                        lib_items = eng.complete(
+                            text, off, view.file_name(), _semantic_args(),
+                            cache_key=("lint", view.id()),
+                            allow_parse=False)
+                    except Exception as e:
+                        _log_error("libclang completion", e)
+                        lib_items = []
+                    if lib_items:
+                        seen_lc = set(d.get("trigger") for d in lib_items)
+                        results = lib_items + [
+                            d for d in results
+                            if d.get("trigger") not in seen_lc]
+                        _clangd_state["stats"]["libclang"] += 1
             dicts = _tier_sort_static(results, prefix)
             _clangd_state["stats"]["builtin"] += 1
         else:
@@ -1380,7 +1424,63 @@ def _settings_sig(compiler):
             repr(_s("compiler_extra_args", [])),
             repr(_s("include_paths", [])),
             bool(_s("enable_pch", True)),
-            compiler or "")
+            compiler or "",
+            str(_s("lint_engine", "compiler")),
+            str(_s("libclang_path", "") or ""),
+            repr(_s("libclang_args", []) or []),
+            bool(_s("libclang_pch", True)))
+
+
+def _semantic_args():
+    """Compiler-like arguments shared by libclang lint/completion/F12."""
+    args = ["-std=" + str(_s("cxx_standard", "c++14"))]
+    args += [str(a) for a in (_s("compiler_extra_args", []) or [])]
+    for inc in (_s("include_paths", []) or []):
+        args.append("-I" + str(inc))
+    return args
+
+
+def _semantic_engine():
+    """Load/reuse the libclang engine (background threads only).
+
+    A failed discovery is retried at most every 30 seconds so completion and
+    F12 do not repeatedly pay for filesystem probing.
+    """
+    if not _s("enable_libclang_engine", True):
+        _semantic_state.update(ready=False, engine=None)
+        return None
+    path = str(_s("libclang_path", "") or "")
+    args = [str(a) for a in (_s("libclang_args", []) or [])]
+    pch = bool(_s("libclang_pch", True))
+    sig = (path, pch, tuple(args))
+    now = time.time()
+    st = _semantic_state
+    if st["sig"] == sig and st["error"] and now - st["checked"] < 30.0:
+        return None
+    try:
+        eng = ca_semantic.engine(path or None, enable_pch=pch, args=args)
+        st.update(ready=True, sig=sig, error="", checked=now, engine=eng)
+        return eng
+    except Exception as e:
+        st.update(ready=False, sig=sig, error=str(e), checked=now,
+                  engine=None)
+        _log_error("libclang engine", e)
+        return None
+
+
+def _semantic_engine_if_ready():
+    """UI-thread-safe accessor: never loads libclang itself."""
+    if not _s("enable_libclang_engine", True):
+        return None
+    st = _semantic_state
+    if not st["ready"] or st["engine"] is None:
+        return None
+    path = str(_s("libclang_path", "") or "")
+    args = [str(a) for a in (_s("libclang_args", []) or [])]
+    pch = bool(_s("libclang_pch", True))
+    if st["sig"] != (path, pch, tuple(args)):
+        return None
+    return st["engine"]
 
 
 def _display_language():
@@ -1535,6 +1635,32 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
     sublime.set_timeout(done, 0)
 
 
+def _lint_work_libclang(view_id, src, workdir, fname, gen, ckey):
+    """Background libclang diagnostics with compiler fallback."""
+    eng = _semantic_engine()
+    if eng is None:
+        _lint_work(view_id, src, workdir, fname, gen, ckey)
+        return
+    try:
+        diags = eng.compiler_diagnostics(
+            src, fname, _semantic_args(), cache_key=("lint", view_id))
+    except Exception as e:
+        _log_error("libclang lint", e)
+        _lint_work(view_id, src, workdir, fname, gen, ckey)
+        return
+
+    def done():
+        if gen != _lint_gen.get(view_id):
+            return
+        st = _lint_state.setdefault(view_id, {})
+        st["compiler"] = diags
+        st["compiler_src_hash"] = zlib.crc32(src.encode("utf-8"))
+        _LINT_CACHE[view_id] = (ckey, diags)
+        render_diagnostics(view_id)
+
+    sublime.set_timeout(done, 0)
+
+
 def _decode(b):
     for enc in ("utf-8", "gbk"):
         try:
@@ -1548,11 +1674,13 @@ def _basic_diags(problems):
     """把 basic_checks 的输出包装为统一诊断结构（tier=basic）。
 
     basic_checks 每条给出 (行, 列, 级别, 英文, 中文)，语言仍由渲染层选定。
+    basic_checks 的列是 0 基（ca_engine 与 ca_fast 一致），而渲染层按编译器
+    诊断的 1 基列处理，所以这里统一 +1。
     """
     out = []
     for (ln, cl, sv, en, zh) in problems:
         out.append({
-            "line": ln, "col": cl,
+            "line": ln, "col": int(cl) + 1,
             "sev_en": "error" if sv == "error" else "warning",
             "msg": en, "zh": zh,
             "ctx": "", "ctx_zh": "", "notes": [],
@@ -1576,10 +1704,19 @@ def run_basic_check(view):
 
     def worker():
         try:
-            problems = ca_engine.basic_checks(src)
+            if _s("enable_fast_engine", True):
+                # 独立缓存键：与补全/跳转的分析互不覆盖。
+                problems = ca_fast.basic_checks(
+                    src, cache_key=("basic", vid), version=src_hash)
+            else:
+                problems = ca_engine.basic_checks(src)
         except Exception as e:
             _log_error("basic check", e)
-            return
+            try:
+                problems = ca_engine.basic_checks(src)
+            except Exception as e2:
+                _log_error("basic check fallback", e2)
+                return
         diags = _basic_diags(problems)
 
         def done():
@@ -1647,10 +1784,15 @@ def run_lint(view):
             old.kill()
         except Exception:
             pass
-    if compiler is not None:
+    if compiler is not None or str(_s("lint_engine", "compiler")) == "libclang":
         view.set_status("ca_diag", _STATUS_LINTING[_display_language()])
-    th = threading.Thread(target=_lint_work,
-                          args=(vid, src, workdir, fname, gen, ckey))
+    if str(_s("lint_engine", "compiler")) == "libclang" and \
+            _s("enable_libclang_engine", True):
+        th = threading.Thread(target=_lint_work_libclang,
+                              args=(vid, src, workdir, fname, gen, ckey))
+    else:
+        th = threading.Thread(target=_lint_work,
+                              args=(vid, src, workdir, fname, gen, ckey))
     th.daemon = True
     th.start()
 
@@ -2158,23 +2300,29 @@ class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
 
     compiler = 后台调用 g++/clang++ 完整检查；
     clangd   = 直接用 clangd 推送的 publishDiagnostics（要求
-               enable_clangd_engine 开启）。
+               enable_clangd_engine 开启）；
+    libclang = 通过 ctypes 调用 libclang C API（可选，PCH 加速）。
     """
 
     def run(self, engine):
-        if engine not in ("compiler", "clangd"):
+        if engine not in ("compiler", "clangd", "libclang"):
             sublime.status_message(
                 "[CppAssistant] invalid lint engine: %s" % engine)
             return
         if not _set_setting("lint_engine", engine):
             return
-        # clangd 模式等它推下一轮；compiler 模式立刻补一次检查
-        _refresh_cpp_views(rerun_lint=(engine == "compiler"))
+        # clangd 模式等它推下一轮；其余模式立刻补一次检查
+        _refresh_cpp_views(rerun_lint=(engine in ("compiler", "libclang")))
         if engine == "clangd":
             for w in sublime.windows():
                 for v in w.views():
                     if _is_cpp(v):
                         _warm_clangd_document(v)
+        elif engine == "libclang":
+            # 后台加载 libclang 并预热 PCH，首次补全/F12 即可命中缓存
+            th = threading.Thread(target=_semantic_engine)
+            th.daemon = True
+            th.start()
         sublime.status_message("[CppAssistant] lint engine: %s" % engine)
 
     def is_checked(self, engine=None):
@@ -2246,11 +2394,65 @@ class CaShowEngineStatusCommand(sublime_plugin.TextCommand):
                      _s("enable_clangd_engine", True))
         lines.append(u"clangd_style: %s" %
                      _s("enable_clangd_style_completion", True))
+        lines.append(u"enable_fast_engine: %s" %
+                     _s("enable_fast_engine", True))
+        try:
+            fs = ca_fast.engine()
+            stats_fast = fs.stats
+            lines.append(
+                u"FastEngine: analyses %d (incremental %d, reused tokens %d) "
+                u"/ completions %d / definitions %d / checks %d "
+                u"/ last %.2f ms / cache %d"
+                % (stats_fast.get("analyses", 0),
+                   stats_fast.get("incremental", 0),
+                   stats_fast.get("reused_tokens", 0),
+                   stats_fast.get("completions", 0),
+                   stats_fast.get("definitions", 0),
+                   stats_fast.get("checks", 0),
+                   stats_fast.get("last_ms", 0.0),
+                   fs.cache_size()))
+        except Exception:
+            lines.append(u"FastEngine: status unavailable")
         lines.append(u"cxx_standard: %s" %
                      _s("cxx_standard", "c++14"))
+        lines.append(u"enable_libclang_engine: %s" %
+                     _s("enable_libclang_engine", True))
+        try:
+            eng = _semantic_state.get("engine")
+            if eng is None:
+                if _semantic_state.get("error"):
+                    lines.append(u"libclang: unavailable (%s)" %
+                                 _semantic_state["error"])
+                else:
+                    lines.append(u"libclang: not loaded yet")
+            else:
+                lines.append(u"libclang: %s (%s)" %
+                             (eng.path, eng.version))
+                lines.append(u"libclang resource dir: %s" %
+                             (eng.resource_dir or u"not found"))
+                pch = eng.pch_status()
+                lines.append(
+                    u"libclang PCH: enabled=%s clang++=%s builds=%d "
+                    u"hits=%d misses=%d building=%d"
+                    % (pch["enabled"], pch["clang"] or u"not found",
+                       pch["builds"], pch["hits"], pch["misses"],
+                       pch["building"]))
+                if pch.get("error"):
+                    lines.append(u"libclang PCH error: %s" % pch["error"])
+                s = eng.stats
+                lines.append(
+                    u"libclang stats: parses %d / reparses %d / "
+                    u"completions %d / definitions %d / diagnostics %d "
+                    u"/ last %.2f ms"
+                    % (s.get("parses", 0), s.get("reparses", 0),
+                       s.get("completions", 0), s.get("definitions", 0),
+                       s.get("diagnostics", 0), s.get("last_ms", 0.0)))
+        except Exception:
+            lines.append(u"libclang: status unavailable")
         lines.append(u"completion source this session: clangd %d / "
-                     u"builtin %d"
-                     % (stats.get("clangd", 0), stats.get("builtin", 0)))
+                     u"libclang %d / builtin %d"
+                     % (stats.get("clangd", 0), stats.get("libclang", 0),
+                        stats.get("builtin", 0)))
         lines.append(u"current file saved: %s (clangd skips unsaved files)"
                      % bool(view.file_name()))
         lines.append(u"current file detected as C++: %s" % _is_cpp(view))
@@ -2564,6 +2766,27 @@ _DEF_LABEL_ZH = {
     u"type alias": u"类型别名",
     u"function definition": u"函数定义",
     u"variable definition": u"变量定义",
+    u"namespace definition": u"命名空间定义",
+    u"parameter definition": u"参数定义",
+    u"member variable definition": u"成员变量定义",
+    u"enumerator definition": u"枚举值定义",
+}
+
+# FastEngine 符号类型 -> F12 候选标签（渲染层按 display_language 翻译）
+_FAST_DEF_LABEL = {
+    "type": u"type definition",
+    "enum": u"type definition",
+    "alias": u"type alias",
+    "template type": u"type alias",
+    "macro": u"macro definition",
+    "function": u"function definition",
+    "method": u"function definition",
+    "namespace": u"namespace definition",
+    "parameter": u"parameter definition",
+    "member variable": u"member variable definition",
+    "enumerator": u"enumerator definition",
+    "variable": u"variable definition",
+    "symbol": u"symbol definition",
 }
 
 
@@ -2630,10 +2853,54 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
             # 缓存还没预热好：后台补一次，本次 F12 先按已有路径查找
             _warm_include_dirs_async()
 
+        # FastEngine 同文件定义优先（毫秒级、结构感知），随后再走原有
+        # 高级查找（其它打开文件 / 本地头 / 标准库 fallback）。
+        candidates_raw = []
+        # libclang 精准定义（跨文件/标准库）：只在后台已加载且 TU 已缓存时
+        # 使用，避免 F12 在 UI 线程冷解析。PCH 预热后通常 <5ms。
+        if fname and _s("enable_libclang_engine", True) and \
+                _s("libclang_goto", True):
+            eng = _semantic_engine_if_ready()
+            if eng is not None and not eng.is_busy():
+                try:
+                    lc_hits = eng.find_definitions(
+                        text, word_region.end(), fname, _semantic_args(),
+                        cache_key=("lint", cur_vid), allow_parse=False)
+                except Exception as e:
+                    _log_error("libclang goto definition", e)
+                    lc_hits = []
+                for hit in lc_hits:
+                    hit_file = hit.get("file") or fname
+                    same = os.path.normcase(hit_file) == \
+                        os.path.normcase(fname)
+                    src = "local" if same else "file"
+                    extra = None if same else {"path": hit_file}
+                    label = _FAST_DEF_LABEL.get(
+                        hit.get("kind"), u"definition")
+                    candidates_raw.append((
+                        -2, src, hit["line"], hit["col"], label,
+                        hit.get("preview") or hit.get("label") or symbol,
+                        extra))
+        if _s("enable_fast_engine", True):
+            try:
+                fast_hits = ca_fast.find_definitions(
+                    text, symbol, word_region.end(),
+                    cache_key=("goto", cur_vid),
+                    version=view.change_count())
+            except Exception as e:
+                _log_error("fast goto definition", e)
+                fast_hits = []
+            for hit in fast_hits:
+                label = _FAST_DEF_LABEL.get(
+                    hit.get("kind"), u"variable definition")
+                candidates_raw.append((
+                    -1, "local", hit["line"], hit["col"], label,
+                    hit.get("preview") or hit.get("label") or symbol, None))
+
         # 用高级查找函数（包含 std 库 fallback）
-        candidates_raw = ca_engine.goto_definition_advanced(
+        candidates_raw.extend(ca_engine.goto_definition_advanced(
             symbol, text, view, inc_paths, all_views_text,
-            system_include_paths=system_inc)
+            system_include_paths=system_inc))
 
         # 转换为内部 candidate 格式
         candidates = []

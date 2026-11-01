@@ -18,6 +18,48 @@
     //         of the C++17/20/23 ones (tuned for CSP-S / NOIP).
     // Takes effect immediately (the engine restarts automatically).
     "enable_clangd_engine": true,
+    // FastEngine (zero-dependency structural engine): a pure-Python,
+    // incremental lexer + tolerant parser used whenever clangd is disabled,
+    // missing, or has not answered yet. It adds same-file locals, parameters,
+    // struct/class members, enum values and namespaces to the built-in
+    // database, and powers same-file F12 jumps plus richer instant checks
+    // (unterminated raw strings, malformed #include, unbalanced #if).
+    //   true  (default) use FastEngine as the built-in fallback layer.
+    //   false use the legacy regex-only database path.
+    // clangd remains the semantic engine when it is available.
+    "enable_fast_engine": true,
+    // Optional libclang semantic engine (phase two): talks to the installed
+    // libclang shared library through ctypes, with no Python package needed.
+    // It powers the "libclang" diagnostic engine, and (when its translation
+    // unit is already warm) semantic completion and cross-file F12 fallbacks.
+    //   true  (default) auto-discover libclang; does nothing when absent.
+    //   false never load libclang.
+    // It is never loaded on the UI thread: enable "libclang" diagnostics or
+    // use the menu command to warm it in the background.
+    "enable_libclang_engine": true,
+    // Path to libclang.dll / libclang.so / libclang.dylib, or a directory
+    // containing it. Empty = auto-discover (LIBCLANG_PATH, plugin libs/,
+    // next to clangd/clang, LLVM/MSYS2/Xcode/Homebrew locations).
+    "libclang_path": "",
+    // Extra arguments passed to libclang, e.g. ["-DDEBUG", "-I/path"].
+    // The active cxx_standard, compiler_extra_args and include_paths are
+    // added automatically.
+    "libclang_args": [],
+    // PCH acceleration for the OIer universal header: when a file contains
+    // #include <bits/stdc++.h>, a matching clang++ (same major.minor as
+    // libclang) builds a precompiled header once in the background. Warm
+    // diagnostics drop to ~200ms and member completion to ~10-20ms.
+    //   true  (default) build and reuse the PCH.
+    //   false parse headers on every run.
+    "libclang_pch": true,
+    // Use libclang for semantic completion when its translation unit is
+    // already warm (libclang diagnostics mode). Never blocks typing: if the
+    // cache is cold, FastEngine/clangd results are used unchanged.
+    "libclang_completion": true,
+    // Use libclang for F12 cross-file definitions when its translation unit
+    // is already warm. FastEngine still answers instantly for same-file
+    // symbols; libclang adds standard-library and cross-file locations.
+    "libclang_goto": true,
     // Path to the clangd executable; when empty it is looked up on PATH
     // (common names such as clangd, clangd-18 ... clangd-21 are all tried).
     // On Windows the MSYS2 clangd is recommended
@@ -84,6 +126,12 @@
     //                      table. Requires enable_clangd_engine; while
     //                      clangd is not ready only the instant basic check
     //                      results are shown.
+    //   "libclang"         optional libclang C API engine (phase two):
+    //                      no compiler process either; PCH-accelerated
+    //                      diagnostics, precise cross-file locations and
+    //                      warm semantic completion. Requires
+    //                      enable_libclang_engine and a discoverable
+    //                      libclang; otherwise it falls back to "compiler".
     "lint_engine": "compiler",
     // Instant basic check: pure-Python, millisecond detection of bracket
     // balance, full-width punctuation and unclosed strings/comments -
