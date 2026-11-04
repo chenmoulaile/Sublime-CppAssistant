@@ -351,7 +351,8 @@ def parse_publish_diagnostics(params):
 
     LSP 标准字段是顶层的 ``uri``；部分旧客户端把 uri 放在
     ``textDocument`` 里，这里两种形态都兼容。返回 ``(uri, items)``，
-    items 为 ``[(line0, col0, severity, message)]``。
+    items 为 ``[(line0, col0, severity, message, ctx, ctx_zh)]``。
+    ctx 来自 relatedInformation（如 "in function X"）。
     """
     if not isinstance(params, dict):
         return ("", [])
@@ -375,8 +376,17 @@ def parse_publish_diagnostics(params):
         except Exception:
             severity = 1
         message = diag.get("message") or ""
+        # Extract context from relatedInformation (e.g., "in function X")
+        ctx = ""
+        for rel in diag.get("relatedInformation") or []:
+            if isinstance(rel, dict):
+                loc = rel.get("location") or {}
+                rel_msg = rel.get("message") or ""
+                if rel_msg:
+                    ctx = rel_msg
+                    break
         if message:
-            items.append((line, col, severity, message))
+            items.append((line, col, severity, message, ctx))
     return (uri, items)
 
 

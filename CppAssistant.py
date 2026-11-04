@@ -290,7 +290,7 @@ _clangd_state = {
     "last_fail": 0.0,
     "no_server": False,    # 已确认机器上没有 clangd，用内置数据库兜底
     "no_server_since": 0.0,  # 上次探测不到 clangd 的时间（定期重试）
-    "async_cache": {},     # (buffer_id, change_count, offset, std) -> [dict]
+    "async_cache": {},     # (buffer_id, change_count, offset, std, clangd_style) -> [dict]
     "refreshed": None,     # 最近一次弹窗刷新键（防刷新循环）
     # buffer_id -> {"cc": 编辑代号, "items": [(trigger, 展开后插入文本, [头文件])]}
     # 记录最近一次补全候选附带的 #include 插入指令，供补全被接受后应用
@@ -305,6 +305,7 @@ _clangd_state = {
     # 补全来源统计（诊断用）：clangd 结果次数 / 内置兜底次数 / libclang
     "stats": {"clangd": 0, "builtin": 0, "libclang": 0},
 }
+_clangd_state_lock = threading.RLock()
 
 # 内置数据库条目按版本分档：C++14 及以下排前面，C++17/20/23 排后面
 _LATER_STD_RE = re.compile(r"C\+\+(1[7-9]|2[0-9])")
@@ -515,8 +516,9 @@ def _stop_clangd_client():
     _clangd_state["hover_inflight"] = None
     _clangd_state["sig_inflight"] = None
     # 缓存的补全/悬停结果属于即将退役的服务端，必须一起丢弃
-    _clangd_state["async_cache"].clear()
-    _clangd_state["hover_cache"].clear()
+    with _clangd_state_lock:
+        _clangd_state["async_cache"].clear()
+        _clangd_state["hover_cache"].clear()
 
 
 def _view_for_uri(uri):
@@ -576,18 +578,42 @@ def _apply_clangd_diagnostics_ui(uri):
         if items is None:
             return
         entries = []
-        for (ln, cl, sev, msg) in items:
+        # Diagnostic filters
+        filters = _s("diagnostic_filters", [])
+        for item in items:
+            # Support both old 4-tuple and new 5-tuple (with ctx)
+            if len(item) == 5:
+                ln, cl, sev, msg, ctx = item
+            else:
+                ln, cl, sev, msg = item
+                ctx = ""
             sev_en = "error" if sev == 1 else "warning"
+            # Filter by warning code (e.g. -Wunused-variable)
+            if filters:
+                # Extract warning code from message if present
+                import re
+                code_match = re.search(r'\[-W([a-zA-Z0-9-]+)\]', msg)
+                if code_match:
+                    code = code_match.group(1)
+                    if any(f.lstrip('-W') == code for f in filters):
+                        continue
             # 只存双语原文，语言留给渲染层（translate_message 返回 (en, zh)）
             try:
                 en, zh = ca_engine.translate_message(msg)
             except Exception:
                 en, zh = msg, msg
+            # Translate ctx if present
+            ctx_en, ctx_zh = "", ""
+            if ctx:
+                try:
+                    ctx_en, ctx_zh = ca_engine.translate_message(ctx)
+                except Exception:
+                    ctx_en, ctx_zh = ctx, ctx
             entries.append({
                 "line": ln + 1, "col": cl + 1,
                 "sev_en": sev_en,
                 "msg": en, "zh": zh,
-                "ctx": "", "ctx_zh": "", "notes": [], "tier": "compiler",
+                "ctx": ctx_en, "ctx_zh": ctx_zh, "notes": [], "tier": "compiler",
             })
         st = _lint_state.setdefault(view.id(), {})
         st["compiler"] = entries
@@ -1016,17 +1042,18 @@ class CaEventListener(sublime_plugin.EventListener):
         if off > len(text):
             return None
         std = _s("cxx_standard", "c++14")
-        # 键含 C++ 标准：改标准后 clangd 的答案集会变，不能让旧标准下
-        # 生成的候选继续命中（文本未变时也必须重来）。
-        key = (view.buffer_id(), view.change_count(), off, std)
-        cache = st["async_cache"]
-        if key in cache:
-            items = cache.get(key)
-            if items:
-                dicts = _snippet_items_for_prefix(prefix) + items
-                _stash_includes(view, dicts)
-                return dicts
-            return None
+        clangd_style = bool(_s("enable_clangd_style_completion", True))
+        # 键含 C++ 标准 + 补全模式：改标准/模式后 clangd 的答案集会变，不能让旧键命中。
+        key = (view.buffer_id(), view.change_count(), off, std, clangd_style)
+        with _clangd_state_lock:
+            cache = st["async_cache"]
+            if key in cache:
+                items = cache.get(key)
+                if items:
+                    dicts = _snippet_items_for_prefix(prefix) + items
+                    _stash_includes(view, dicts)
+                    return dicts
+                return None
         # 默认完全异步：UI 线程零阻塞，首弹窗为内置数据库结果，clangd
         # 结果到达后自动刷新（on_arrival -> _maybe_refresh_popup）。
         # 需要更准的首弹窗可把 clangd_completion_wait_ms 调大。
@@ -1035,10 +1062,11 @@ class CaEventListener(sublime_plugin.EventListener):
         def on_arrival(parsed):
             if not parsed:
                 return  # 未就绪/真无结果：不缓存不刷新
-            cache[key] = parsed
-            if len(cache) > 32:
-                for k in list(cache.keys())[:-32]:
-                    cache.pop(k, None)
+            with _clangd_state_lock:
+                cache[key] = parsed
+                if len(cache) > 32:
+                    for k in list(cache.keys())[:-32]:
+                        cache.pop(k, None)
             sublime.set_timeout(
                 lambda: _maybe_refresh_popup(view, key), 0)
 
@@ -1237,10 +1265,11 @@ class CaEventListener(sublime_plugin.EventListener):
             except Exception:
                 pass
         bid = view.buffer_id()
-        for k in [k for k in _clangd_state["async_cache"]
-                  if k[0] == bid]:
-            _clangd_state["async_cache"].pop(k, None)
-        _clangd_state["pending_includes"].pop(bid, None)
+        with _clangd_state_lock:
+            for k in [k for k in _clangd_state["async_cache"]
+                      if k[0] == bid]:
+                _clangd_state["async_cache"].pop(k, None)
+            _clangd_state["pending_includes"].pop(bid, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1568,6 +1597,12 @@ def _lint_work(view_id, src, workdir, fname, gen, ckey):
     cmd = [compiler, "-fsyntax-only",
            "-std=" + str(_s("cxx_standard", "c++14")),
            "-Wall", "-fno-diagnostics-show-caret", "-x", "c++"]
+    # Suppress unused variable warnings by default (CSP-S/NOIP style)
+    if _s("suppress_unused_warnings", True):
+        cmd += ["-Wno-unused-variable", "-Wno-unused-but-set-variable"]
+    # Additional diagnostic filters
+    for f in _s("diagnostic_filters", []):
+        cmd.append(str(f))
     cmd += [str(a) for a in _s("compiler_extra_args", [])]
     for inc in _s("include_paths", []):
         cmd.append("-I" + str(inc))
@@ -1844,6 +1879,22 @@ def render_diagnostics(view_id):
 
     st = _lint_state.get(view_id, {})
     comp = st.get("compiler") or []
+
+    # Apply diagnostic filters
+    filters = _s("diagnostic_filters", [])
+    if filters:
+        filtered_comp = []
+        for d in comp:
+            msg = d.get("msg", "")
+            import re
+            code_match = re.search(r'\[-W([a-zA-Z0-9-]+)\]', msg)
+            if code_match:
+                code = code_match.group(1)
+                if any(f.lstrip('-W') == code for f in filters):
+                    continue  # Filter out this diagnostic
+            filtered_comp.append(d)
+        comp = filtered_comp
+
     comp_lines = set(d["line"] for d in comp)
     basic = [d for d in (st.get("basic") or [])
              if d["line"] not in comp_lines]
@@ -2072,7 +2123,8 @@ def run_hover(view, point):
             return
         text = view.substr(sublime.Region(0, size))
         cache_key = (fname, view.change_count(), point, word)
-        cached = st["hover_cache"].get(cache_key)
+        with _clangd_state_lock:
+            cached = st["hover_cache"].get(cache_key)
         if cached:
             view.run_command("ca_hover", {"point": point, "body": cached})
             return
@@ -2094,10 +2146,11 @@ def run_hover(view, point):
                         if not view.is_valid() or \
                                 _clangd_state.get("hover_seq") != seq:
                             return
-                        cache = st["hover_cache"]
-                        cache[cache_key] = got[1]
-                        if len(cache) > 32:
-                            cache.clear()
+                        with _clangd_state_lock:
+                            cache = st["hover_cache"]
+                            cache[cache_key] = got[1]
+                            if len(cache) > 32:
+                                cache.clear()
                         view.run_command("ca_hover", {"point": point,
                                                       "body": got[1]})
                     except Exception as e:
@@ -2245,9 +2298,201 @@ class CaSetDisplayLanguageCommand(sublime_plugin.ApplicationCommand):
             return
         _refresh_cpp_views()
         sublime.status_message("[CppAssistant] diagnostic language: %s" % lang)
+        # Auto-switch menu language to match diagnostic language
+        self._update_menu_language(lang)
+
+    def _update_menu_language(self, lang):
+        """Update menu language setting and regenerate menu file."""
+        try:
+            menu_lang = "zh" if lang == "zh" else "en"
+            _set_setting("menu_language", menu_lang)
+            # Regenerate menu file
+            self._regenerate_menu_file(menu_lang)
+        except Exception as e:
+            _log_error("update menu language", e)
+
+    def _regenerate_menu_file(self, lang):
+        """Regenerate the Main.sublime-menu file in User directory."""
+        try:
+            user_dir = os.path.join(sublime.packages_path(), "User", "CppAssistant")
+            os.makedirs(user_dir, exist_ok=True)
+            menu_file = os.path.join(user_dir, "Main.sublime-menu")
+            
+            # Load the template menu from package
+            pkg_menu = os.path.join(sublime.packages_path(), "CppAssistant", "Main.sublime-menu")
+            if not os.path.exists(pkg_menu):
+                return
+            
+            with open(pkg_menu, "r", encoding="utf-8") as f:
+                menu_data = json.load(f)
+            
+            # Translate menu items if Chinese
+            if lang == "zh":
+                menu_data = self._translate_menu(menu_data)
+            
+            with open(menu_file, "w", encoding="utf-8") as f:
+                json.dump(menu_data, f, ensure_ascii=False, indent=1)
+                
+        except Exception as e:
+            _log_error("regenerate menu file", e)
+
+    def _translate_menu(self, menu_data):
+        """Translate menu captions to Chinese."""
+        translations = {
+            "Preferences": "首选项",
+            "Package Settings": "插件设置",
+            "CppAssistant": "CppAssistant",
+            "Settings": "设置",
+            "Diagnostic language": "诊断语言",
+            "Chinese": "中文",
+            "English": "英文",
+            "English + Chinese": "英文+中文",
+            "Completion engine": "补全引擎",
+            "clangd engine (semantic completions)": "clangd 引擎（语义补全）",
+            "Built-in database (no clangd needed)": "内置数据库（无需 clangd）",
+            "Completion mode": "补全模式",
+            "LSP-clangd style (fuzzy matching)": "LSP-clangd 风格（模糊匹配）",
+            "Strict prefix (basic)": "严格前缀（基础）",
+            "Show inline error phantoms": "显示内联错误幽灵",
+            "Completion engine status": "补全引擎状态",
+            "Diagnostic engine": "诊断引擎",
+            "clangd diagnostics (LSP-style)": "clangd 诊断（LSP 风格）",
+            "Compiler check (g++/clang++)": "编译器检查",
+            "libclang semantic engine (PCH)": "libclang 语义引擎（PCH）",
+            "Key Bindings – User": "用户快捷键",
+            "Code Actions": "代码操作",
+            "Rename Symbol": "重命名符号",
+            "Find References": "查找引用",
+            "Format Selection": "格式化选中",
+            "Format Document": "格式化文档",
+            "Go to Definition": "跳转定义",
+            "Show Diagnostics": "显示诊断",
+            "Key Bindings": "快捷键",
+            "Templates": "模板",
+            "Install Template Pack": "安装模板包",
+            "Manage Templates": "管理模板",
+            "Create User Snippet": "创建用户片段",
+            "Edit User Snippets": "编辑用户片段",
+            "Import Snippets": "导入片段",
+            "Copy Diagnostic": "复制诊断",
+        }
+        
+        def translate_item(item):
+            if isinstance(item, dict):
+                new_item = {}
+                for k, v in item.items():
+                    if k == "caption" and v in translations:
+                        new_item[k] = translations[v]
+                    elif k == "children" and isinstance(v, list):
+                        new_item[k] = [translate_item(child) for child in v]
+                    else:
+                        new_item[k] = translate_item(v)
+                return new_item
+            elif isinstance(item, list):
+                return [translate_item(child) for child in item]
+            else:
+                return item
+        
+        return translate_item(menu_data)
 
     def is_checked(self, lang=None):
         return _display_language() == lang
+
+
+class CaToggleMenuLanguageCommand(sublime_plugin.ApplicationCommand):
+    """Toggle menu language between English and Chinese."""
+
+    def run(self):
+        current = _s("menu_language", "en")
+        new_lang = "zh" if current == "en" else "en"
+        _set_setting("menu_language", new_lang)
+        # Regenerate menu file
+        self._regenerate_menu_file(new_lang)
+        sublime.status_message("[CppAssistant] menu language: %s" % ("中文" if new_lang == "zh" else "English"))
+
+    def _regenerate_menu_file(self, lang):
+        """Regenerate the Main.sublime-menu file in User directory."""
+        try:
+            user_dir = os.path.join(sublime.packages_path(), "User", "CppAssistant")
+            os.makedirs(user_dir, exist_ok=True)
+            menu_file = os.path.join(user_dir, "Main.sublime-menu")
+
+            # Load the template menu from package
+            pkg_menu = os.path.join(sublime.packages_path(), "CppAssistant", "Main.sublime-menu")
+            if not os.path.exists(pkg_menu):
+                return
+
+            with open(pkg_menu, "r", encoding="utf-8") as f:
+                menu_data = json.load(f)
+
+            # Translate menu items if Chinese
+            if lang == "zh":
+                menu_data = self._translate_menu(menu_data)
+
+            with open(menu_file, "w", encoding="utf-8") as f:
+                json.dump(menu_data, f, ensure_ascii=False, indent=1)
+
+        except Exception as e:
+            _log_error("regenerate menu file", e)
+
+    def _translate_menu(self, menu_data):
+        """Translate menu captions to Chinese."""
+        translations = {
+            "Preferences": "首选项",
+            "Package Settings": "插件设置",
+            "CppAssistant": "CppAssistant",
+            "Settings": "设置",
+            "Diagnostic language": "诊断语言",
+            "Chinese": "中文",
+            "English": "英文",
+            "English + Chinese": "英文+中文",
+            "Completion engine": "补全引擎",
+            "clangd engine (semantic completions)": "clangd 引擎（语义补全）",
+            "Built-in database (no clangd needed)": "内置数据库（无需 clangd）",
+            "Completion mode": "补全模式",
+            "LSP-clangd style (fuzzy matching)": "LSP-clangd 风格（模糊匹配）",
+            "Strict prefix (basic)": "严格前缀（基础）",
+            "Show inline error phantoms": "显示内联错误幽灵",
+            "Completion engine status": "补全引擎状态",
+            "Diagnostic engine": "诊断引擎",
+            "clangd diagnostics (LSP-style)": "clangd 诊断（LSP 风格）",
+            "Compiler check (g++/clang++)": "编译器检查",
+            "libclang semantic engine (PCH)": "libclang 语义引擎（PCH）",
+            "Key Bindings – User": "用户快捷键",
+            "Code Actions": "代码操作",
+            "Rename Symbol": "重命名符号",
+            "Find References": "查找引用",
+            "Format Selection": "格式化选中",
+            "Format Document": "格式化文档",
+            "Go to Definition": "跳转定义",
+            "Show Diagnostics": "显示诊断",
+            "Key Bindings": "快捷键",
+            "Templates": "模板",
+            "Install Template Pack": "安装模板包",
+            "Manage Templates": "管理模板",
+            "Create User Snippet": "创建用户片段",
+            "Edit User Snippets": "编辑用户片段",
+            "Import Snippets": "导入片段",
+            "Copy Diagnostic": "复制诊断",
+        }
+
+        def translate_item(item):
+            if isinstance(item, dict):
+                new_item = {}
+                for k, v in item.items():
+                    if k == "caption" and v in translations:
+                        new_item[k] = translations[v]
+                    elif k == "children" and isinstance(v, list):
+                        new_item[k] = [translate_item(child) for child in v]
+                    else:
+                        new_item[k] = translate_item(v)
+                return new_item
+            elif isinstance(item, list):
+                return [translate_item(child) for child in item]
+            else:
+                return item
+
+        return translate_item(menu_data)
 
 
 class CaSetCompletionModeCommand(sublime_plugin.ApplicationCommand):
@@ -2348,6 +2593,56 @@ class CaShowDiagnosticsCommand(sublime_plugin.WindowCommand):
         panel.run_command("append", {"characters": txt, "force": True})
         self.window.run_command("show_panel",
                                 {"panel": "output.ca_diagnostics"})
+
+
+class CaCopyDiagnosticCommand(sublime_plugin.TextCommand):
+    """Copy the diagnostic at the current cursor position to clipboard.
+
+    Formats as: [file:line:col] severity: message (zh)
+    """
+
+    def run(self, edit):
+        view = self.view
+        vid = view.id()
+        diags = _diag_store.get(vid, [])
+        if not diags:
+            sublime.status_message("No diagnostics to copy")
+            return
+
+        # Get current cursor position
+        sel = view.sel()
+        if not sel:
+            sublime.status_message("No selection")
+            return
+        cursor = sel[0].begin()
+        row, col = view.rowcol(cursor)
+        current_line = row + 1  # 1-based
+
+        # Find diagnostic on current line
+        line_diags = [d for d in diags if d.get("line") == current_line]
+        if not line_diags:
+            sublime.status_message("No diagnostic on current line")
+            return
+
+        # Take the first (most severe) diagnostic on this line
+        diag = line_diags[0]
+
+        # Format: [file:line:col] severity: message (zh)
+        fname = view.file_name() or "<untitled>"
+        severity = diag.get("severity", "error")
+        message = diag.get("message", "")
+        message_zh = diag.get("message_zh", "")
+
+        parts = []
+        parts.append("[%s:%d:%d]" % (fname, current_line, diag.get("col", 1)))
+        parts.append("%s:" % severity.capitalize())
+        parts.append(message)
+        if message_zh:
+            parts.append("(%s)" % message_zh)
+
+        text = " ".join(parts)
+        sublime.set_clipboard(text)
+        sublime.status_message("Diagnostic copied to clipboard")
 
 
 class CaShowEngineStatusCommand(sublime_plugin.TextCommand):
@@ -3630,3 +3925,192 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
                 "ca_refs", u"%d reference(s)%s" % (len(unique), suffix))
         except Exception as e:
             _log_error("show references", e)
+
+
+class CaInstallTemplatePackCommand(sublime_plugin.WindowCommand):
+    """Download and install a template pack from the catalog."""
+
+    def run(self):
+        packs_file = os.path.join(sublime.packages_path(), "CppAssistant", "templates", "index.json")
+        if not os.path.exists(packs_file):
+            sublime.error_message("Template catalog not found")
+            return
+        with open(packs_file, "r", encoding="utf-8") as f:
+            catalog = json.load(f)
+        packs = catalog.get("packs", [])
+        if not packs:
+            sublime.status_message("No template packs available")
+            return
+
+        items = [[p["name"], p["description"]] for p in packs]
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            pack = packs[idx]
+            self._download_and_install(pack)
+
+        self.window.show_quick_panel(items, on_done)
+
+    def _download_and_install(self, pack):
+        import urllib.request
+        url = pack.get("url")
+        if not url:
+            sublime.error_message("No download URL for pack: %s" % pack["name"])
+            return
+
+        dest_dir = os.path.join(sublime.packages_path(), "User", "CppAssistantTemplates", pack["id"])
+        os.makedirs(dest_dir, exist_ok=True)
+        zip_path = os.path.join(dest_dir, pack["id"] + ".zip")
+
+        def download():
+            try:
+                urllib.request.urlretrieve(url, zip_path)
+                # Extract with zip slip protection
+                import zipfile
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    for member in zf.namelist():
+                        # Validate path to prevent zip slip
+                        member_path = os.path.join(dest_dir, member)
+                        member_path = os.path.normpath(member_path)
+                        if not member_path.startswith(os.path.normpath(dest_dir) + os.sep) and member_path != os.path.normpath(dest_dir):
+                            raise Exception("Zip slip attempt detected: %s" % member)
+                    zf.extractall(dest_dir)
+                os.remove(zip_path)
+                sublime.set_timeout(lambda: sublime.status_message("Template pack installed: %s" % pack["name"]), 0)
+            except Exception as e:
+                _log_error("template pack install", e)
+                sublime.set_timeout(lambda: sublime.error_message("Failed to install template pack: %s" % str(e)), 0)
+
+        threading.Thread(target=download, daemon=True).start()
+
+
+class CaManageTemplatesCommand(sublime_plugin.WindowCommand):
+    """Manage installed template packs (enable/disable)."""
+
+    def run(self):
+        template_root = os.path.join(sublime.packages_path(), "User", "CppAssistantTemplates")
+        if not os.path.exists(template_root):
+            sublime.status_message("No template packs installed")
+            return
+
+        packs = []
+        for name in os.listdir(template_root):
+            pack_path = os.path.join(template_root, name)
+            if os.path.isdir(pack_path):
+                enabled = not os.path.exists(os.path.join(pack_path, ".disabled"))
+                packs.append((name, enabled, pack_path))
+
+        if not packs:
+            sublime.status_message("No template packs found")
+            return
+
+        items = []
+        for name, enabled, _ in packs:
+            status = u"[已启用] " if enabled else u"[已禁用] "
+            items.append([status + name, u"点击切换启用状态"])
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            name, enabled, pack_path = packs[idx]
+            disabled_file = os.path.join(pack_path, ".disabled")
+            if enabled:
+                # Disable
+                with open(disabled_file, "w") as f:
+                    f.write("disabled")
+            else:
+                # Enable
+                if os.path.exists(disabled_file):
+                    os.remove(disabled_file)
+            sublime.status_message("Template pack %s: %s" % (name, "disabled" if enabled else "enabled"))
+            self.run()  # Refresh
+
+        self.window.show_quick_panel(items, on_done)
+
+
+class CaCreateUserSnippetCommand(sublime_plugin.TextCommand):
+    """Create a user snippet from the current selection."""
+
+    def run(self, edit):
+        view = self.view
+        sel = view.sel()
+        if not sel or sel[0].empty():
+            sublime.status_message("Select code to create snippet")
+            return
+
+        snippet_content = view.substr(sel[0])
+        # Ask for trigger
+        def on_trigger(trigger):
+            if not trigger:
+                return
+            def on_desc(desc):
+                self._save_snippet(trigger, snippet_content, desc)
+            view.window().show_input_panel("Snippet description:", "", on_desc, None, None)
+        view.window().show_input_panel("Snippet trigger:", "", on_trigger, None, None)
+
+    def _save_snippet(self, trigger, content, desc):
+        user_snippets_dir = os.path.join(sublime.packages_path(), "User", "CppAssistantSnippets")
+        os.makedirs(user_snippets_dir, exist_ok=True)
+        file_path = os.path.join(user_snippets_dir, trigger + ".sublime-snippet")
+        snippet_xml = """<snippet>
+    <content><![CDATA[%s]]></content>
+    <tabTrigger>%s</tabTrigger>
+    <scope>source.c++</scope>
+    <description>%s</description>
+</snippet>""" % (content, trigger, desc)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(snippet_xml)
+        sublime.status_message("User snippet created: %s" % trigger)
+
+
+class CaEditUserSnippetsCommand(sublime_plugin.WindowCommand):
+    """Open the user snippets folder."""
+
+    def run(self):
+        user_snippets_dir = os.path.join(sublime.packages_path(), "User", "CppAssistantSnippets")
+        os.makedirs(user_snippets_dir, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(user_snippets_dir)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", user_snippets_dir])
+
+
+class CaImportSnippetsCommand(sublime_plugin.WindowCommand):
+    """Import snippets from a JSON file."""
+
+    def run(self):
+        self.window.run_command("prompt_select_file", {
+            "extensions": ["json"],
+            "on_done": self._import
+        })
+
+    def _import(self, file_path):
+        if not file_path:
+            return
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            user_snippets_dir = os.path.join(sublime.packages_path(), "User", "CppAssistantSnippets")
+            os.makedirs(user_snippets_dir, exist_ok=True)
+            count = 0
+            for item in data:
+                trigger = item.get("trigger", "")
+                content = item.get("content", "")
+                desc = item.get("description", "")
+                if trigger and content:
+                    file_path = os.path.join(user_snippets_dir, trigger + ".sublime-snippet")
+                    snippet_xml = """<snippet>
+    <content><![CDATA[%s]]></content>
+    <tabTrigger>%s</tabTrigger>
+    <scope>source.c++</scope>
+    <description>%s</description>
+</snippet>""" % (content, trigger, desc)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(snippet_xml)
+                    count += 1
+            sublime.status_message("Imported %d snippets" % count)
+        except Exception as e:
+            _log_error("import snippets", e)
+            sublime.error_message("Failed to import snippets: %s" % str(e))

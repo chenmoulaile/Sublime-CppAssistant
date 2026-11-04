@@ -103,11 +103,11 @@ class Symbol(object):
 
     __slots__ = ("name", "kind", "type", "signature", "offset", "name_offset",
                  "line", "col", "scope", "is_definition", "params",
-                 "target_scope", "end_offset")
+                 "target_scope", "end_offset", "array_size")
 
     def __init__(self, name, kind, type_text, signature, offset, name_offset,
                  line, col, scope, is_definition=False, params=None,
-                 target_scope=None, end_offset=None):
+                 target_scope=None, end_offset=None, array_size=None):
         self.name = name
         self.kind = kind
         self.type = type_text
@@ -121,6 +121,7 @@ class Symbol(object):
         self.params = params or []
         self.target_scope = target_scope
         self.end_offset = end_offset
+        self.array_size = array_size
 
     def __repr__(self):
         return "Symbol(%r, %r, %r)" % (self.name, self.kind, self.type)
@@ -240,6 +241,8 @@ unordered_map unordered_multimap unordered_multiset unordered_set unique_ptr
 variant vector weak_ptr wstring wstring_view
 size_t ssize_t ptrdiff_t int8_t int16_t int32_t int64_t uint8_t uint16_t
 uint32_t uint64_t intmax_t uintmax_t FILE
+__int128 __int128_t __uint128_t
+tree gp_hash_table cc_hash_table
 """.split())
 
 _STRING_PREFIXES = (
@@ -398,7 +401,7 @@ def _lex(text, offset, line, col, state, states, comment_ranges=None):
     ln = line
     cl = col
     at_line_start = (cl == 0)
-    states[ln] = _NORMAL_STATE
+    states[ln] = state
     pending_raw = None  # (start_offset, start_line, start_col, terminator)
 
     while i < n:
@@ -408,7 +411,9 @@ def _lex(text, offset, line, col, state, states, comment_ranges=None):
             ln += 1
             cl = 0
             i += 1
-            states[ln] = _NORMAL_STATE
+            # Only reset to NORMAL_STATE if not already in a multi-line construct
+            if states[ln][0] == 0:
+                states[ln] = _NORMAL_STATE
             at_line_start = True
             continue
 
@@ -660,6 +665,61 @@ def _bracket_diags(text, tokens):
     return diags
 
 
+def _array_bounds_diags(text, tokens, symbols_by_name):
+    """Check for constant-index out-of-bounds array access."""
+    diags = []
+    # Build a map of variable names to their Symbol objects (for array size)
+    # We only care about variables with array_size set
+    array_vars = {}
+    for sym_list in symbols_by_name.values():
+        for sym in sym_list:
+            if sym.array_size is not None and sym.array_size >= 0:
+                array_vars[sym.name] = sym.array_size
+
+    if not array_vars:
+        return diags
+
+    for idx, tok in enumerate(tokens):
+        if tok.kind != "op":
+            continue
+        s = text[tok.start:tok.end]
+        if s != "[":
+            continue
+        # Check if this is an array access: look back for the array name
+        if idx == 0:
+            continue
+        prev_tok = tokens[idx - 1]
+        if prev_tok.kind != "id":
+            continue
+        array_name = text[prev_tok.start:prev_tok.end]
+        if array_name not in array_vars:
+            continue
+        array_size = array_vars[array_name]
+
+        # Find the matching ] and extract the index expression
+        if idx not in match:
+            continue
+        close_bracket = match[idx]
+        if close_bracket <= idx + 1:
+            continue
+        # Extract index expression
+        index_tokens = [text[tokens[k].start:tokens[k].end] for k in range(idx + 1, close_bracket)]
+        index_expr = "".join(index_tokens).strip()
+        # Try to evaluate as integer constant
+        try:
+            index_val = int(index_expr)
+        except ValueError:
+            continue  # Not a constant index
+
+        if index_val < 0 or index_val >= array_size:
+            _diag(diags, tok.start, tok.line, tok.col, "error",
+                  u"Array subscript out of bounds: index %d exceeds size %d"
+                  % (index_val, array_size),
+                  u"数组下标越界：索引 %d 超出大小 %d" % (index_val, array_size),
+                  "array-bounds")
+    return diags
+
+
 def _pp_diags(text, tokens):
     """Cheap preprocessor diagnostics for the instant-check path.
 
@@ -826,12 +886,12 @@ class _Parser(object):
 
     def _add_symbol(self, scope, name, kind, type_text, signature, offset,
                     name_offset, line, col, is_definition=False, params=None,
-                    target_scope=None, end_offset=None):
+                    target_scope=None, end_offset=None, array_size=None):
         if not name:
             return None
         sym = Symbol(name, kind, type_text, signature, offset, name_offset,
                      line, col, scope, is_definition, params, target_scope,
-                     end_offset)
+                     end_offset, array_size)
         scope.add(sym)
         self.symbols.append(sym)
         self.by_name.setdefault(name, []).append(sym)
@@ -1588,11 +1648,29 @@ class _Parser(object):
                 type_parts.insert(0, base_type)
             type_text = " ".join(type_parts).strip()
             tok = self.tokens[name_idx]
+
+            # Detect array size: check for [size] after the name
+            array_size = None
+            if name_idx + 1 < cut and self._text(name_idx + 1) == "[":
+                # Find matching ]
+                bracket_pos = name_idx + 1
+                if bracket_pos in self.match:
+                    close_bracket = self.match[bracket_pos]
+                    if close_bracket < cut:
+                        # Extract size expression between [ and ]
+                        size_tokens = [self._text(k) for k in range(bracket_pos + 1, close_bracket)]
+                        size_expr = "".join(size_tokens).strip()
+                        # Try to evaluate as integer constant
+                        try:
+                            array_size = int(size_expr)
+                        except ValueError:
+                            pass  # Not a constant size
+
             self._add_symbol(
                 scope, name,
                 "member variable" if scope.kind == "type" else "variable",
                 type_text, (type_text + " " + name).strip(), tok.start,
-                tok.start, tok.line, tok.col, False)
+                tok.start, tok.line, tok.col, False, array_size=array_size)
 
     def _parse_control(self, i, scope):
         if i + 1 >= self.n or self._text(i + 1) != "(":
@@ -1785,6 +1863,60 @@ def _strip_type(type_text):
     return s
 
 
+def _extract_template_args(type_text):
+    """Extract template arguments from a type string.
+    
+    e.g., "vector<int>" -> {"T": "int"}
+          "map<string, int>" -> {"Key": "string", "T": "int"}
+    Returns a dict mapping common template parameter names to their arguments.
+    """
+    s = type_text or ""
+    # Find the first <...> at the top level
+    depth = 0
+    start = -1
+    for i, ch in enumerate(s):
+        if ch == "<":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ">":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    args_str = s[start + 1:i]
+                    # Parse arguments
+                    args = []
+                    arg_start = 0
+                    arg_depth = 0
+                    for j, ch2 in enumerate(args_str):
+                        if ch2 == "<":
+                            arg_depth += 1
+                        elif ch2 == ">":
+                            arg_depth = max(0, arg_depth - 1)
+                        elif ch2 == "," and arg_depth == 0:
+                            args.append(args_str[arg_start:j].strip())
+                            arg_start = j + 1
+                    if arg_start < len(args_str):
+                        args.append(args_str[arg_start:].strip())
+                    # Map to common template parameter names
+                    # Standard container patterns
+                    template_map = {}
+                    if len(args) == 1:
+                        template_map["T"] = args[0]
+                        template_map["value_type"] = args[0]
+                    elif len(args) == 2:
+                        template_map["Key"] = args[0]
+                        template_map["T"] = args[1]
+                        template_map["value_type"] = args[1]
+                    elif len(args) == 3:
+                        template_map["Key"] = args[0]
+                        template_map["T"] = args[1]
+                        template_map["Alloc"] = args[2]
+                        template_map["value_type"] = args[1]
+                    return template_map
+    return {}
+
+
 class FastEngine(object):
     """Incremental, zero-dependency C++ indexer."""
 
@@ -1875,7 +2007,9 @@ class FastEngine(object):
         a.line_states = states
         a.comment_ranges = comments
         a.lex_diags = lex_diags
-        a.diags = sorted(lex_diags + bracket + parser.diags,
+        # Array bounds checking
+        array_bounds = _array_bounds_diags(text, tokens, parser.by_name)
+        a.diags = sorted(lex_diags + bracket + parser.diags + array_bounds,
                          key=lambda d: (d.offset, d.line, d.col))
         a.scopes = parser.scopes
         a.global_scope = parser.global_scope
@@ -1910,9 +2044,19 @@ class FastEngine(object):
         while rewind < len(old.line_states) and \
                 old.line_states[rewind][0] != 0:
             start_line = old.line_states[rewind][2]
-            if start_line >= rewind:
+            if start_line < rewind:
+                rewind = start_line
+            else:
                 break
-            rewind = start_line
+        # If we rewound to a construct start line, also check if that line
+        # itself is inside another construct (nested constructs).
+        while rewind < len(old.line_states) and \
+                old.line_states[rewind][0] != 0:
+            start_line = old.line_states[rewind][2]
+            if start_line < rewind:
+                rewind = start_line
+            else:
+                break
         if rewind < 0:
             rewind = 0
         if rewind >= len(new_starts):
@@ -1955,7 +2099,9 @@ class FastEngine(object):
         a.line_states = states
         a.comment_ranges = comments
         a.lex_diags = lex_diags
-        a.diags = sorted(lex_diags + bracket + parser.diags,
+        # Array bounds checking
+        array_bounds = _array_bounds_diags(text, tokens, parser.by_name)
+        a.diags = sorted(lex_diags + bracket + parser.diags + array_bounds,
                          key=lambda d: (d.offset, d.line, d.col))
         a.scopes = parser.scopes
         a.global_scope = parser.global_scope
@@ -2130,6 +2276,7 @@ class FastEngine(object):
             return []
         target = None
         type_name = ""
+        template_args = {}
         if receiver == "this":
             scope = a.scope_at(offset)
             while scope is not None and scope.kind != "type":
@@ -2143,8 +2290,10 @@ class FastEngine(object):
             if sym is not None and target is None:
                 if sym.kind == "alias":
                     type_name = _strip_type(sym.type)
+                    template_args = _extract_template_args(sym.type)
                 else:
                     type_name = _strip_type(sym.type)
+                    template_args = _extract_template_args(sym.type)
             elif sym is None:
                 type_name = receiver
             if target is None and type_name:
@@ -2158,12 +2307,12 @@ class FastEngine(object):
             return []
         seen = set()
         items = []
-        self._collect_members(a, target, seen, items, offset)
+        self._collect_members(a, target, seen, items, offset, template_args)
         if not items:
             return []
         return items
 
-    def _collect_members(self, a, scope, seen, items, offset, depth=0):
+    def _collect_members(self, a, scope, seen, items, offset, template_args=None, depth=0):
         if scope is None or depth > 6:
             return
         for sym in scope.symbols:
@@ -2172,10 +2321,10 @@ class FastEngine(object):
             if sym.kind in ("type", "enum") and sym.name == scope.name:
                 continue
             seen.add(sym.name)
-            items.append(self._candidate(sym, offset))
+            items.append(self._candidate(sym, offset, template_args))
         for base in scope.base_types:
             self._collect_members(a, a.type_scopes.get(base), seen, items,
-                                  offset, depth + 1)
+                                  offset, template_args, depth + 1)
 
     def _lookup(self, a, name, offset):
         scope = a.scope_at(offset)
@@ -2191,13 +2340,17 @@ class FastEngine(object):
         hits = a.by_name.get(name)
         return hits[0] if hits else None
 
-    def _candidate(self, sym, offset):
+    def _candidate(self, sym, offset, template_args=None):
         name = sym.name
         kind = sym.kind
+        detail = ""
         if kind in ("function", "method"):
             code = "m" if kind == "method" else "f"
             ann, ann_en = u"函数", "function"
             detail = sym.signature or sym.type
+            # Substitute template parameters in signature
+            if template_args and detail:
+                detail = self._substitute_template(detail, template_args)
         elif kind in ("variable", "member variable", "parameter"):
             code = "v"
             ann = u"参数" if kind == "parameter" else u"变量"
@@ -2236,6 +2389,17 @@ class FastEngine(object):
             "detail": detail,
             "detail_en": detail,
         }
+
+    def _substitute_template(self, text, template_args):
+        """Substitute template parameter names with their actual types."""
+        if not template_args:
+            return text
+        result = text
+        for param, arg in template_args.items():
+            # Replace template parameter names (whole word)
+            import re
+            result = re.sub(r'\b' + re.escape(param) + r'\b', arg, result)
+        return result
 
     def _finish_items(self, items, prefix, clangd_style):
         max_score = 999 if clangd_style else 5

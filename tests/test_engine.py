@@ -157,7 +157,7 @@ class ClangdHelperTests(unittest.TestCase):
             }],
         })
         self.assertEqual(uri, "file:///a.cpp")
-        self.assertEqual(items, [(2, 3, 2, "unused variable")])
+        self.assertEqual(items, [(2, 3, 2, "unused variable", "")])
 
     def test_parse_locations_supports_location_links(self):
         locations = ca_clangd.parse_locations([
@@ -193,10 +193,11 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(entry["detail_en"], entry["detail"])
 
     def test_snippet_completion_has_english_detail(self):
-        results = ca_engine.analyze("us", 2)
+        # Test that keyword completions have English detail
+        results = ca_engine.analyze("for", 3)
         by_trigger = dict((r["trigger"], r) for r in results)
-        self.assertIn("us", by_trigger)
-        self.assertTrue(by_trigger["us"]["detail_en"])
+        self.assertIn("for", by_trigger)
+        self.assertTrue(by_trigger["for"]["detail_en"])
 
     def test_compiler_notes_attach_to_previous_diagnostic(self):
         output = (

@@ -14,7 +14,7 @@ import re
 
 from .ca_stdlib_data import (
     MEMBERS_DB_FAST, GENERIC_MEMBERS_FAST, STD_ITEMS_ALL,
-    KEYWORDS, SNIPPETS,
+    KEYWORDS,
     HEADERS, TRANSLATIONS, QUOTE_NORMALIZE,
     WARNING_FLAG_ZH, _ELEM_RULES,
     STD_SYMBOL_HEADER, STD_HEADERS_SET, en_detail,
@@ -615,10 +615,6 @@ def analyze(text, offset, cache_key=None, cache_version=None,
                       it["trigger"], it["trigger"])
                      for it in STD_ITEMS_ALL]
     else:
-        for trig, body, desc, kd in SNIPPETS:
-            en = en_detail(trig) or u""
-            raw_items.append((trig, body, desc, kd, False, en, en or desc,
-                              desc))
         for kw in KEYWORDS:
             raw_items.append((kw, kw, u"关键字", "k", False, u"keyword",
                               kw, kw))

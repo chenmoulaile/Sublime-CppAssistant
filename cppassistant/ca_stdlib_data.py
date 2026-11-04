@@ -482,37 +482,9 @@ KEYWORDS = [
     "unsigned", "using", "virtual", "void", "volatile", "wchar_t", "while",
 ]
 
-SNIPPETS = [
-    ("us", "using namespace std;", "命名空间声明", "s"),
-    ("inc", "#include <bits/stdc++.h>", "万能头文件", "s"),
-    ("fastio", "ios::sync_with_stdio(false);\ncin.tie(nullptr);$0", "关闭同步流加速", "s"),
-    (
-        "mainf",
-        "int main() {\n"
-        "    ios::sync_with_stdio(false);\n"
-        "    cin.tie(nullptr);\n"
-        "\n"
-        "    int tt = 1;\n"
-        "    // cin >> tt;\n"
-        "    while (tt--) {\n"
-        "        solve();\n"
-        "    }\n"
-        "\n"
-        "    return 0;\n"
-        "}",
-        "jiangly 码风主函数模板",
-        "s",
-    ),
-    (
-        "solvef",
-        "void solve() {\n"
-        "    $0\n"
-        "}",
-        "jiangly 码风 solve 函数",
-        "s",
-    ),
-    ("pii", "pair<int, int>", "pair<int,int> 简写", "s"),
-]
+# Built-in snippets removed - use external template packs instead.
+# See templates/ directory for template packs.
+SNIPPETS = []
 
 HEADERS = [
     "bits/stdc++.h", "algorithm", "iostream", "vector", "string", "cmath",
@@ -521,6 +493,12 @@ HEADERS = [
     "numeric", "iomanip", "sstream", "fstream", "bitset", "tuple",
     "climits", "cctype", "ctime", "chrono", "random", "complex", "array",
     "list", "iterator", "memory", "cassert",
+    # C++20/23
+    "span", "format", "ranges", "concepts", "coroutine", "source_location",
+    "stop_token", "filesystem", "charconv", "numbers", "version",
+    # CP-specific
+    "ext/pb_ds/assoc_container.hpp", "ext/pb_ds/tree_policy.hpp",
+    "ext/rope", "ext/numeric", "sys/types.h",
 ]
 
 # --------------------------------------------------------------------------

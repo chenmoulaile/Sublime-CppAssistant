@@ -1,0 +1,109 @@
+{
+  "packs": [
+    {
+      "id": "basic",
+      "name": "Basic CP Templates",
+      "description": "Essential competitive programming templates (us, inc, fastio, mainf, solvef, pii)",
+      "version": "1.0.0",
+      "author": "CppAssistant Team",
+      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/basic.zip",
+      "tags": ["basic", "essential", "beginner"],
+      "snippets": [
+        "us",
+        "inc",
+        "fastio",
+        "mainf",
+        "solvef",
+        "pii"
+      ]
+    },
+    {
+      "id": "geometry",
+      "name": "Computational Geometry",
+      "description": "Geometry templates: Point, Line, Circle, Polygon, Convex Hull, Intersections",
+      "version": "1.0.0",
+      "author": "CppAssistant Team",
+      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/geometry.zip",
+      "tags": ["geometry", "computational-geometry", "advanced"],
+      "snippets": [
+        "point",
+        "line",
+        "circle",
+        "polygon",
+        "convexhull",
+        "intersection"
+      ]
+    },
+    {
+      "id": "graph",
+      "name": "Graph Algorithms",
+      "description": "Graph templates: BFS, DFS, Dijkstra, Floyd-Warshall, SCC, MST, Max Flow",
+      "version": "1.0.0",
+      "author": "CppAssistant Team",
+      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/graph.zip",
+      "tags": ["graph", "algorithms", "advanced"],
+      "snippets": [
+        "bfs",
+        "dfs",
+        "dijkstra",
+        "floyd",
+        "scc",
+        "mst",
+        "maxflow",
+        "mincostflow"
+      ]
+    },
+    {
+      "id": "ds",
+      "name": "Data Structures",
+      "description": "Data structure templates: Segment Tree, Fenwick Tree, Sparse Table, DSU, LCT",
+      "version": "1.0.0",
+      "author": "CppAssistant Team",
+      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/ds.zip",
+      "tags": ["data-structures", "segment-tree", "fenwick", "dsu"],
+      "snippets": [
+        "segtree",
+        "fenwick",
+        "sparsetable",
+        "dsu",
+        "lct",
+        "treap"
+      ]
+    },
+    {
+      "id": "strings",
+      "name": "String Algorithms",
+      "description": "String templates: KMP, Z-function, Manacher, Suffix Array, Aho-Corasick",
+      "version": "1.0.0",
+      "author": "CppAssistant Team",
+      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/strings.zip",
+      "tags": ["strings", "string-algorithms", "advanced"],
+      "snippets": [
+        "kmp",
+        "zfunc",
+        "manacher",
+        "suffixarray",
+        "aho-corasick",
+        "suffix-automaton"
+      ]
+    },
+    {
+      "id": "math",
+      "name": "Number Theory & Combinatorics",
+      "description": "Math templates: ModInt, FFT/NTT, CRT, Lucas, Berlekamp-Massey, Polynomial",
+      "version": "1.0.0",
+      "author": "CppAssistant Team",
+      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/math.zip",
+      "tags": ["math", "number-theory", "combinatorics", "advanced"],
+      "snippets": [
+        "modint",
+        "fft",
+        "ntt",
+        "crt",
+        "lucas",
+        "polynomial",
+        "berlekamp-massey"
+      ]
+    }
+  ]
+}

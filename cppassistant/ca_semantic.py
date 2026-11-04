@@ -333,8 +333,16 @@ def find_libclang(configured=None):
         if os.path.isfile(path):
             return path
         # find_library may return a soname that the loader can resolve.
+        # Only accept absolute paths or paths that exist.
         if not os.path.isabs(path) and not os.path.exists(path):
+            continue
+        # Try to load it - if it works, return the soname
+        try:
+            loader = ctypes.WinDLL if os.name == "nt" else ctypes.CDLL
+            loader(path)
             return path
+        except OSError:
+            continue
     return None
 
 
@@ -490,6 +498,9 @@ class SemanticEngine(object):
         self._pch_errors = {}
         if self.enable_pch and not self._clangpp_matches():
             self.enable_pch = False
+        # Initial PCH sweep to clean up old/failed builds
+        if self.enable_pch:
+            self._sweep_pch(None)
         self.stats = {
             "parses": 0,
             "reparses": 0,
@@ -1351,6 +1362,18 @@ def engine(path=None, clang_path=None, enable_pch=True, args=None,
             args=args, resource_dir=resource_dir)
         _ENGINE_PATH = path
         _ENGINE_SIG = sig
+        # Start periodic PCH sweep (every 30 minutes)
+        if _ENGINE.enable_pch:
+            def _periodic_pch_sweep():
+                try:
+                    _ENGINE._sweep_pch(None)
+                except Exception:
+                    pass
+                # Reschedule
+                threading.Timer(1800, _periodic_pch_sweep).start()
+            t = threading.Timer(1800, _periodic_pch_sweep)
+            t.daemon = True
+            t.start()
         return _ENGINE
 
 

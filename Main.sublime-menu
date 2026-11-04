@@ -47,12 +47,13 @@
 										"command": "ca_set_display_language",
 										"args": { "lang": "both" },
 										"checkbox": true
-									}
-								]
-							},
-							{ "caption": "-" },
-							{
-								"caption": "Completion engine",
+}
+						]
+					},
+					{ "caption": "Toggle Menu Language", "command": "ca_toggle_menu_language" },
+					{ "caption": "-" },
+					{
+						"caption": "Completion engine",
 								"id": "cppassistant-completion-engine",
 								"children":
 								[
@@ -155,6 +156,19 @@
 			{ "caption": "Format Document", "command": "ca_format_document" },
 			{ "caption": "Go to Definition", "command": "ca_goto_definition" },
 			{ "caption": "Show Diagnostics", "command": "ca_show_diagnostics" },
+			{ "caption": "Copy Diagnostic", "command": "ca_copy_diagnostic" },
+			{ "caption": "-" },
+			{
+				"caption": "Templates",
+				"children": [
+					{ "caption": "Install Template Pack", "command": "ca_install_template_pack" },
+					{ "caption": "Manage Templates", "command": "ca_manage_templates" },
+					{ "caption": "-" },
+					{ "caption": "Create User Snippet", "command": "ca_create_user_snippet" },
+					{ "caption": "Edit User Snippets", "command": "ca_edit_user_snippets" },
+					{ "caption": "Import Snippets", "command": "ca_import_snippets" }
+				]
+			},
 			{ "caption": "-" },
 			{
 				"caption": "Settings",
