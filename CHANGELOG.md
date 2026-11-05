@@ -3,38 +3,15 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
-## Unreleased
+## v2.2.0 — 2026-11-05
 
-### Removed
-
-- The bundled `Basic` template pack (`us`, `inc`, `fastio`, `mainf`,
-  `solvef`, `pii`) is gone; the plugin now ships Geometry, Graph, DS,
-  Strings and Math packs only.
-
-### Completion display
-
-- Local variables, parameters, functions, structs, enums, macros and
-  aliases now carry concrete details in the builtin fallback:
-  `total` becomes `int`, `add` becomes `int add(int x, int y)`, and
-  parameters are labelled `parameter`.
-- Completion ranking prefers local symbols first, then user-defined
-  functions and types, then the STL database, then keywords.
-- STL and `__gnu_pbds` member signatures now show complexity hints such as
-  `push_back(int) · O(1)`, `find(const long long&) · O(log n)`, and
-  `insert(...) · O(1) avg` for hash tables.
-- User snippets and installed template packs are annotated with their
-  origin, for example `kmp · 字符串模板` / `kmp · Strings template`,
-  so the popup no longer hides where an entry came from.
-- Macros use their own kind (`macro`, variable icon) instead of being
-  grouped with functions, and `#include` completions explain what the
-  header contains (`bits/stdc++.h` → all standard headers, **not** PBDS).
-- `auto` variables are inferred at completion time: `auto it = v.find(x)`
-  shows `vector<int>::iterator`, `auto value = m.at("k")` shows `int`.
-- Duplicate triggers inside one container (for example `stringstream`,
-  which inherits both stream directions) no longer appear twice.
-- `std::ranges` / `std::views` / `std::concepts` entries are tagged
-  `C++20`, so they rank after the C++14 database until the standard is
-  raised.
+2.2.0 is the "make the popup tell you more, and stop making you retype things"
+release. Competitive-programming specifics that were easy to forget are now
+automatic: PBDS headers are inserted for you, `auto` variables show their real
+type, `bits/stdc++.h` is explained instead of silently ignored, and one
+keystroke fixes full-width punctuation. It also adds the navigation and
+template workflow commands: call/type hierarchy, a template browser with
+inline preview, snippet management, grouped references and status-bar hints.
 
 ### Features
 
@@ -51,6 +28,11 @@ semantic versioning; Package Control installs the newest tag.
   `cc_hash_table`, `rb_tree_tag`, `splay_tree_tag`, `ov_tree_tag`,
   `tree_order_statistics_node_update`, `null_type` and the resize
   policies, with the full template skeleton in the insert text.
+- **C++20 subset**: `std::ranges` algorithms, `std::views` adaptors and
+  common `std::concepts` are in the database, tagged `C++20`. Typing
+  `ranges::` or `views::` lists only that sub-namespace and drops the
+  prefix, so `std::ranges::s` completes to `sort`, not to `std::ranges::sort`
+  inside an already-qualified name.
 - **Template browser with preview**: `CppAssistant: Browse Templates`
   shows every installed snippet in a quick panel with a preview of the
   first 20 lines, its origin and its line count; selecting an entry
@@ -83,6 +65,49 @@ semantic versioning; Package Control installs the newest tag.
   panel.
 - **Grouped find references**: results are sorted by file, numbered
   `[3/7]` per file, and keep the inline preview line.
+
+### Completion display
+
+- Local variables, parameters, functions, structs, enums, macros and
+  aliases now carry concrete details in the builtin fallback:
+  `total` becomes `int`, `add` becomes `int add(int x, int y)`, and
+  parameters are labelled `parameter`.
+- Completion ranking prefers local symbols first, then user-defined
+  functions and types, then the STL database, then keywords.
+- STL and `__gnu_pbds` member signatures now show complexity hints such as
+  `push_back(int) · O(1)`, `find(const long long&) · O(log n)`, and
+  `insert(...) · O(1) avg` for hash tables.
+- User snippets and installed template packs are annotated with their
+  origin, for example `kmp · 字符串模板` / `kmp · Strings template`,
+  so the popup no longer hides where an entry came from.
+- Macros use their own kind (`macro`, variable icon) instead of being
+  grouped with functions, and `#include` completions explain what the
+  header contains (`bits/stdc++.h` → all standard headers, **not** PBDS).
+- `auto` variables are inferred at completion time: `auto it = v.find(x)`
+  shows `vector<int>::iterator`, `auto value = m.at("k")` shows `int`.
+- Duplicate triggers inside one container (for example `stringstream`,
+  which inherits both stream directions) no longer appear twice.
+- `std::ranges` / `std::views` / `std::concepts` entries are tagged
+  `C++20`, so they rank after the C++14 database until the standard is
+  raised.
+
+### Removed
+
+- The bundled `Basic` template pack (`us`, `inc`, `fastio`, `mainf`,
+  `solvef`, `pii`) is gone; the plugin now ships Geometry, Graph, DS,
+  Strings and Math packs only.
+
+### Tests and packaging
+
+- Test suite grows from 134 to 208 cases: full-width fixer, settings
+  validation, call context, PBDS/ranges data, completion-database
+  integrity (duplicate triggers, missing English details), package
+  integrity (commands / menu / keymap / messages must match the classes
+  that exist) and an import smoke test that loads the whole plugin against
+  a stubbed `sublime` module.
+- New modules: `cppassistant/ca_fixes.py` (punctuation scanner/rewriter)
+  and `cppassistant/ca_config.py` (settings schema validation). Both are
+  pure Python and unit-tested without Sublime Text.
 
 ## v2.1.1
 
