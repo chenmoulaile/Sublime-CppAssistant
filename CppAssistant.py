@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import zlib
+import json
 
 import sublime
 import sublime_plugin
@@ -3980,7 +3981,7 @@ class CaInstallTemplatePackCommand(sublime_plugin.WindowCommand):
                 sublime.set_timeout(lambda: sublime.status_message("Template pack installed: %s" % pack["name"]), 0)
             except Exception as e:
                 _log_error("template pack install", e)
-                sublime.set_timeout(lambda: sublime.error_message("Failed to install template pack: %s" % str(e)), 0)
+                sublime.set_timeout(lambda e=e: sublime.error_message("Failed to install template pack: %s" % str(e)), 0)
 
         threading.Thread(target=download, daemon=True).start()
 

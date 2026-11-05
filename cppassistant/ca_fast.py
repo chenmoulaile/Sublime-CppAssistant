@@ -665,7 +665,7 @@ def _bracket_diags(text, tokens):
     return diags
 
 
-def _array_bounds_diags(text, tokens, symbols_by_name):
+def _array_bounds_diags(text, tokens, symbols_by_name, match_dict):
     """Check for constant-index out-of-bounds array access."""
     diags = []
     # Build a map of variable names to their Symbol objects (for array size)
@@ -697,9 +697,9 @@ def _array_bounds_diags(text, tokens, symbols_by_name):
         array_size = array_vars[array_name]
 
         # Find the matching ] and extract the index expression
-        if idx not in match:
+        if idx not in match_dict:
             continue
-        close_bracket = match[idx]
+        close_bracket = match_dict[idx]
         if close_bracket <= idx + 1:
             continue
         # Extract index expression
@@ -2008,7 +2008,7 @@ class FastEngine(object):
         a.comment_ranges = comments
         a.lex_diags = lex_diags
         # Array bounds checking
-        array_bounds = _array_bounds_diags(text, tokens, parser.by_name)
+        array_bounds = _array_bounds_diags(text, tokens, parser.by_name, parser.match)
         a.diags = sorted(lex_diags + bracket + parser.diags + array_bounds,
                          key=lambda d: (d.offset, d.line, d.col))
         a.scopes = parser.scopes
@@ -2100,7 +2100,7 @@ class FastEngine(object):
         a.comment_ranges = comments
         a.lex_diags = lex_diags
         # Array bounds checking
-        array_bounds = _array_bounds_diags(text, tokens, parser.by_name)
+        array_bounds = _array_bounds_diags(text, tokens, parser.by_name, parser.match)
         a.diags = sorted(lex_diags + bracket + parser.diags + array_bounds,
                          key=lambda d: (d.offset, d.line, d.col))
         a.scopes = parser.scopes
