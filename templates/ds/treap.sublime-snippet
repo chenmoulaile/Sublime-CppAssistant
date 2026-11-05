@@ -1,0 +1,32 @@
+<snippet>
+    <content><![CDATA[struct Treap {
+    struct Node { int l, r, key, pri, sz; };
+    vector<Node> t;
+    int root = 0, cnt = 0;
+    Treap(int n) { t.resize(n + 1); }
+    int node(int key) {
+        t[++cnt] = {0, 0, key, rand(), 1};
+        return cnt;
+    }
+    void pushup(int x) { t[x].sz = t[t[x].l].sz + t[t[x].r].sz + 1; }
+    void split(int x, int key, int &a, int &b) {
+        if (!x) { a = b = 0; return; }
+        if (t[x].key <= key) { a = x; split(t[x].r, key, t[x].r, b); }
+        else { b = x; split(t[x].l, key, a, t[x].l); }
+        pushup(x);
+    }
+    int merge(int a, int b) {
+        if (!a || !b) return a | b;
+        if (t[a].pri > t[b].pri) { t[a].r = merge(t[a].r, b); pushup(a); return a; }
+        t[b].l = merge(a, t[b].l); pushup(b); return b;
+    }
+    void insert(int key) {
+        int a, b; split(root, key, a, b);
+        root = merge(merge(a, node(key)), b);
+    }
+};
+$0]]></content>
+    <tabTrigger>treap</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Randomized treap</description>
+</snippet>

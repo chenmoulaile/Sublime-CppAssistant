@@ -1,0 +1,20 @@
+<snippet>
+    <content><![CDATA[vector<int> bfs(int s, const vector<vector<int>> &g) {
+    vector<int> dist(g.size(), -1);
+    queue<int> q;
+    dist[s] = 0;
+    q.push(s);
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int v : g[u]) if (dist[v] < 0) {
+            dist[v] = dist[u] + 1;
+            q.push(v);
+        }
+    }
+    return dist;
+}
+$0]]></content>
+    <tabTrigger>bfs</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Breadth-first search distances</description>
+</snippet>

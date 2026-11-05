@@ -1,0 +1,45 @@
+<snippet>
+    <content><![CDATA[struct MCMF {
+    struct Edge { int to, rev, cost; long long cap; };
+    int n;
+    vector<vector<Edge>> g;
+    MCMF(int n_) : n(n_), g(n_) {}
+    void add_edge(int u, int v, long long cap, int cost) {
+        g[u].push_back({v, (int)g[v].size(), cost, cap});
+        g[v].push_back({u, (int)g[u].size() - 1, -cost, 0});
+    }
+    pair<long long,long long> run(int s, int t) {
+        const long long INF = (1LL << 60);
+        long long flow = 0, cost = 0;
+        while (true) {
+            vector<long long> dist(n, INF);
+            vector<int> pv(n), pe(n), inq(n, 0);
+            queue<int> q; dist[s] = 0; q.push(s); inq[s] = 1;
+            while (!q.empty()) {
+                int u = q.front(); q.pop(); inq[u] = 0;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    Edge &e = g[u][i];
+                    if (e.cap > 0 && dist[e.to] > dist[u] + e.cost) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u; pe[e.to] = i;
+                        if (!inq[e.to]) { inq[e.to] = 1; q.push(e.to); }
+                    }
+                }
+            }
+            if (dist[t] == INF) break;
+            long long f = INF;
+            for (int v = t; v != s; v = pv[v]) f = min(f, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                Edge &e = g[pv[v]][pe[v]];
+                e.cap -= f; g[v][e.rev].cap += f;
+            }
+            flow += f; cost += f * dist[t];
+        }
+        return {flow, cost};
+    }
+};
+$0]]></content>
+    <tabTrigger>mincostflow</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Min-cost max-flow (SPFA)</description>
+</snippet>

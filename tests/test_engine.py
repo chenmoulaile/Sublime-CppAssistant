@@ -271,5 +271,76 @@ class EngineTests(unittest.TestCase):
         self.assertIn(u"    int b = 2;", out)
 
 
+class MemberSignatureTests(unittest.TestCase):
+    def _detail(self, src, trigger):
+        items = ca_engine.analyze(src, len(src))
+        for item in items:
+            if item["trigger"] == trigger:
+                return item["detail"]
+        self.fail("no completion for %r" % trigger)
+
+    def test_sequence_push_back(self):
+        self.assertEqual(
+            self._detail(u"vector<int> v; v.", "push_back"),
+            "push_back(int)")
+        self.assertEqual(
+            self._detail(u"vector<pair<int,int>> v; v.", "push_back"),
+            "push_back(pair<int,int>)")
+        self.assertEqual(
+            self._detail(u"vector<vector<int>> v; v.", "push_back"),
+            "push_back(vector<int>)")
+
+    def test_map_signatures(self):
+        self.assertEqual(
+            self._detail(u"map<string,int> m; m.", "at"),
+            "at(const string&)")
+        self.assertEqual(
+            self._detail(u"map<string,int> m; m.", "find"),
+            "find(const string&)")
+        self.assertEqual(
+            self._detail(u"unordered_map<long long, vector<int>> m; m.",
+                         "emplace"),
+            "emplace(long long, vector<int>)")
+
+    def test_set_find_uses_key_type(self):
+        self.assertEqual(
+            self._detail(u"set<long long> s; s.", "find"),
+            "find(const long long&)")
+
+    def test_string_and_adapter_signatures(self):
+        self.assertEqual(
+            self._detail(u"string s; s.", "push_back"),
+            "push_back(char)")
+        self.assertEqual(
+            self._detail(u"queue<int> q; q.", "push"),
+            "push(int)")
+
+    def test_array_fill_signature(self):
+        self.assertEqual(
+            self._detail(u"array<int, 3> a; a.", "fill"),
+            "fill(const int&)")
+
+    def test_pbds_tree_signatures(self):
+        src = (u"__gnu_pbds::tree<int, null_type, less<int>, rb_tree_tag, "
+               u"tree_order_statistics_node_update> s; s.")
+        self.assertEqual(self._detail(src, "order_of_key"),
+                        "order_of_key(const int&)")
+        self.assertEqual(self._detail(src, "find_by_order"),
+                        "find_by_order(size_t)")
+        self.assertEqual(self._detail(src, "find"), "find(const int&)")
+
+    def test_pbds_hash_map_signatures(self):
+        src = u"gp_hash_table<long long, string> h; h."
+        self.assertEqual(self._detail(src, "operator[]"),
+                        "operator[](const long long&)")
+        self.assertEqual(self._detail(src, "insert"),
+                        "insert({const long long&, string})")
+
+    def test_split_args_keeps_nested_templates(self):
+        args = ca_engine._split_args(
+            u"string, vector<pair<int,int>>")
+        self.assertEqual(args, [u"string", u"vector<pair<int,int>>"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,48 @@
+<snippet>
+    <content><![CDATA[struct AhoCorasick {
+    static const int SIGMA = 26;
+    vector<array<int, SIGMA>> nxt;
+    vector<int> fail, out;
+    AhoCorasick() { add_node(); }
+    int add_node() {
+        nxt.push_back({}); nxt.back().fill(-1);
+        fail.push_back(0); out.push_back(0);
+        return nxt.size() - 1;
+    }
+    void insert(const string &s) {
+        int u = 0;
+        for (char ch : s) {
+            int c = ch - 'a';
+            if (nxt[u][c] < 0) nxt[u][c] = add_node();
+            u = nxt[u][c];
+        }
+        ++out[u];
+    }
+    void build() {
+        queue<int> q;
+        for (int c = 0; c < SIGMA; ++c) {
+            if (nxt[0][c] >= 0) { fail[nxt[0][c]] = 0; q.push(nxt[0][c]); }
+            else nxt[0][c] = 0;
+        }
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            out[u] += out[fail[u]];
+            for (int c = 0; c < SIGMA; ++c) {
+                int v = nxt[u][c];
+                if (v >= 0) { fail[v] = nxt[fail[u]][c]; q.push(v); }
+                else nxt[u][c] = nxt[fail[u]][c];
+            }
+        }
+    }
+    long long count(const string &s) {
+        long long ans = 0;
+        int u = 0;
+        for (char ch : s) { u = nxt[u][ch - 'a']; ans += out[u]; }
+        return ans;
+    }
+};
+$0]]></content>
+    <tabTrigger>aho-corasick</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Aho-Corasick multi-pattern matching</description>
+</snippet>

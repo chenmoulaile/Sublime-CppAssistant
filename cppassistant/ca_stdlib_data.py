@@ -239,6 +239,31 @@ GENERIC_MEMBERS = [
     ("second", "", "v"),
 ] + _ITER + _SIZE + [("clear()", "", "m")]
 
+_PBDS_ORDERED = [
+    ("order_of_key(${1:x})", "小于 x 的元素个数", "m"),
+    ("find_by_order(${1:k})", "第 k 个元素的迭代器 (0-based)", "m"),
+]
+_PBDS_UNORDERED = [
+    ("insert(${1:x})", "插入元素", "m"),
+    ("emplace(${1:args})", "原地构造插入", "m"),
+    ("erase(${1:key})", "按键/值删除", "m"),
+    ("find(${1:key})", "查找, 返回迭代器", "m"),
+    ("count(${1:key})", "键出现次数", "m"),
+] + _ITER + _SIZE + [("clear()", "清空", "m")]
+
+PBDS_TREE_SET_MEMBERS = list(SET_MEMBERS) + _PBDS_ORDERED
+PBDS_TREE_MAP_MEMBERS = list(MAP_MEMBERS) + _PBDS_ORDERED
+PBDS_HASH_SET_MEMBERS = list(_PBDS_UNORDERED)
+PBDS_HASH_MAP_MEMBERS = [
+    ("operator[](${1:k})", "按键访存，不存在则默认构造", "m"),
+    ("insert({${1:k}, ${2:v}})", "插入键值对", "m"),
+    ("emplace(${1:k}, ${2:v})", "原地构造插入", "m"),
+    ("at(${1:k})", "越界检查取值", "m"),
+    ("erase(${1:key})", "按键删除", "m"),
+    ("find(${1:key})", "查找, 返回迭代器", "m"),
+    ("count(${1:key})", "键是否存在", "m"),
+] + _ITER + _SIZE + [("clear()", "清空", "m")]
+
 MEMBERS_DB = {
     "vector": VECTOR_MEMBERS,
     "deque": DEQUE_MEMBERS,
@@ -271,6 +296,10 @@ MEMBERS_DB = {
     "cerr": STREAM_OUT,
     "fstream": STREAM_FILE_IN + [i for i in STREAM_FILE_OUT if i not in STREAM_FILE_IN],
     "stringstream": STRSTREAM_MEMBERS + STREAM_IN,
+    "pb_ds_tree_set": PBDS_TREE_SET_MEMBERS,
+    "pb_ds_tree_map": PBDS_TREE_MAP_MEMBERS,
+    "pb_ds_hash_set": PBDS_HASH_SET_MEMBERS,
+    "pb_ds_hash_map": PBDS_HASH_MAP_MEMBERS,
 }
 
 # 元素类型推断表: 容器 -> 元素类型描述(用占位 T/K/V 表示模板参数)
@@ -467,6 +496,13 @@ STD_TYPES = [
     ("complex<${1:double}>", "复数", "t", True),
     ("mt19937", "32 位梅森旋转随机引擎 (random)", "t", True),
     ("function<${1:void(int)}>", "可调用对象包装", "t", True),
+    # __gnu_pbds (policy-based data structures)
+    ("__gnu_pbds::tree<${1:int}, null_type, less<${1:int}>, rb_tree_tag, tree_order_statistics_node_update>", "PBDS 有序树(ordered set)", "t", False),
+    ("__gnu_pbds::tree<${1:int}, ${2:int}, less<${1:int}>, rb_tree_tag, tree_order_statistics_node_update>", "PBDS 有序树(ordered map)", "t", False),
+    ("gp_hash_table<${1:int}, null_type>", "PBDS 开放散列集合", "t", False),
+    ("gp_hash_table<${1:int}, ${2:int}>", "PBDS 开放散列映射", "t", False),
+    ("cc_hash_table<${1:int}, null_type>", "PBDS 链式散列集合", "t", False),
+    ("cc_hash_table<${1:int}, ${2:int}>", "PBDS 链式散列映射", "t", False),
 ]
 
 KEYWORDS = [
@@ -480,6 +516,8 @@ KEYWORDS = [
     "static", "static_assert", "static_cast", "struct", "switch", "template",
     "this", "throw", "true", "try", "typedef", "typeid", "typename", "union",
     "unsigned", "using", "virtual", "void", "volatile", "wchar_t", "while",
+    # GCC 内建类型（竞赛常用，C++23 也接受 __int128 扩展）
+    "__int128", "__int128_t", "__uint128_t",
 ]
 
 # Built-in snippets removed - use external template packs instead.
@@ -623,6 +661,17 @@ _STD_TYPE_HEADERS = {
     "formatter": "format", "vformat": "format", "format": "format",
     "format_to": "format", "format_to_n": "format",
     "make_format_args": "format", "format_kind": "format",
+    # __gnu_pbds
+    "tree": "ext/pb_ds/tree_policy.hpp",
+    "trie": "ext/pb_ds/trie_policy.hpp",
+    "gp_hash_table": "ext/pb_ds/assoc_container.hpp",
+    "cc_hash_table": "ext/pb_ds/assoc_container.hpp",
+    "null_type": "ext/pb_ds/assoc_container.hpp",
+    "rb_tree_tag": "ext/pb_ds/assoc_container.hpp",
+    "splay_tree_tag": "ext/pb_ds/assoc_container.hpp",
+    "ov_tree_tag": "ext/pb_ds/assoc_container.hpp",
+    "tree_order_statistics_node_update": "ext/pb_ds/tree_policy.hpp",
+    "__gnu_pbds": "ext/pb_ds/assoc_container.hpp",
 }
 
 # 全局对象/常量 -> 头文件

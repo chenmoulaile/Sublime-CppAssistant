@@ -1,0 +1,16 @@
+<snippet>
+    <content><![CDATA[struct Line {
+    Point p, v;
+    Line() {}
+    Line(Point p_, Point v_) : p(p_), v(v_) {}
+    Point point(double t) const { return p + v * t; }
+    int side(const Point &q) const {
+        double c = v.cross(q - p);
+        return (c > eps) - (c < -eps);
+    }
+};
+$0]]></content>
+    <tabTrigger>line</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Line and point side test</description>
+</snippet>

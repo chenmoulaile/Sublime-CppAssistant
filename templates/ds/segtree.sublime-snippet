@@ -1,0 +1,40 @@
+<snippet>
+    <content><![CDATA[struct SegTree {
+    int n;
+    vector<long long> sum, lazy;
+    SegTree(int n_) { init(n_); }
+    void init(int n_) {
+        n = 1; while (n < n_) n <<= 1;
+        sum.assign(n << 1, 0); lazy.assign(n << 1, 0);
+    }
+    void apply(int x, long long v, int len) { sum[x] += v * len; lazy[x] += v; }
+    void push(int x, int len) {
+        if (!lazy[x]) return;
+        apply(x << 1, lazy[x], len >> 1);
+        apply(x << 1 | 1, lazy[x], len >> 1);
+        lazy[x] = 0;
+    }
+    void add(int l, int r, long long v) { add(1, 0, n, l, r, v); }
+    void add(int x, int l, int r, int ql, int qr, long long v) {
+        if (qr <= l || r <= ql) return;
+        if (ql <= l && r <= qr) { apply(x, v, r - l); return; }
+        push(x, r - l);
+        int m = (l + r) >> 1;
+        add(x << 1, l, m, ql, qr, v);
+        add(x << 1 | 1, m, r, ql, qr, v);
+        sum[x] = sum[x << 1] + sum[x << 1 | 1];
+    }
+    long long query(int l, int r) { return query(1, 0, n, l, r); }
+    long long query(int x, int l, int r, int ql, int qr) {
+        if (qr <= l || r <= ql) return 0;
+        if (ql <= l && r <= qr) return sum[x];
+        push(x, r - l);
+        int m = (l + r) >> 1;
+        return query(x << 1, l, m, ql, qr) + query(x << 1 | 1, m, r, ql, qr);
+    }
+};
+$0]]></content>
+    <tabTrigger>segtree</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Lazy segment tree: range add / range sum</description>
+</snippet>

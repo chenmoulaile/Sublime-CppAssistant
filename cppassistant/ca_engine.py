@@ -33,7 +33,7 @@ LINE_BREAK_RE = re.compile(r"\n")
 _TMPL_KINDS = (r"vector|deque|list|array|set|multiset|unordered_set|"
                r"unordered_multiset|map|multimap|unordered_map|"
                r"unordered_multimap|stack|queue|priority_queue|string|"
-               r"basic_string|pair")
+               r"basic_string|pair|tree|gp_hash_table|cc_hash_table")
 DECL_RE = re.compile(
     r"\b(" + _TMPL_KINDS + r")\s*(<((?:[^<>]|<[^<>]*>)+)>)?\s*&?\s*"
     r"([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)"
@@ -51,6 +51,25 @@ _TAIL_ARROW = "->"
 _TAIL_SCOPE = "::"
 
 _MAP_FAMILY = ("map", "multimap", "unordered_map", "unordered_multimap")
+
+
+def _is_pbds_null_type(targs):
+    args = _split_args(targs) if targs else []
+    if len(args) >= 2:
+        return args[1].strip().split("::")[-1] == "null_type"
+    return False
+
+
+def _pbds_receiver_kind(kind, targs):
+    if kind == "tree":
+        if _is_pbds_null_type(targs):
+            return "pb_ds_tree_set"
+        return "pb_ds_tree_map"
+    if kind in ("gp_hash_table", "cc_hash_table"):
+        if _is_pbds_null_type(targs):
+            return "pb_ds_hash_set"
+        return "pb_ds_hash_map"
+    return None
 
 _CTRL_WORDS = frozenset((
     "if", "for", "while", "switch", "catch", "return", "sizeof", "alignof",
@@ -370,6 +389,14 @@ def _split_args(s):
 
 
 def _elem_type(kind, targs):
+    if kind in ("tree", "gp_hash_table", "cc_hash_table"):
+        args = _split_args(targs) if targs else []
+        if not args:
+            return None
+        if _is_pbds_null_type(targs):
+            return args[0] or None
+        value = args[1] if len(args) > 1 else ""
+        return "pair<const %s, %s>" % (args[0], value)
     rule = _ELEM_RULES.get(kind)
     if not rule:
         return None
@@ -378,6 +405,102 @@ def _elem_type(kind, targs):
     out = out.replace("{K}", args[0] if args else "")
     out = out.replace("{V}", args[1] if len(args) > 1 else "")
     return out or None
+
+
+_SEQ_KINDS = ("vector", "deque", "list")
+_SET_KINDS = ("set", "multiset", "unordered_set", "unordered_multiset")
+_MAP_KINDS = ("map", "multimap", "unordered_map", "unordered_multimap")
+_PBDS_KINDS = ("pb_ds_tree_set", "pb_ds_tree_map",
+               "pb_ds_hash_set", "pb_ds_hash_map")
+
+
+def _member_signature(kind, targs, insert):
+    """Concrete member signature for the built-in STL database.
+
+    ``vector<int> v; v.push_back(`` should advertise ``push_back(int)``
+    rather than a bare ``push_back``.  Only signatures we can state with
+    confidence from the container's template arguments are returned; other
+    members keep the generic label.
+    """
+    if not insert or "(" not in insert:
+        return ""
+    name = insert.split("(", 1)[0]
+    args = _split_args(targs) if targs else []
+    t = args[0] if args else ""
+    v = args[1] if len(args) > 1 else t
+    params = None
+    if kind in _SEQ_KINDS:
+        if name in ("push_back", "push_front", "emplace_back",
+                    "emplace_front"):
+            params = [v]
+        elif name == "insert":
+            params = ["iterator", v]
+        elif name == "erase":
+            params = ["iterator"]
+        elif name in ("at", "resize", "reserve"):
+            params = ["size_t"]
+        elif name == "assign":
+            params = ["size_t", v]
+    elif kind == "string":
+        if name == "push_back":
+            params = ["char"]
+        elif name in ("append", "find", "rfind", "find_first_of",
+                      "find_last_of", "compare"):
+            params = ["const string&"]
+        elif name == "insert":
+            params = ["size_t", "const string&"]
+        elif name == "erase":
+            params = ["size_t", "size_t"]
+        elif name == "replace":
+            params = ["size_t", "size_t", "const string&"]
+        elif name == "substr":
+            params = ["size_t", "size_t"]
+        elif name in ("at", "resize"):
+            params = ["size_t"]
+    elif kind in _SET_KINDS:
+        if name in ("insert", "emplace", "erase", "find", "count",
+                    "lower_bound", "upper_bound", "equal_range") and t:
+            params = ["const %s&" % t]
+    elif kind in _MAP_KINDS:
+        if name in ("at", "erase", "find", "count", "lower_bound",
+                    "upper_bound", "equal_range") and t:
+            params = ["const %s&" % t]
+        elif name == "insert" and t:
+            params = ["{const %s&, %s}" % (t, v)]
+        elif name == "emplace" and t:
+            params = [t, v]
+    elif kind in ("queue", "stack", "priority_queue"):
+        if name in ("push", "emplace") and t:
+            params = [t]
+    elif kind == "array":
+        if name == "at":
+            params = ["size_t"]
+        elif name == "fill" and t:
+            params = ["const %s&" % t]
+    elif kind == "bitset":
+        if name in ("test", "set", "reset", "flip"):
+            params = ["size_t"]
+    elif kind in _PBDS_KINDS:
+        if kind.endswith("_map") and t and v:
+            if name == "insert":
+                params = [u"{const %s&, %s}" % (t, v)]
+            elif name == "emplace":
+                params = [t, v]
+            elif name in ("erase", "find", "count",
+                          "lower_bound", "upper_bound", "equal_range",
+                          "order_of_key", "operator[]", "at"):
+                params = ["const %s&" % t]
+            elif name == "find_by_order":
+                params = ["size_t"]
+        elif name in ("insert", "emplace", "erase", "find", "count",
+                    "lower_bound", "upper_bound", "equal_range",
+                    "order_of_key", "operator[]", "at") and t:
+            params = ["const %s&" % t]
+        elif name == "find_by_order":
+            params = ["size_t"]
+    if params is None:
+        return ""
+    return name + "(" + ", ".join(params) + ")"
 
 
 def build_env(text):
@@ -431,6 +554,9 @@ def _resolve_receiver(env, receiver, accessor, char_before=None):
             kind = info[0]
             if kind == _BASIC_STRING_KIND:
                 return _STRING_KIND
+            pbds = _pbds_receiver_kind(kind, info[1] or "")
+            if pbds is not None:
+                return pbds
             return kind
         et = env["elems"].get(receiver)
         if et:
@@ -604,11 +730,22 @@ def analyze(text, offset, cache_key=None, cache_version=None,
         members = MEMBERS_DB_FAST.get(key) if key else None
         if members is None:
             members = [] if key else GENERIC_MEMBERS_FAST
-        raw_items.extend(
-            (it["trigger"], it["insert"], it["annotation"], it["kind"],
-             False, en_detail(it["insert"], key) or en_detail(it["insert"])
-             or u"", it["trigger"], it["trigger"])
-            for it in members)
+        targs = ""
+        info = env["vars"].get(receiver)
+        if info is None and accessor == "arrow":
+            cont = env["iters"].get(receiver)
+            if cont is not None:
+                info = env["vars"].get(cont)
+        if info:
+            targs = info[1] or ""
+        for it in members:
+            sig = _member_signature(key, targs, it["insert"])
+            detail = sig or it["trigger"]
+            raw_items.append(
+                (it["trigger"], it["insert"], it["annotation"], it["kind"],
+                 False,
+                 en_detail(it["insert"], key) or en_detail(it["insert"]) or u"",
+                 detail, detail))
     elif accessor == "scope":
         raw_items = [(it["trigger"], it["insert"], it["annotation"],
                       it["kind"], False, en_detail(it["insert"]) or u"",
@@ -1078,7 +1215,10 @@ def parse_compiler_output(output):
         if not m:
             continue
         sev = m.group(4)
-        en, zh = translate_message(m.group(5))
+        raw_msg = m.group(5)
+        flag_match = _WARN_FLAG_RE.search(raw_msg)
+        code = flag_match.group(1).rstrip("=") if flag_match else ""
+        en, zh = translate_message(raw_msg)
         if sev == "note":
             if entries:
                 # note 是上一条诊断的补充（"did you mean ...?"），
@@ -1101,6 +1241,7 @@ def parse_compiler_output(output):
             "ctx": pending_ctx[0],
             "ctx_zh": pending_ctx[1],
             "notes": [],
+            "code": code,
         })
         pending_ctx = ("", "")
     return entries

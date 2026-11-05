@@ -1,0 +1,12 @@
+<snippet>
+    <content><![CDATA[bool segment_intersect(Point a, Point b, Point c, Point d) {
+    double c1 = (b - a).cross(c - a), c2 = (b - a).cross(d - a);
+    double c3 = (d - c).cross(a - c), c4 = (d - c).cross(b - c);
+    return ((c1 > eps && c2 < -eps) || (c1 < -eps && c2 > eps)) &&
+           ((c3 > eps && c4 < -eps) || (c3 < -eps && c4 > eps));
+}
+$0]]></content>
+    <tabTrigger>intersection</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Segment intersection test</description>
+</snippet>

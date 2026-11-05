@@ -1,0 +1,13 @@
+<snippet>
+    <content><![CDATA[vector<int> dfs_order;
+vector<int> visited;
+void dfs(int u, const vector<vector<int>> &g) {
+    visited[u] = 1;
+    dfs_order.push_back(u);
+    for (int v : g[u]) if (!visited[v]) dfs(v, g);
+}
+$0]]></content>
+    <tabTrigger>dfs</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Depth-first search order</description>
+</snippet>

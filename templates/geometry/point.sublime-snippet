@@ -1,0 +1,20 @@
+<snippet>
+    <content><![CDATA[const double eps = 1e-9;
+const double PI = acos(-1.0);
+struct Point {
+    double x = 0, y = 0;
+    Point() {}
+    Point(double x_, double y_) : x(x_), y(y_) {}
+    Point operator+(const Point &o) const { return Point(x + o.x, y + o.y); }
+    Point operator-(const Point &o) const { return Point(x - o.x, y - o.y); }
+    Point operator*(double k) const { return Point(x * k, y * k); }
+    double dot(const Point &o) const { return x * o.x + y * o.y; }
+    double cross(const Point &o) const { return x * o.y - y * o.x; }
+    double len2() const { return x * x + y * y; }
+    double len() const { return sqrt(len2()); }
+};
+$0]]></content>
+    <tabTrigger>point</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>2D point with vector operations</description>
+</snippet>

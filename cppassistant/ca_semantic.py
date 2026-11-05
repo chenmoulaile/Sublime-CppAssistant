@@ -35,7 +35,7 @@ import time
 try:
     from ctypes import wintypes
 except Exception:  # pragma: no cover - non-Windows
-    wintypes = None
+    wintypes = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +1026,8 @@ class SemanticEngine(object):
                         continue
                     sev = ("error" if severity >= CXDiagnostic_Error
                            else "warning")
+                    code_match = re.search(r"\[-W([\w-]+)\]", message)
+                    code = code_match.group(1) if code_match else "libclang"
                     en, zh = _translate(message)
                     out.append({
                         "line": info["line"] or 1,
@@ -1034,7 +1036,7 @@ class SemanticEngine(object):
                         "en": en,
                         "zh": zh,
                         "msg": en,
-                        "code": "libclang",
+                        "code": code,
                         "offset": info["offset"],
                         "file": info["file"],
                         "notes": [],
@@ -1059,6 +1061,7 @@ class SemanticEngine(object):
                 "ctx_zh": "",
                 "notes": d.get("notes") or [],
                 "tier": "compiler",
+                "code": d.get("code") or "",
             }
             out.append(item)
         return out

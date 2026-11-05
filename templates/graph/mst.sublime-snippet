@@ -1,0 +1,22 @@
+<snippet>
+    <content><![CDATA[struct Edge { int u, v, w; };
+long long kruskal(int n, vector<Edge> edges) {
+    sort(edges.begin(), edges.end(),
+         [](const Edge &a, const Edge &b) { return a.w < b.w; });
+    vector<int> p(n + 1);
+    for (int i = 1; i <= n; ++i) p[i] = i;
+    function<int(int)> find = [&](int x) {
+        return p[x] == x ? x : p[x] = find(p[x]);
+    };
+    long long ans = 0;
+    for (const Edge &e : edges) {
+        int a = find(e.u), b = find(e.v);
+        if (a != b) { p[a] = b; ans += e.w; }
+    }
+    return ans;
+}
+$0]]></content>
+    <tabTrigger>mst</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Kruskal minimum spanning tree</description>
+</snippet>

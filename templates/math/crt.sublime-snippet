@@ -1,0 +1,22 @@
+<snippet>
+    <content><![CDATA[pair<long long,long long> crt(const vector<long long> &a,
+                             const vector<long long> &m) {
+    long long r = 0, M = 1;
+    for (int i = 0; i < (int)a.size(); ++i) {
+        long long mi = m[i], ai = a[i] % mi;
+        long long g = __gcd(M, mi);
+        if ((ai - r) % g) return {-1, -1};
+        long long p = M / g, q = mi / g;
+        long long inv = mod_pow(p % q, q - 2);
+        long long t = ((ai - r) / g % q + q) % q * inv % q;
+        r += t * M;
+        M *= q;
+        r = (r % M + M) % M;
+    }
+    return {r, M};
+}
+$0]]></content>
+    <tabTrigger>crt</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Chinese remainder theorem</description>
+</snippet>

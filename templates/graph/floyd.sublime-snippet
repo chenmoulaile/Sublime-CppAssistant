@@ -1,0 +1,13 @@
+<snippet>
+    <content><![CDATA[void floyd(vector<vector<long long>> &d) {
+    int n = d.size();
+    for (int k = 0; k < n; ++k)
+        for (int i = 0; i < n; ++i) if (d[i][k] < (1LL << 60))
+            for (int j = 0; j < n; ++j)
+                d[i][j] = min(d[i][j], d[i][k] + d[k][j]);
+}
+$0]]></content>
+    <tabTrigger>floyd</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Floyd-Warshall all-pairs shortest paths</description>
+</snippet>

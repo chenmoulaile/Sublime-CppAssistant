@@ -1,0 +1,20 @@
+<snippet>
+    <content><![CDATA[struct Fenwick {
+    int n;
+    vector<long long> t;
+    Fenwick(int n_) : n(n_), t(n_ + 1, 0) {}
+    void add(int i, long long v) {
+        for (++i; i <= n; i += i & -i) t[i] += v;
+    }
+    long long sum(int i) {
+        long long s = 0;
+        for (++i; i > 0; i -= i & -i) s += t[i];
+        return s;
+    }
+    long long range_sum(int l, int r) { return sum(r) - sum(l - 1); }
+};
+$0]]></content>
+    <tabTrigger>fenwick</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Fenwick tree: point add / prefix sum</description>
+</snippet>

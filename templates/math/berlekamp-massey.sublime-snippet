@@ -1,0 +1,34 @@
+<snippet>
+    <content><![CDATA[vector<long long> berlekamp_massey(const vector<long long> &s, int mod) {
+    vector<long long> C(1, 1), B(1, 1);
+    int L = 0, m = 1;
+    long long b = 1;
+    for (int n = 0; n < (int)s.size(); ++n) {
+        long long d = s[n];
+        for (int i = 1; i <= L; ++i)
+            d = (d + C[i] * s[n - i]) % mod;
+        if (d == 0) { ++m; continue; }
+        vector<long long> T = C;
+        long long coef = d * mod_pow(b, mod - 2) % mod;
+        if ((int)C.size() < (int)B.size() + m)
+            C.resize(B.size() + m, 0);
+        for (int j = 0; j < (int)B.size(); ++j)
+            C[j + m] = (C[j + m] - coef * B[j]) % mod;
+        if (2 * L <= n) {
+            L = n + 1 - L;
+            B = T;
+            b = d;
+            m = 1;
+        } else {
+            ++m;
+        }
+    }
+    C.resize(L + 1);
+    for (long long &x : C) if (x < 0) x += mod;
+    return C;
+}
+$0]]></content>
+    <tabTrigger>berlekamp-massey</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Berlekamp-Massey linear recurrence</description>
+</snippet>

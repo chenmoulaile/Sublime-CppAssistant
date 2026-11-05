@@ -1,0 +1,19 @@
+<snippet>
+    <content><![CDATA[long long C(long long n, long long k, long long p) {
+    if (k < 0 || k > n) return 0;
+    long long a = 1, b = 1;
+    for (long long i = 1; i <= k; ++i) {
+        a = a * ((n - i + 1) % p) % p;
+        b = b * i % p;
+    }
+    return a * mod_pow(b, p - 2) % p;
+}
+long long lucas(long long n, long long k, long long p) {
+    if (k == 0) return 1;
+    return C(n % p, k % p, p) * lucas(n / p, k / p, p) % p;
+}
+$0]]></content>
+    <tabTrigger>lucas</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Lucas theorem for nCr mod prime</description>
+</snippet>

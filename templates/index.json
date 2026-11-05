@@ -6,7 +6,7 @@
       "description": "Essential competitive programming templates (us, inc, fastio, mainf, solvef, pii)",
       "version": "1.0.0",
       "author": "CppAssistant Team",
-      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/basic.zip",
+      "bundled": true,
       "tags": ["basic", "essential", "beginner"],
       "snippets": [
         "us",
@@ -23,7 +23,7 @@
       "description": "Geometry templates: Point, Line, Circle, Polygon, Convex Hull, Intersections",
       "version": "1.0.0",
       "author": "CppAssistant Team",
-      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/geometry.zip",
+      "bundled": true,
       "tags": ["geometry", "computational-geometry", "advanced"],
       "snippets": [
         "point",
@@ -40,7 +40,7 @@
       "description": "Graph templates: BFS, DFS, Dijkstra, Floyd-Warshall, SCC, MST, Max Flow",
       "version": "1.0.0",
       "author": "CppAssistant Team",
-      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/graph.zip",
+      "bundled": true,
       "tags": ["graph", "algorithms", "advanced"],
       "snippets": [
         "bfs",
@@ -59,7 +59,7 @@
       "description": "Data structure templates: Segment Tree, Fenwick Tree, Sparse Table, DSU, LCT",
       "version": "1.0.0",
       "author": "CppAssistant Team",
-      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/ds.zip",
+      "bundled": true,
       "tags": ["data-structures", "segment-tree", "fenwick", "dsu"],
       "snippets": [
         "segtree",
@@ -76,7 +76,7 @@
       "description": "String templates: KMP, Z-function, Manacher, Suffix Array, Aho-Corasick",
       "version": "1.0.0",
       "author": "CppAssistant Team",
-      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/strings.zip",
+      "bundled": true,
       "tags": ["strings", "string-algorithms", "advanced"],
       "snippets": [
         "kmp",
@@ -93,7 +93,7 @@
       "description": "Math templates: ModInt, FFT/NTT, CRT, Lucas, Berlekamp-Massey, Polynomial",
       "version": "1.0.0",
       "author": "CppAssistant Team",
-      "url": "https://github.com/chenmoulaile/Sublime-CppAssistant/raw/main/templates/math.zip",
+      "bundled": true,
       "tags": ["math", "number-theory", "combinatorics", "advanced"],
       "snippets": [
         "modint",

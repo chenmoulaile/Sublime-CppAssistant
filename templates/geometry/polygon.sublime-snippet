@@ -1,0 +1,12 @@
+<snippet>
+    <content><![CDATA[double polygon_area(const vector<Point> &p) {
+    double s = 0;
+    for (int i = 0; i < (int)p.size(); ++i)
+        s += p[i].cross(p[(i + 1) % p.size()]);
+    return s / 2.0;
+}
+$0]]></content>
+    <tabTrigger>polygon</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Polygon signed area</description>
+</snippet>

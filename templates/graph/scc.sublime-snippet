@@ -1,0 +1,24 @@
+<snippet>
+    <content><![CDATA[vector<int> dfn, low, stk, in_stk, scc;
+int timer = 0, scc_cnt = 0;
+void tarjan(int u, const vector<vector<int>> &g) {
+    dfn[u] = low[u] = ++timer;
+    stk.push_back(u); in_stk[u] = 1;
+    for (int v : g[u]) {
+        if (!dfn[v]) { tarjan(v, g); low[u] = min(low[u], low[v]); }
+        else if (in_stk[v]) low[u] = min(low[u], dfn[v]);
+    }
+    if (low[u] == dfn[u]) {
+        ++scc_cnt;
+        while (true) {
+            int v = stk.back(); stk.pop_back();
+            in_stk[v] = 0; scc[v] = scc_cnt;
+            if (v == u) break;
+        }
+    }
+}
+$0]]></content>
+    <tabTrigger>scc</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Tarjan strongly connected components</description>
+</snippet>

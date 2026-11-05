@@ -41,6 +41,12 @@
 			"operand": "source.c++, source.c" }
 		]
 	},
+	{ "keys": ["ctrl+shift+c"], "command": "ca_copy_diagnostic",
+		"context": [
+			{ "key": "selector", "operator": "equal",
+			"operand": "source.c++, source.c" }
+		]
+	},
 
 
 	// Optional: make Enter always insert a newline even while the completion

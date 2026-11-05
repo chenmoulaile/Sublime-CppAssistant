@@ -306,6 +306,69 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual(hits[0]["line"], 1)
 
 
+class ArrayBoundsTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = ca_fast.FastEngine()
+
+    def _bounds(self, src):
+        return [d for d in self.engine.diagnostics(src)
+                if d["code"] == "array-bounds"]
+
+    def test_declaration_is_not_an_access(self):
+        self.assertEqual(self._bounds(u"int a[10];\n"), [])
+
+    def test_in_bounds_and_out_of_bounds(self):
+        self.assertEqual(
+            self._bounds(u"int a[10];\nint main() { a[9]; }\n"), [])
+        diags = self._bounds(u"int a[10];\nint main() { a[10]; }\n")
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0]["line"], 2)
+
+    def test_negative_suffix_hex_and_octal_indices(self):
+        self.assertEqual(
+            len(self._bounds(u"int a[10];\nint main() { a[-1]; }\n")), 1)
+        self.assertEqual(
+            len(self._bounds(u"int a[10];\nint main() { a[10u]; }\n")), 1)
+        self.assertEqual(
+            len(self._bounds(u"int a[10];\nint main() { a[0xA]; }\n")), 1)
+        # C-style octal: 010 == 8 (valid), 077 == 63 (out of bounds).
+        self.assertEqual(
+            self._bounds(u"int a[10];\nint main() { a[010]; }\n"), [])
+        self.assertEqual(
+            len(self._bounds(u"int a[10];\nint main() { a[077]; }\n")), 1)
+
+    def test_multidimensional_chain(self):
+        self.assertEqual(
+            len(self._bounds(
+                u"int a[2][3];\nint main() { a[2][0]; }\n")), 1)
+        self.assertEqual(
+            len(self._bounds(
+                u"int a[2][3];\nint main() { a[0][3]; }\n")), 1)
+        self.assertEqual(
+            self._bounds(u"int a[2][3];\nint main() { a[1][2]; }\n"), [])
+        self.assertEqual(
+            len(self._bounds(
+                u"int a[2][3];\nint main() { a[2][3]; }\n")), 2)
+
+    def test_shadowing_non_array_stops_the_search(self):
+        src = (u"int a[10];\n"
+               u"void f() { int *a = nullptr; a[10]; }\n")
+        self.assertEqual(self._bounds(src), [])
+
+    def test_inner_array_shadows_outer_size(self):
+        src = (u"void f() { int a[2]; a[1]; }\n"
+               u"void g() { int a[10]; a[9]; }\n")
+        self.assertEqual(self._bounds(src), [])
+        src = u"void f() { int a[2]; a[2]; }\n"
+        self.assertEqual(len(self._bounds(src)), 1)
+
+    def test_member_array_is_not_resolved_through_scope(self):
+        src = (u"int a[10];\n"
+               u"struct S { int a[2]; };\n"
+               u"void f() { S s; s.a[10]; }\n")
+        self.assertEqual(self._bounds(src), [])
+
+
 class DiagnosticTests(unittest.TestCase):
     def setUp(self):
         self.engine = ca_fast.FastEngine()

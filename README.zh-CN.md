@@ -19,13 +19,13 @@ CppAssistant 为竞赛编程量身定制，提供赛场实用的功能：
 | **`bits/stdc++.h` PCH 加速** | 热诊断 ~200ms，成员补全 ~10-20ms |
 | **数组越界静态检查** | 捕获 `int a[10]; a[10]=1` 等常见 RE |
 | **模板参数推导补全** | `vector<int> v; v.` → 显示 `push_back(int)` 而非 `push_back(value_type)` |
-| **竞赛专用 STL 数据库** | `__int128`、`__gnu_pbds` (tree/hash)、快速 I/O 宏、ModInt |
+| **竞赛专用 STL 数据库** | `__int128`、GNU `__gnu_pbds`、快速 I/O 宏 |
 | **诊断一键复制** | `Ctrl+Shift+C` → 粘贴报错到群里/搜方案 |
 | **Jiangly 码风格式化** | 4 空格、K&R、100 列 — 符合竞赛标准 |
-| **外部模板包** | 几何、图论、数据结构、字符串、数论 — 按需安装 |
+| **外部模板包** | 几何、图论、数据结构、字符串、数学 — 随包发布，按需安装启用 |
 | **Snippet Tab Stop 导航** | 模板中 `$0` `$1` `${1:default}` 跳转 |
 | **中英双语诊断** | 编译报错看得懂，不卡英语 |
-| **菜单自动切换中文** | `display_language: "zh"` → 菜单自动变中文 |
+| **菜单本地化** | `CppAssistant: Toggle Menu Language` — 翻译 CppAssistant 自己的菜单 |
 
 ---
 
@@ -37,7 +37,7 @@ CppAssistant 为竞赛编程量身定制，提供赛场实用的功能：
 - **libclang 语义引擎** — 可选，PCH 加速，热缓存语义补全
 - **模板参数推导** — `vector<int> v; v.push_back(` → 显示 `push_back(int)`
 - **智能头文件插入** — 自动补 `#include`，识别 `bits/stdc++.h` 和已包含头文件
-- **用户片段 + 外部模板包** — 几何、图论、数据结构等按需安装
+- **用户片段 + 随包模板包** — 几何、图论、数据结构等按需安装
 - **Snippet Tab Stop 导航** — `$0` `$1` `${1:default}` 跳转
 
 ### 🔍 诊断
@@ -62,7 +62,7 @@ CppAssistant 为竞赛编程量身定制，提供赛场实用的功能：
 
 ### 🌐 本地化
 - **英文 / 中文 / 中英双语** — 诊断与补全详情
-- **菜单自动切换语言** — `display_language: "zh"` → 菜单自动变中文
+- **菜单本地化** — `CppAssistant: Toggle Menu Language` 或切换诊断语言为中文；只翻译 CppAssistant 自己的菜单项
 - **手动切换** — `CppAssistant: Toggle Menu Language`
 
 ---
@@ -189,7 +189,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `enable_pch` | `true` | 构建 `bits/stdc++.h` PCH 缓存 |
 | `show_phantoms` | `true` | 显示内联诊断幽灵 |
 | `display_language` | `"en"` | `en` / `zh` / `both` |
-| `menu_language` | `"en"` | `en` 或 `zh`；随 `display_language` 自动同步 |
+| `menu_language` | `"en"` | `en` 或 `zh`；切换诊断语言时自动同步；只翻译 CppAssistant 自己的菜单项 |
 | `cxx_standard` | `"c++14"` | 检查和 clangd 用的 C++ 标准 |
 | `compiler_path` | `""` | 编译器路径；空 = PATH 搜索 |
 | `compiler_extra_args` | `[]` | 额外编译参数 |

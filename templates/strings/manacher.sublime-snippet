@@ -1,0 +1,21 @@
+<snippet>
+    <content><![CDATA[string manacher(const string &s) {
+    string t = "^#";
+    for (char c : s) { t += c; t += '#'; }
+    t += '$';
+    int n = t.size(), c = 0, r = 0, best = 0, center = 0;
+    vector<int> p(n);
+    for (int i = 1; i < n - 1; ++i) {
+        p[i] = (r > i) ? min(r - i, p[2 * c - i]) : 1;
+        while (t[i + p[i]] == t[i - p[i]]) ++p[i];
+        if (i + p[i] > r) { c = i; r = i + p[i]; }
+        if (p[i] > best) { best = p[i]; center = i; }
+    }
+    int start = (center - best) / 2;
+    return s.substr(start, best - 1);
+}
+$0]]></content>
+    <tabTrigger>manacher</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Manacher longest palindrome</description>
+</snippet>

@@ -19,13 +19,13 @@ CppAssistant is tailored for competitive programming with features that matter i
 | **`bits/stdc++.h` PCH acceleration** | Warm diagnostics in ~200ms, member completion in ~10-20ms |
 | **Array bounds checking** | Catches `a[10]` on `int a[10]` instantly |
 | **Template parameter deduction** | `vector<int> v; v.` → shows `push_back(int)` not `push_back(value_type)` |
-| **CP-specific STL database** | `__int128`, `__gnu_pbds`, fast I/O macros, `ModInt` |
+| **CP-specific STL database** | `__int128`, GNU `__gnu_pbds`, fast I/O macros |
 | **Diagnostic one-click copy** | `Ctrl+Shift+C` → paste error to group/search |
 | **Jiangly-style formatting** | 4-space, K&R, 100-col — matches contest standard |
-| **External template packs** | Geometry, Graph, DS, Strings, Math — install on demand |
+| **External template packs** | Geometry, Graph, DS, Strings, Math — bundled, install on demand |
 | **Snippet tab stops** | `$0`, `$1`, `${1:default}` navigation in templates |
 | **Bilingual diagnostics** | Chinese/English/both — understand errors instantly |
-| **Auto-switch menu language** | Set `display_language: "zh"` → menu auto-translates |
+| **Menu localization** | `CppAssistant: Toggle Menu Language` — translates CppAssistant's own menu entries |
 
 ---
 
@@ -37,7 +37,7 @@ CppAssistant is tailored for competitive programming with features that matter i
 - **libclang semantic engine** — optional, PCH-accelerated, warm-cache completion
 - **Template parameter deduction** — `vector<int> v; v.push_back(` → shows `push_back(int)`
 - **Smart `#include` insertion** — respects `bits/stdc++.h`, skips existing headers
-- **User snippets + external template packs** — install Geometry, Graph, DS, etc. on demand
+- **User snippets + bundled template packs** — install Geometry, Graph, DS, etc. on demand
 - **Snippet tab stops** — `$0`, `$1`, `${1:default}` navigation
 
 ### 🔍 Diagnostics
@@ -62,7 +62,7 @@ CppAssistant is tailored for competitive programming with features that matter i
 
 ### 🌐 Localization
 - **English / Chinese / Bilingual** — diagnostics and completion details
-- **Auto-switch menu language** — `display_language: "zh"` → menu auto-translates
+- **Menu localization** — `CppAssistant: Toggle Menu Language` or switching diagnostics to Chinese; translates CppAssistant's own menu entries only
 - **Manual toggle** — `CppAssistant: Toggle Menu Language`
 
 ---
@@ -189,7 +189,7 @@ Open via **Preferences: CppAssistant Settings** or edit `Packages/User/CppAssist
 | `enable_pch` | `true` | Build `bits/stdc++.h` PCH cache |
 | `show_phantoms` | `true` | Show inline diagnostic phantoms |
 | `display_language` | `"en"` | `en`, `zh`, `both` |
-| `menu_language` | `"en"` | `en` or `zh`; auto-synced with `display_language` |
+| `menu_language` | `"en"` | `en` or `zh`; auto-synced when you switch diagnostic language; only CppAssistant's own menu entries are translated |
 | `cxx_standard` | `"c++14"` | Standard for checks and clangd |
 | `compiler_path` | `""` | Compiler executable; empty = PATH |
 | `compiler_extra_args` | `[]` | Extra compiler args |

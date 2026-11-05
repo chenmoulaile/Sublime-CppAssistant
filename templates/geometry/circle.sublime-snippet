@@ -1,0 +1,14 @@
+<snippet>
+    <content><![CDATA[struct Circle {
+    Point c;
+    double r = 0;
+    Circle() {}
+    Circle(Point c_, double r_) : c(c_), r(r_) {}
+    double area() const { return PI * r * r; }
+    bool contains(const Point &p) const { return (p - c).len() <= r + eps; }
+};
+$0]]></content>
+    <tabTrigger>circle</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Circle area/contains/intersection helpers</description>
+</snippet>

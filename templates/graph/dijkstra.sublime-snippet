@@ -1,0 +1,23 @@
+<snippet>
+    <content><![CDATA[vector<long long> dijkstra(int s, const vector<vector<pair<int,int>>> &g) {
+    const long long INF = (1LL << 60);
+    vector<long long> dist(g.size(), INF);
+    priority_queue<pair<long long,int>, vector<pair<long long,int>>,
+                   greater<pair<long long,int>>> pq;
+    dist[s] = 0;
+    pq.push({0, s});
+    while (!pq.empty()) {
+        auto [d, u] = pq.top(); pq.pop();
+        if (d != dist[u]) continue;
+        for (auto [v, w] : g[u]) if (d + w < dist[v]) {
+            dist[v] = d + w;
+            pq.push({dist[v], v});
+        }
+    }
+    return dist;
+}
+$0]]></content>
+    <tabTrigger>dijkstra</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Dijkstra shortest paths</description>
+</snippet>

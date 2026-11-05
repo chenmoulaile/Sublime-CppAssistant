@@ -1,0 +1,25 @@
+<snippet>
+    <content><![CDATA[vector<Point> convex_hull(vector<Point> p) {
+    sort(p.begin(), p.end(), [](const Point &a, const Point &b) {
+        return a.x != b.x ? a.x < b.x : a.y < b.y;
+    });
+    if (p.size() <= 1) return p;
+    vector<Point> h;
+    for (int it = 0; it < 2; ++it) {
+        int start = h.size();
+        for (const Point &q : p) {
+            while ((int)h.size() >= start + 2 &&
+                   (h.back() - h[h.size() - 2]).cross(q - h.back()) <= eps)
+                h.pop_back();
+            h.push_back(q);
+        }
+        h.pop_back();
+        reverse(p.begin(), p.end());
+    }
+    return h;
+}
+$0]]></content>
+    <tabTrigger>convexhull</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Andrew convex hull (counter-clockwise)</description>
+</snippet>

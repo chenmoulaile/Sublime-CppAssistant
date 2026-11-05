@@ -103,11 +103,12 @@ class Symbol(object):
 
     __slots__ = ("name", "kind", "type", "signature", "offset", "name_offset",
                  "line", "col", "scope", "is_definition", "params",
-                 "target_scope", "end_offset", "array_size")
+                 "target_scope", "end_offset", "array_size", "array_sizes")
 
     def __init__(self, name, kind, type_text, signature, offset, name_offset,
                  line, col, scope, is_definition=False, params=None,
-                 target_scope=None, end_offset=None, array_size=None):
+                 target_scope=None, end_offset=None, array_size=None,
+                 array_sizes=None):
         self.name = name
         self.kind = kind
         self.type = type_text
@@ -122,6 +123,7 @@ class Symbol(object):
         self.target_scope = target_scope
         self.end_offset = end_offset
         self.array_size = array_size
+        self.array_sizes = array_sizes
 
     def __repr__(self):
         return "Symbol(%r, %r, %r)" % (self.name, self.kind, self.type)
@@ -665,21 +667,100 @@ def _bracket_diags(text, tokens):
     return diags
 
 
-def _array_bounds_diags(text, tokens, symbols_by_name, match_dict):
+_ARRAY_INDEX_RE = re.compile(
+    r"^[+-]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+)(?:[uUlL]+)?$")
+
+
+def _parse_int_literal(expr):
+    """Parse a C++ integer literal (decimal/hex/binary/octal + suffix).
+
+    ``int(text, 0)`` rejects C-style octal literals such as ``010``, which
+    are valid C++ and commonly used in competitive programming.  Returns
+    ``None`` for anything that is not a plain integer constant.
+    """
+    s = str(expr or "").strip()
+    if not s:
+        return None
+    sign = 1
+    if s[0] == "+":
+        s = s[1:]
+    elif s[0] == "-":
+        sign = -1
+        s = s[1:]
+    s = s.rstrip(u"uUlL")
+    if not s:
+        return None
+    try:
+        low = s[:2].lower()
+        if low == "0x":
+            value = int(s[2:], 16)
+        elif low == "0b":
+            value = int(s[2:], 2)
+        elif len(s) > 1 and s[0] == "0":
+            value = int(s[1:], 8)
+        else:
+            value = int(s, 10)
+    except ValueError:
+        return None
+    return sign * value
+
+
+
+def _array_symbol_at(parser, token_idx, name, use_offset):
+    """Resolve ``name`` to the nearest visible array declaration.
+
+    Walks the lexical scope chain first so shadowed arrays use the right
+    size.  A visible non-array declaration stops the search: an inner
+    ``int *a`` must not be checked against an outer ``int a[10]``.
+    """
+    scope = None
+    if token_idx < len(parser.token_scope):
+        scope = parser.token_scope[token_idx]
+    while scope is not None:
+        visible = [sym for sym in scope.by_name.get(name, ())
+                   if sym.name_offset < use_offset]
+        if visible:
+            latest = visible[-1]
+            for sym in visible[1:]:
+                if sym.name_offset > latest.name_offset:
+                    latest = sym
+            if latest.array_sizes or (
+                    latest.array_size is not None and latest.array_size >= 0):
+                return latest
+            return None
+        scope = scope.parent
+    visible = []
+    for sym in parser.by_name.get(name, ()):
+        if sym.name_offset >= use_offset:
+            continue
+        sc = sym.scope
+        if sc is None or sc.kind == "type":
+            continue
+        if not (sc.start <= use_offset <= sc.end):
+            continue
+        visible.append(sym)
+    if not visible:
+        return None
+    latest = visible[-1]
+    for sym in visible[1:]:
+        if sym.name_offset > latest.name_offset:
+            latest = sym
+    if latest.array_sizes or (
+            latest.array_size is not None and latest.array_size >= 0):
+        return latest
+    return None
+
+
+def _array_bounds_diags(text, tokens, parser):
     """Check for constant-index out-of-bounds array access."""
     diags = []
-    # Build a map of variable names to their Symbol objects (for array size)
-    # We only care about variables with array_size set
-    array_vars = {}
-    for sym_list in symbols_by_name.values():
-        for sym in sym_list:
-            if sym.array_size is not None and sym.array_size >= 0:
-                array_vars[sym.name] = sym.array_size
-
-    if not array_vars:
-        return diags
+    decl_brackets = getattr(parser, "array_decl_brackets", None) or ()
+    match_dict = parser.match
+    handled = set()
 
     for idx, tok in enumerate(tokens):
+        if idx in handled or idx in decl_brackets:
+            continue
         if tok.kind != "op":
             continue
         s = text[tok.start:tok.end]
@@ -691,32 +772,58 @@ def _array_bounds_diags(text, tokens, symbols_by_name, match_dict):
         prev_tok = tokens[idx - 1]
         if prev_tok.kind != "id":
             continue
+        # ``obj.a[10]`` is a member access, not the standalone array ``a``.
+        # Resolving it through the lexical scope can pick an unrelated
+        # global array and produce a false positive, so leave member arrays
+        # to the semantic engines.
+        if idx >= 2:
+            before = text[tokens[idx - 2].start:tokens[idx - 2].end]
+            if before in (".", "->"):
+                continue
         array_name = text[prev_tok.start:prev_tok.end]
-        if array_name not in array_vars:
+        sym = _array_symbol_at(parser, idx, array_name, tok.start)
+        if sym is None:
             continue
-        array_size = array_vars[array_name]
+        sizes = getattr(sym, "array_sizes", None)
+        if not sizes:
+            if sym.array_size is None or sym.array_size < 0:
+                continue
+            sizes = [sym.array_size]
 
-        # Find the matching ] and extract the index expression
-        if idx not in match_dict:
-            continue
-        close_bracket = match_dict[idx]
-        if close_bracket <= idx + 1:
-            continue
-        # Extract index expression
-        index_tokens = [text[tokens[k].start:tokens[k].end] for k in range(idx + 1, close_bracket)]
-        index_expr = "".join(index_tokens).strip()
-        # Try to evaluate as integer constant
-        try:
-            index_val = int(index_expr)
-        except ValueError:
-            continue  # Not a constant index
-
-        if index_val < 0 or index_val >= array_size:
-            _diag(diags, tok.start, tok.line, tok.col, "error",
-                  u"Array subscript out of bounds: index %d exceeds size %d"
-                  % (index_val, array_size),
-                  u"数组下标越界：索引 %d 超出大小 %d" % (index_val, array_size),
-                  "array-bounds")
+        # Walk the whole ``a[i][j]`` chain so every known dimension is
+        # checked, not just the first bracket.
+        open_idx = idx
+        dim = 0
+        while dim < len(sizes) and open_idx in match_dict:
+            close_idx = match_dict[open_idx]
+            if close_idx <= open_idx + 1:
+                break
+            handled.add(open_idx)
+            bracket_tok = tokens[open_idx]
+            size = sizes[dim]
+            index_expr = "".join(
+                text[tokens[k].start:tokens[k].end]
+                for k in range(open_idx + 1, close_idx)).strip()
+            if size is not None and size >= 0 and \
+                    _ARRAY_INDEX_RE.match(index_expr):
+                index_val = _parse_int_literal(index_expr)
+                if index_val is not None and \
+                        (index_val < 0 or index_val >= size):
+                    _diag(
+                        diags, bracket_tok.start, bracket_tok.line,
+                        bracket_tok.col, "error",
+                        u"Array subscript out of bounds: index %d exceeds "
+                        u"size %d" % (index_val, size),
+                        u"数组下标越界：索引 %d 超出大小 %d"
+                        % (index_val, size),
+                        "array-bounds")
+            next_idx = close_idx + 1
+            if next_idx < len(tokens) and \
+                    text[tokens[next_idx].start:tokens[next_idx].end] == "[":
+                open_idx = next_idx
+                dim += 1
+            else:
+                break
     return diags
 
 
@@ -777,6 +884,7 @@ class _Parser(object):
         self.n = len(tokens)
         self.line_starts = line_starts
         self.match = {}
+        self.array_decl_brackets = set()
         self.token_scope = [None] * self.n
         self.scopes = []
         self.global_scope = Scope("global", "", 0, len(text), None)
@@ -886,12 +994,13 @@ class _Parser(object):
 
     def _add_symbol(self, scope, name, kind, type_text, signature, offset,
                     name_offset, line, col, is_definition=False, params=None,
-                    target_scope=None, end_offset=None, array_size=None):
+                    target_scope=None, end_offset=None, array_size=None,
+                    array_sizes=None):
         if not name:
             return None
         sym = Symbol(name, kind, type_text, signature, offset, name_offset,
                      line, col, scope, is_definition, params, target_scope,
-                     end_offset, array_size)
+                     end_offset, array_size, array_sizes)
         scope.add(sym)
         self.symbols.append(sym)
         self.by_name.setdefault(name, []).append(sym)
@@ -1649,28 +1758,37 @@ class _Parser(object):
             type_text = " ".join(type_parts).strip()
             tok = self.tokens[name_idx]
 
-            # Detect array size: check for [size] after the name
+            # Detect array dimensions: check for [size] pairs after the name.
             array_size = None
+            array_sizes = None
             if name_idx + 1 < cut and self._text(name_idx + 1) == "[":
-                # Find matching ]
+                sizes = []
                 bracket_pos = name_idx + 1
-                if bracket_pos in self.match:
-                    close_bracket = self.match[bracket_pos]
-                    if close_bracket < cut:
-                        # Extract size expression between [ and ]
-                        size_tokens = [self._text(k) for k in range(bracket_pos + 1, close_bracket)]
-                        size_expr = "".join(size_tokens).strip()
-                        # Try to evaluate as integer constant
-                        try:
-                            array_size = int(size_expr)
-                        except ValueError:
-                            pass  # Not a constant size
+                while bracket_pos < cut and self._text(bracket_pos) == "[":
+                    close_bracket = self.match.get(bracket_pos)
+                    if close_bracket is None or close_bracket >= cut:
+                        break
+                    size_expr = "".join(
+                        self._text(k)
+                        for k in range(bracket_pos + 1, close_bracket)).strip()
+                    size_val = _parse_int_literal(size_expr)
+                    if size_val is not None and size_val < 0:
+                        size_val = None
+                    sizes.append(size_val)
+                    # Remember every declarator bracket so the bounds checker
+                    # does not treat ``a[10]`` in ``int a[10];`` as an access.
+                    self.array_decl_brackets.add(bracket_pos)
+                    bracket_pos = close_bracket + 1
+                if sizes:
+                    array_sizes = sizes
+                    array_size = sizes[0]
 
             self._add_symbol(
                 scope, name,
                 "member variable" if scope.kind == "type" else "variable",
                 type_text, (type_text + " " + name).strip(), tok.start,
-                tok.start, tok.line, tok.col, False, array_size=array_size)
+                tok.start, tok.line, tok.col, False, array_size=array_size,
+                array_sizes=array_sizes)
 
     def _parse_control(self, i, scope):
         if i + 1 >= self.n or self._text(i + 1) != "(":
@@ -2008,7 +2126,7 @@ class FastEngine(object):
         a.comment_ranges = comments
         a.lex_diags = lex_diags
         # Array bounds checking
-        array_bounds = _array_bounds_diags(text, tokens, parser.by_name, parser.match)
+        array_bounds = _array_bounds_diags(text, tokens, parser)
         a.diags = sorted(lex_diags + bracket + parser.diags + array_bounds,
                          key=lambda d: (d.offset, d.line, d.col))
         a.scopes = parser.scopes
@@ -2100,7 +2218,7 @@ class FastEngine(object):
         a.comment_ranges = comments
         a.lex_diags = lex_diags
         # Array bounds checking
-        array_bounds = _array_bounds_diags(text, tokens, parser.by_name, parser.match)
+        array_bounds = _array_bounds_diags(text, tokens, parser)
         a.diags = sorted(lex_diags + bracket + parser.diags + array_bounds,
                          key=lambda d: (d.offset, d.line, d.col))
         a.scopes = parser.scopes

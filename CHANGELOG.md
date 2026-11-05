@@ -3,6 +3,66 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.1.1
+
+Completes and fixes the OIer-focused 2.1.0 update. The 2.1.0 tag pointed at
+a partially implemented release; this patch makes the new features work
+end-to-end and closes the defects found in a full code audit.
+
+### Features
+
+- **`__gnu_pbds` offline database**: `__gnu_pbds::tree`, `gp_hash_table` and
+  `cc_hash_table` now appear in completion and in member completion, with
+  `order_of_key` / `find_by_order` details for ordered trees and concrete
+  `insert` / `emplace` / `find` signatures derived from the key type.
+  `__int128`, `__int128_t` and `__uint128_t` are recognised as known types.
+- **Bundled template packs**: all six packs (Basic, Geometry, Graph, DS,
+  Strings, Math) ship inside the package and install on demand from
+  `Preferences → CppAssistant → Install/Manage Templates`. Uninstalled packs
+  no longer appear in completion; a `.disabled` marker removes them again.
+- **Snippet management**: create snippets from a selection, import them from
+  JSON, and open the snippet folder cross-platform. Overwriting an existing
+  snippet asks for confirmation.
+- **Diagnostic filtering**: `diagnostic_filters` is normalised
+  (`-Wunused-variable` / `Wno-unused-variable` / `unused-variable` /
+  `Wunused-variable`) and applied to the compiler command, the clangd
+  fallback flags and the libclang arguments. Warning codes are preserved
+  before messages are translated, so the filter matches the right diagnostic.
+- **Menu localization**: `CppAssistant: Toggle Menu Language` (or switching
+  the diagnostic language to Chinese) translates CppAssistant's own menu
+  entries immediately by generating a tiny
+  `Packages/CppAssistantLocalization` overlay. It never touches Sublime's
+  built-in menus or the user's menu files; switching back to English clears
+  the overlay.
+
+### Fixes
+
+- **Array bounds checking** no longer flags `int a[10];` as an access,
+  follows lexical scopes (shadowed arrays and pointers are handled
+  correctly), checks multi-dimensional chains such as `a[i][j]`, and parses
+  C-style hex/binary/octal/suffixed integer constants. Member access such as
+  `obj.a[10]` is not resolved against an unrelated global array.
+- **Template deduction** produces concrete details such as
+  `push_back(int)`, `at(const string&)`, `find(const long long&)` and
+  `insert({const string&, int})`, including nested templates and PBDS maps.
+- **Diagnostic copy** (command `ca_copy_diagnostic`, default `Ctrl+Shift+C`)
+  reads the structured diagnostics instead of the rendered panel text,
+  prefers errors on the current line over warnings, and keeps the compiler
+  warning code when available.
+- **Template packs** download path gained zip-slip protection, invalid pack
+  ids are rejected, bundled packs fail with a clear message, and snippet
+  files are validated as XML before being written. Packaged snippets are no
+  longer picked up before their pack is installed.
+- **Menu localization** no longer writes an ignored file under
+  `Packages/User/CppAssistant`, no longer duplicates menu entries, and works
+  for directory and `.sublime-package` installs. Entries without ids are not
+  overridden.
+- **Diagnostics** preserve `-W...` codes before translation, so
+  `diagnostic_filters` works for compiler, clangd and libclang paths.
+- **CI** runs on Ubuntu 24.04 with clang-18 for the libclang tests, a
+  meaningful mypy invocation (not `|| true`), a Python 3.14 unit-test job,
+  and packages the repository docs and `LICENSE`.
+
 ## v2.0.0
 
 Phase two: an optional libclang semantic engine on top of the zero-dependency

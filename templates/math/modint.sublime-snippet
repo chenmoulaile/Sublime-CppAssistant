@@ -1,0 +1,20 @@
+<snippet>
+    <content><![CDATA[template <int MOD>
+struct ModInt {
+    int v;
+    ModInt(long long x = 0) { v = int(x % MOD); if (v < 0) v += MOD; }
+    ModInt operator+(const ModInt &o) const { return ModInt(v + o.v); }
+    ModInt operator-(const ModInt &o) const { return ModInt(v - o.v); }
+    ModInt operator*(const ModInt &o) const { return ModInt(1LL * v * o.v); }
+    ModInt pow(long long e) const {
+        ModInt a = *this, r = 1;
+        while (e) { if (e & 1) r = r * a; a = a * a; e >>= 1; }
+        return r;
+    }
+    ModInt inv() const { return pow(MOD - 2); }
+};
+$0]]></content>
+    <tabTrigger>modint</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Modular integer</description>
+</snippet>

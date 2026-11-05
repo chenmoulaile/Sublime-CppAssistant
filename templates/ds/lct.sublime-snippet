@@ -1,0 +1,67 @@
+<snippet>
+    <content><![CDATA[struct LCT {
+    struct Node { int ch[2], fa, rev, val, sum; };
+    vector<Node> t;
+    LCT(int n) : t(n + 1) {}
+    bool isroot(int x) {
+        int f = t[x].fa;
+        return !f || (t[f].ch[0] != x && t[f].ch[1] != x);
+    }
+    void pushup(int x) { t[x].sum = t[x].val ^ t[t[x].ch[0]].sum ^ t[t[x].ch[1]].sum; }
+    void pushrev(int x) { swap(t[x].ch[0], t[x].ch[1]); t[x].rev ^= 1; }
+    void pushdown(int x) {
+        if (t[x].rev) {
+            if (t[x].ch[0]) pushrev(t[x].ch[0]);
+            if (t[x].ch[1]) pushrev(t[x].ch[1]);
+            t[x].rev = 0;
+        }
+    }
+    void rotate(int x) {
+        int y = t[x].fa, z = t[y].fa, k = t[y].ch[1] == x;
+        if (!isroot(y)) t[z].ch[t[z].ch[1] == y] = x;
+        t[x].fa = z;
+        t[y].ch[k] = t[x].ch[k ^ 1];
+        if (t[x].ch[k ^ 1]) t[t[x].ch[k ^ 1]].fa = y;
+        t[x].ch[k ^ 1] = y; t[y].fa = x;
+        pushup(y); pushup(x);
+    }
+    void splay(int x) {
+        static vector<int> stk;
+        stk.clear();
+        for (int y = x; ; y = t[y].fa) {
+            stk.push_back(y);
+            if (isroot(y)) break;
+        }
+        while (!stk.empty()) { pushdown(stk.back()); stk.pop_back(); }
+        while (!isroot(x)) {
+            int y = t[x].fa, z = t[y].fa;
+            if (!isroot(y)) rotate((t[y].ch[1] == x) ^ (t[z].ch[1] == y) ? x : y);
+            rotate(x);
+        }
+    }
+    void access(int x) {
+        for (int y = 0; x; y = x, x = t[x].fa) {
+            splay(x); t[x].ch[1] = y; pushup(x);
+        }
+    }
+    void makeroot(int x) { access(x); splay(x); pushrev(x); }
+    int findroot(int x) {
+        access(x); splay(x);
+        while (t[x].ch[0]) { pushdown(x); x = t[x].ch[0]; }
+        splay(x);
+        return x;
+    }
+    void split(int x, int y) { makeroot(x); access(y); splay(y); }
+    void link(int x, int y) { makeroot(x); if (findroot(y) != x) t[x].fa = y; }
+    void cut(int x, int y) {
+        makeroot(x);
+        if (findroot(y) == x && t[y].fa == x && !t[y].ch[0]) {
+            t[y].fa = t[x].ch[1] = 0; pushup(x);
+        }
+    }
+};
+$0]]></content>
+    <tabTrigger>lct</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>Link-cut tree</description>
+</snippet>
