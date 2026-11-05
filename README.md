@@ -158,7 +158,8 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ## 🚀 Quick start
 
-1. Install the package (see [Installation](#-installation)).
+1. Install the package (Package Control, git clone or the `.sublime-package`
+   release asset — see **Installation** below).
 2. Open a `.cpp` file and start typing. Completion appears with no setup.
 3. Press **F12** to jump to a definition, **Shift+Alt+F** to format.
 4. Put the file next to a `compile_commands.json` (or just a local

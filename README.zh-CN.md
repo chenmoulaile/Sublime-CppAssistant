@@ -136,7 +136,8 @@
 
 ## 🚀 快速上手
 
-1. 安装插件（见 [安装](#-安装)）。
+1. 安装插件（Package Control、git clone 或下载 release 里的 `.sublime-package`，
+   见下文**安装**一节）。
 2. 打开 `.cpp` 文件，直接敲代码，补全立刻可用，无需任何配置。
 3. **F12** 跳转定义，**Shift+Alt+F** 格式化文档。
 4. 想要编译器级结果：把 `compile_commands.json` 放在项目里，或保证 `PATH` 上有
