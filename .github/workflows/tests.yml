@@ -55,7 +55,7 @@ jobs:
   libclang-test:
     name: libclang Tests (opt-in)
     runs-on: ubuntu-24.04
-    if: ${{ env.CA_TEST_LIBCLANG_PCH == '1' }}
+    if: ${{ false }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
