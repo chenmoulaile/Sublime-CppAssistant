@@ -269,6 +269,8 @@ CA_TEST_LIBCLANG_PCH=1 python -m unittest tests.test_semantic_engine -v
 
 [MIT](LICENSE) © chenmoulaile
 
+Release history: [CHANGELOG.md](CHANGELOG.md)
+
 ---
 
 ## 🙏 Acknowledgments
