@@ -1,1 +1,6 @@
-#include <bits/stdc++.h>
+<snippet>
+    <content><![CDATA[#include <bits/stdc++.h>]]></content>
+    <tabTrigger>inc</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>bits/stdc++.h header</description>
+</snippet>

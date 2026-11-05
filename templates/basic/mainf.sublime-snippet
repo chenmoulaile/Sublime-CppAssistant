@@ -1,4 +1,5 @@
-int main() {
+<snippet>
+    <content><![CDATA[int main() {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
@@ -9,4 +10,8 @@ int main() {
     }
 
     return 0;
-}
+}]]></content>
+    <tabTrigger>mainf</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>main function</description>
+</snippet>

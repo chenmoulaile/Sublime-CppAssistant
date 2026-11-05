@@ -1,1 +1,6 @@
-pair<int, int>
+<snippet>
+    <content><![CDATA[pair<int, int>]]></content>
+    <tabTrigger>pii</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>pair<int,int></description>
+</snippet>

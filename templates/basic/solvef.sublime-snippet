@@ -1,3 +1,8 @@
-void solve() {
+<snippet>
+    <content><![CDATA[void solve() {
     $0
-}
+}]]></content>
+    <tabTrigger>solvef</tabTrigger>
+    <scope>source.c++, source.c</scope>
+    <description>solve function</description>
+</snippet>
