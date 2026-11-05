@@ -21,7 +21,7 @@ except ImportError:  # allow unit tests outside Sublime Text
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES_DIR = os.path.join(ROOT, "templates")
 
-PACK_IDS = ("basic", "geometry", "graph", "ds", "strings", "math")
+PACK_IDS = ("geometry", "graph", "ds", "strings", "math")
 
 _PACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 

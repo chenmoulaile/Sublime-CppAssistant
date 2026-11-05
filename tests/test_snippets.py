@@ -15,7 +15,7 @@ if ROOT not in sys.path:
 
 from cppassistant import ca_template_packs, ca_user_snippets
 
-EXPECTED_PACKS = {"basic", "geometry", "graph", "ds", "strings", "math"}
+EXPECTED_PACKS = {"geometry", "graph", "ds", "strings", "math"}
 
 
 def _snippet_resource(trigger, content="// body",
@@ -68,13 +68,13 @@ class BundledPackCatalogTests(unittest.TestCase):
     def test_install_pack_copies_and_reenables(self):
         tmp = tempfile.mkdtemp(prefix="ca_pack_install_")
         try:
-            dest = os.path.join(tmp, "basic")
+            dest = os.path.join(tmp, "geometry")
             os.makedirs(dest)
             with open(os.path.join(dest, ".disabled"), "w") as f:
                 f.write("disabled")
-            count = ca_template_packs.install_pack("basic", dest)
+            count = ca_template_packs.install_pack("geometry", dest)
             self.assertEqual(
-                count, len(ca_template_packs.load_pack("basic")))
+                count, len(ca_template_packs.load_pack("geometry")))
             self.assertFalse(os.path.exists(os.path.join(dest, ".disabled")))
             self.assertTrue(any(
                 n.endswith(".sublime-snippet") for n in os.listdir(dest)))
@@ -130,7 +130,7 @@ class UserSnippetLoaderTests(unittest.TestCase):
         ca_user_snippets.clear_cache()
         return ca_user_snippets.get_cpp_snippets(force_reload=True)
 
-    def _write_installed_pack(self, pack="basic", trigger="basicsnippet"):
+    def _write_installed_pack(self, pack="geometry", trigger="bundlesnippet"):
         path = os.path.join(self.tmp, "User",
                             "CppAssistantTemplates", pack)
         if not os.path.isdir(path):
@@ -146,22 +146,40 @@ class UserSnippetLoaderTests(unittest.TestCase):
 
     def test_bundled_package_resources_are_not_loaded(self):
         files = {
-            "Packages/CppAssistant/templates/basic/basicsnippet.sublime-snippet":
-                _snippet_resource("basicsnippet"),
+            "Packages/CppAssistant/templates/geometry/bundlesnippet.sublime-snippet":
+                _snippet_resource("bundlesnippet"),
         }
         self.assertEqual(self._load(files), [])
 
     def test_installed_pack_is_loaded_and_can_be_disabled(self):
         files = self._write_installed_pack()
         items = self._load(files)
-        self.assertEqual([i["trigger"] for i in items], ["basicsnippet"])
+        self.assertEqual([i["trigger"] for i in items], ["bundlesnippet"])
 
         marker = os.path.join(
-            self.tmp, "User", "CppAssistantTemplates", "basic", ".disabled")
+            self.tmp, "User", "CppAssistantTemplates", "geometry", ".disabled")
         with open(marker, "w", encoding="utf-8") as f:
             f.write("disabled")
         items = self._load(files)
         self.assertEqual(items, [])
+
+    def test_snippets_carry_origin_annotation(self):
+        template_files = {
+            "Packages/User/CppAssistantTemplates/strings/kmp.sublime-snippet":
+                _snippet_resource("kmp"),
+            "Packages/User/mine.sublime-snippet":
+                _snippet_resource("mine"),
+        }
+        items = self._load(template_files)
+        by_trigger = dict((i["trigger"], i) for i in items)
+        self.assertEqual(by_trigger["kmp"]["annotation"],
+                         u"desc · 字符串模板")
+        self.assertEqual(by_trigger["kmp"]["annotation_en"],
+                         u"desc · Strings template")
+        self.assertEqual(by_trigger["mine"]["annotation"],
+                         u"desc · 用户片段")
+        self.assertEqual(by_trigger["mine"]["annotation_en"],
+                         u"desc · User snippet")
 
     def test_scope_filter_and_sort(self):
         files = {

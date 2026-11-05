@@ -1888,12 +1888,6 @@ DETAIL_EN = {
     "complex<${1:double}>": "Complex number",
     "mt19937": "Mersenne Twister random engine (random)",
     "function<${1:void(int)}>": "Type-erased callable",
-    "us": "using namespace std",
-    "inc": "Catch-all header",
-    "fastio": "Disable stream sync for fast IO",
-    "mainf": "Competitive programming main template",
-    "solvef": "solve() function template",
-    "pii": "Alias for pair<int, int>",
 }
 
 # 同一 completion 在不同容器下语义不同，需要容器名才能区分

@@ -412,6 +412,46 @@ _SET_KINDS = ("set", "multiset", "unordered_set", "unordered_multiset")
 _MAP_KINDS = ("map", "multimap", "unordered_map", "unordered_multimap")
 _PBDS_KINDS = ("pb_ds_tree_set", "pb_ds_tree_map",
                "pb_ds_hash_set", "pb_ds_hash_map")
+_PBDS_ORDERED_OPS = ("insert", "emplace", "erase", "find", "count",
+                     "lower_bound", "upper_bound", "equal_range",
+                     "order_of_key", "find_by_order", "at", "operator[]")
+_PBDS_HASH_OPS = ("insert", "emplace", "erase", "find", "count",
+                  "at", "operator[]")
+
+
+def _member_complexity(kind, name):
+    """Append library complexity hints for common STL/PBDS ops."""
+    if kind in ("vector", "deque", "list", "string", "basic_string"):
+        if name in ("push_back", "push_front", "emplace_back",
+                    "emplace_front", "pop_back", "pop_front", "back",
+                    "front"):
+            return "O(1)"
+        if name in ("at", "assign", "resize", "reserve", "insert", "erase",
+                    "replace"):
+            return "O(n)" if name in ("insert", "erase", "replace", "assign",
+                                      "resize") else "O(1)"
+        if name == "find":
+            return "O(n)"
+    elif kind in _SET_KINDS or kind in _MAP_KINDS:
+        if name in ("insert", "emplace", "erase", "find", "count",
+                    "lower_bound", "upper_bound", "equal_range", "at"):
+            return ("O(1) avg" if kind.startswith("unordered_")
+                    else "O(log n)")
+    elif kind in ("pb_ds_tree_set", "pb_ds_tree_map"):
+        if name in _PBDS_ORDERED_OPS:
+            return "O(log n)"
+    elif kind in ("pb_ds_hash_set", "pb_ds_hash_map"):
+        if name in _PBDS_HASH_OPS:
+            return "O(1) avg"
+    elif kind in ("queue", "stack"):
+        if name in ("push", "emplace", "pop", "front", "back", "top"):
+            return "O(1)"
+    elif kind == "priority_queue":
+        if name == "push" or name == "emplace":
+            return "O(log n)"
+        if name in ("top", "empty"):
+            return "O(1)"
+    return ""
 
 
 def _member_signature(kind, targs, insert):
@@ -500,7 +540,11 @@ def _member_signature(kind, targs, insert):
             params = ["size_t"]
     if params is None:
         return ""
-    return name + "(" + ", ".join(params) + ")"
+    sig = name + "(" + ", ".join(params) + ")"
+    complexity = _member_complexity(kind, name)
+    if complexity:
+        return u"%s · %s" % (sig, complexity)
+    return sig
 
 
 def build_env(text):
@@ -514,16 +558,42 @@ def build_env(text):
         "vars": {},
         "iters": {},
         "elems": {},
+        "var_types": {},
+        "param_types": {},
     }
     vars_ = env["vars"]
     elems = env["elems"]
     iters = env["iters"]
+    var_types = env["var_types"]
+    param_types = env["param_types"]
 
     for m in DECL_RE.finditer(text):
         kind, targs, name = m.group(1), m.group(3), m.group(4)
         if name in _CTRL_WORDS:
             continue
         vars_[name] = (kind, targs)
+        type_text = _collapse_ws(text[m.start(1):m.start(4)])
+        if type_text:
+            var_types[name] = type_text
+
+    for m in _LOCAL_VAR_DECL_RE.finditer(text):
+        name = m.group("name")
+        if name in _CTRL_WORDS or name in var_types:
+            continue
+        type_text = _collapse_ws(m.group("type"))
+        vars_[name] = (type_text, "")
+        if type_text:
+            var_types[name] = type_text
+
+    for name, ret, open_idx, close_idx in _function_signatures(text):
+        params = text[open_idx + 1:close_idx]
+        for part in _split_top_level(params):
+            parsed = _parse_param(part)
+            if parsed is None:
+                continue
+            param_name, param_type = parsed
+            if param_name not in param_types:
+                param_types[param_name] = param_type
 
     for m in _RANGEFOR_RE.finditer(text):
         elem, cont = m.group(1), m.group(2)
@@ -591,6 +661,132 @@ _STRUCT_RE = re.compile(r"\b(?:struct|class|union)\s+([A-Za-z_]\w*)")
 _ENUM_RE = re.compile(r"\benum(?:\s+class)?\s+([A-Za-z_]\w*)")
 _DEFINE_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)", re.M)
 _ALIAS_RE = re.compile(r"\busing\s+([A-Za-z_]\w*)\s*=")
+_ARG_RE = re.compile(
+    r"^(?P<type>.*?)\s*(?P<name>[A-Za-z_]\w*)\s*(?:=\s*.*)?$", re.S)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# 局部变量声明（声明语句整行开头），用于把 int/auto/string 等
+# 非 STL 容器类型也纳入类型环境；容器类型由 DECL_RE 负责。
+_LOCAL_VAR_DECL_RE = re.compile(
+    r"^[ \t]*(?P<type>(?:const\s+)?(?:unsigned\s+|signed\s+)?"
+    r"(?:long\s+long|long|short|int|char|bool|float|double|auto|size_t|"
+    r"__int128_t|__uint128_t|__int128|ll|ull|pii|pll|ld))"
+    r"(?:\s*<[^<>]*>)?\s*[&*]?\s*"
+    r"(?P<name>[A-Za-z_]\w*)\s*(?:=|;|\{)", re.M)
+
+
+def _collapse_ws(text):
+    return _WHITESPACE_RE.sub(u" ", text).strip()
+
+
+def _match_paren(text, open_idx):
+    """Return the index of the matching ``)`` or ``None``."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        ch = text[i]
+        if ch == "(": 
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        if i - open_idx > 4000:
+            return None
+    return None
+
+
+def _split_top_level(text):
+    """Split ``a, b, c`` at commas not nested in brackets."""
+    parts, depth, start = [], 0, 0
+    pairs = {
+        "<": 1, ">": -1,
+        "(": 1, ")": -1,
+        "[": 1, "]": -1,
+        "{": 1, "}": -1,
+    }
+    for i, ch in enumerate(text):
+        if ch in pairs:
+            depth += pairs[ch]
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def _parse_param(text):
+    """Return ``(name, type)`` for one function parameter, else ``None``."""
+    m = _ARG_RE.match(text)
+    if not m:
+        return None
+    name = m.group("name")
+    type_text = m.group("type").strip()
+    if not type_text or type_text.split()[0] in _CTRL_WORDS:
+        return None
+    return name, _collapse_ws(type_text)
+
+
+def _function_signatures(text):
+    """Yield ``(name, return_text, open_idx, close_idx)`` for definitions."""
+    for m in _FUNC_LINE_RE.finditer(text):
+        name = m.group(2)
+        if name in _CTRL_WORDS:
+            continue
+        end = m.end()
+        nl = text.find(u"\n", end)
+        rest = text[end:nl if nl != -1 else len(text)]
+        close = rest.find(u")")
+        after = rest[close + 1:].lstrip() if close != -1 else u""
+        if after.startswith(u";"):
+            continue
+        open_idx = m.end() - 1
+        close_idx = _match_paren(text, open_idx)
+        if close_idx is None:
+            continue
+        ret = _collapse_ws(text[m.start(1):m.start(2)])
+        yield name, ret, open_idx, close_idx
+
+
+def user_items(text, env=None):
+    """用户符号补全项：函数、局部变量、参数、类型、宏、别名。"""
+    if env is None:
+        env = build_env(text)
+    items = {}
+
+    def add(name, kind, annotation, annotation_en, detail):
+        items.setdefault(name, {
+            "kind": kind,
+            "annotation": annotation,
+            "annotation_en": annotation_en,
+            "detail": detail,
+            "detail_en": detail,
+        })
+
+    for name, sig in env.get("param_types", {}).items():
+        add(name, "v", u"参数", u"parameter", sig)
+    for name, type_text in env.get("var_types", {}).items():
+        add(name, "v", u"局部变量", u"local variable", type_text)
+
+    for name, ret, open_idx, close_idx in _function_signatures(text):
+        params = text[open_idx + 1:close_idx]
+        detail = _collapse_ws(u"%s %s(%s)" % (ret, name, params))
+        add(name, "f", u"自定义函数", u"function", detail)
+
+    for m in _STRUCT_RE.finditer(text):
+        name = m.group(1)
+        add(name, "t", u"结构体/类", u"type", u"type " + name)
+    for m in _ENUM_RE.finditer(text):
+        name = m.group(1)
+        add(name, "t", u"枚举", u"enum", u"enum " + name)
+    for m in _DEFINE_RE.finditer(text):
+        name = m.group(1)
+        add(name, "c", u"宏定义", u"macro", u"#define " + name)
+    for m in _ALIAS_RE.finditer(text):
+        name = m.group(1)
+        end = text.find(u";", m.start())
+        alias = _collapse_ws(text[m.start():end if end != -1 else m.end()])
+        add(name, "t", u"类型别名", u"type alias", alias)
+    return items
 
 
 def user_symbols(text):
@@ -652,19 +848,21 @@ _ANALYSIS_CACHE = {"key": None, "ver": None, "env": None, "syms": None,
 # mode 字段记录本次使用的补全模式（True=LSP-clangd 风格 / False=严格前缀基础模式），
 # 避免切换模式后命中另一模式留下的旧结果
 _COMPLETION_CACHE = {"key": None, "ver": None, "offset": -1, "ctx": None,
-                     "results": None, "using_std": False, "mode": None}
+                     "results": None, "using_std": False, "mode": None,
+                     "items": None}
 
 
 def _analysis(text, key, ver):
     c = _ANALYSIS_CACHE
     if c["key"] == key and c["ver"] == ver and c["env"] is not None:
-        return c["env"], c["syms"]
+        return c["env"], c["syms"], c["items"]
     if c["text"] is text and c["env"] is not None:
-        return c["env"], c["syms"]
+        return c["env"], c["syms"], c["items"]
     env = build_env(text)
     syms = user_symbols(text)
-    c.update(key=key, ver=ver, env=env, syms=syms, text=text)
-    return env, syms
+    items = user_items(text, env)
+    c.update(key=key, ver=ver, env=env, syms=syms, items=items, text=text)
+    return env, syms, items
 
 
 def analyze(text, offset, cache_key=None, cache_version=None,
@@ -719,9 +917,11 @@ def analyze(text, offset, cache_key=None, cache_version=None,
             return cc["results"]
 
     if cache_key is not None:
-        env, syms = _analysis(text, cache_key, cache_version)
+        env, syms, items = _analysis(text, cache_key, cache_version)
     else:
-        env, syms = build_env(text), user_symbols(text)
+        env = build_env(text)
+        syms = user_symbols(text)
+        items = user_items(text, env)
 
     raw_items = []
 
@@ -742,28 +942,27 @@ def analyze(text, offset, cache_key=None, cache_version=None,
             sig = _member_signature(key, targs, it["insert"])
             detail = sig or it["trigger"]
             raw_items.append(
-                (it["trigger"], it["insert"], it["annotation"], it["kind"],
+                (2, it["trigger"], it["insert"], it["annotation"], it["kind"],
                  False,
                  en_detail(it["insert"], key) or en_detail(it["insert"]) or u"",
                  detail, detail))
     elif accessor == "scope":
-        raw_items = [(it["trigger"], it["insert"], it["annotation"],
+        raw_items = [(2, it["trigger"], it["insert"], it["annotation"],
                       it["kind"], False, en_detail(it["insert"]) or u"",
                       it["trigger"], it["trigger"])
                      for it in STD_ITEMS_ALL]
     else:
         for kw in KEYWORDS:
-            raw_items.append((kw, kw, u"关键字", "k", False, u"keyword",
+            raw_items.append((3, kw, kw, u"关键字", "k", False, u"keyword",
                               kw, kw))
-        for name, desc in syms.items():
-            if isinstance(desc, tuple):
-                en, zh = desc
-            else:
-                en, zh = desc, desc
-            raw_items.append((name, name, zh, "u", False, en or u"",
-                              en or u"", zh or u""))
+        for name, it in items.items():
+            priority = 0 if it["kind"] == "v" else 1
+            raw_items.append((priority, name, name, it["annotation"],
+                              it["kind"], False, it["annotation_en"],
+                              it["detail_en"], it["detail"]))
         for it in STD_ITEMS_ALL:
-            raw_items.append((it["trigger"], it["insert"], it["annotation"],
+            raw_items.append((2, it["trigger"], it["insert"],
+                              it["annotation"],
                               it["kind"], it["want_std"],
                               en_detail(it["insert"]) or u"",
                               it["trigger"], it["trigger"]))
@@ -775,7 +974,7 @@ def analyze(text, offset, cache_key=None, cache_version=None,
     seen = set()
     # 基础模式下只保留严格前缀匹配（score < 5），过滤掉子串/子序列模糊结果
     max_score = 999 if clangd_style else 5
-    for (trigger, insert, ann, kd, want_std, ann_en,
+    for (priority, trigger, insert, ann, kd, want_std, ann_en,
          detail_en, detail_zh) in raw_items:
         sc = _score(trigger, prefix)
         if sc >= max_score or trigger in seen:
@@ -789,10 +988,11 @@ def analyze(text, offset, cache_key=None, cache_version=None,
                         "annotation": ann, "annotation_en": ann_en,
                         "kind": kd, "detail": detail_zh,
                         "detail_en": detail_en,
-                        "_score": sc})
-    results.sort(key=lambda d: (d["_score"], len(d["trigger"]),
-                                d["trigger"]))
+                        "_priority": priority, "_score": sc})
+    results.sort(key=lambda d: (d["_priority"], d["_score"],
+                                len(d["trigger"]), d["trigger"]))
     for d in results:
+        del d["_priority"]
         del d["_score"]
     if len(results) > 200:
         results = results[:200]

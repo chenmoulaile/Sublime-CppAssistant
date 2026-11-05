@@ -32,10 +32,18 @@ _CPP_SCOPE_RE = re.compile(
 
 # 内置模板包目录名；这些资源只有安装后才应参与补全。
 _BUNDLED_PACK_IDS = frozenset((
-    "basic", "geometry", "graph", "ds", "strings", "math",
+    "geometry", "graph", "ds", "strings", "math",
 ))
 
 _TEMPLATE_INSTALL_DIR = "CppAssistantTemplates"
+_PACK_LABELS = {
+    "geometry": ("几何模板", "Geometry template"),
+    "graph": ("图论模板", "Graph template"),
+    "ds": ("数据结构模板", "Data structures template"),
+    "strings": ("字符串模板", "Strings template"),
+    "math": ("数学模板", "Math template"),
+}
+_PACK_LABEL_FALLBACK = ("模板包", "template pack")
 
 
 def _norm_resource(path):
@@ -44,6 +52,21 @@ def _norm_resource(path):
 
 def _resource_parts(path):
     return [p for p in _norm_resource(path).split("/") if p]
+
+
+def _source_info(res):
+    """Return ``(zh, en)`` origin labels for a snippet resource."""
+    parts = _resource_parts(res)
+    for i, part in enumerate(parts):
+        if part == _TEMPLATE_INSTALL_DIR and i + 1 < len(parts):
+            pack = parts[i + 1]
+            zh, en = _PACK_LABELS.get(pack,
+                                      (pack.title() + u" 模板包",
+                                       pack.title() + u" template pack"))
+            return zh, en
+    if "User" in parts:
+        return u"用户片段", u"User snippet"
+    return u"包片段", u"Package snippet"
 
 
 def _is_bundled_template(resource):
@@ -109,15 +132,18 @@ def _parse_snippet_resource(res):
         return None
     if not _CPP_SCOPE_RE.search(scope):
         return None
+    src_zh, src_en = _source_info(res)
+    base = desc
     return {
         "trigger": trigger,
         "insert": content,
-        "annotation": u"用户片段",
-        "annotation_en": u"User snippet",
+        "annotation": base + u" · " + src_zh,
+        "annotation_en": base + u" · " + src_en,
         "kind": "s",
         "detail": desc,
         "detail_en": desc,
         "snippet": True,
+        "source": src_en,
     }
 
 

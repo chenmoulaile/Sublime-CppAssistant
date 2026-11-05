@@ -199,6 +199,51 @@ class EngineTests(unittest.TestCase):
         self.assertIn("for", by_trigger)
         self.assertTrue(by_trigger["for"]["detail_en"])
 
+    def test_local_variable_details_and_ranking(self):
+        src = (u"int add(int x, int y) {\n"
+               u"    int total = x + y;\n"
+               u"    tot\n"
+               u"}\n")
+        offset = src.index(u"tot") + len(u"tot")
+        items = ca_engine.analyze(src, offset)
+        by_trigger = dict((r["trigger"], r) for r in items)
+        self.assertIn("total", by_trigger)
+        entry = by_trigger["total"]
+        self.assertEqual(entry["detail"], u"int")
+        self.assertEqual(entry["detail_en"], u"int")
+        self.assertEqual(entry["kind"], "v")
+        self.assertEqual(entry["annotation"], u"局部变量")
+        self.assertEqual(entry["annotation_en"], u"local variable")
+        self.assertEqual(items[0]["trigger"], "total")
+
+    def test_parameter_details(self):
+        src = (u"int add(int left, int right) {\n"
+               u"    le\n"
+               u"}\n")
+        offset = src.index(u"le") + len(u"le")
+        items = ca_engine.analyze(src, offset)
+        by_trigger = dict((r["trigger"], r) for r in items)
+        self.assertIn("left", by_trigger)
+        entry = by_trigger["left"]
+        self.assertEqual(entry["detail"], u"int")
+        self.assertEqual(entry["kind"], "v")
+        self.assertEqual(entry["annotation"], u"参数")
+        self.assertEqual(entry["annotation_en"], u"parameter")
+
+    def test_user_function_signature_detail(self):
+        src = (u"void solve(int n) {\n"
+               u"    sol\n"
+               u"}\n")
+        offset = src.index(u"sol") + len(u"sol")
+        items = ca_engine.analyze(src, offset)
+        by_trigger = dict((r["trigger"], r) for r in items)
+        self.assertIn("solve", by_trigger)
+        entry = by_trigger["solve"]
+        self.assertEqual(entry["detail"], u"void solve(int n)")
+        self.assertEqual(entry["kind"], "f")
+        self.assertEqual(entry["annotation"], u"自定义函数")
+        self.assertEqual(entry["annotation_en"], u"function")
+
     def test_compiler_notes_attach_to_previous_diagnostic(self):
         output = (
             "a.cpp:3:5: warning: use of undeclared identifier 'x'\n"
@@ -282,38 +327,38 @@ class MemberSignatureTests(unittest.TestCase):
     def test_sequence_push_back(self):
         self.assertEqual(
             self._detail(u"vector<int> v; v.", "push_back"),
-            "push_back(int)")
+            u"push_back(int) · O(1)")
         self.assertEqual(
             self._detail(u"vector<pair<int,int>> v; v.", "push_back"),
-            "push_back(pair<int,int>)")
+            u"push_back(pair<int,int>) · O(1)")
         self.assertEqual(
             self._detail(u"vector<vector<int>> v; v.", "push_back"),
-            "push_back(vector<int>)")
+            u"push_back(vector<int>) · O(1)")
 
     def test_map_signatures(self):
         self.assertEqual(
             self._detail(u"map<string,int> m; m.", "at"),
-            "at(const string&)")
+            u"at(const string&) · O(log n)")
         self.assertEqual(
             self._detail(u"map<string,int> m; m.", "find"),
-            "find(const string&)")
+            u"find(const string&) · O(log n)")
         self.assertEqual(
             self._detail(u"unordered_map<long long, vector<int>> m; m.",
                          "emplace"),
-            "emplace(long long, vector<int>)")
+            u"emplace(long long, vector<int>) · O(1) avg")
 
     def test_set_find_uses_key_type(self):
         self.assertEqual(
             self._detail(u"set<long long> s; s.", "find"),
-            "find(const long long&)")
+            u"find(const long long&) · O(log n)")
 
     def test_string_and_adapter_signatures(self):
         self.assertEqual(
             self._detail(u"string s; s.", "push_back"),
-            "push_back(char)")
+            u"push_back(char) · O(1)")
         self.assertEqual(
             self._detail(u"queue<int> q; q.", "push"),
-            "push(int)")
+            u"push(int) · O(1)")
 
     def test_array_fill_signature(self):
         self.assertEqual(
@@ -324,17 +369,18 @@ class MemberSignatureTests(unittest.TestCase):
         src = (u"__gnu_pbds::tree<int, null_type, less<int>, rb_tree_tag, "
                u"tree_order_statistics_node_update> s; s.")
         self.assertEqual(self._detail(src, "order_of_key"),
-                        "order_of_key(const int&)")
+                        u"order_of_key(const int&) · O(log n)")
         self.assertEqual(self._detail(src, "find_by_order"),
-                        "find_by_order(size_t)")
-        self.assertEqual(self._detail(src, "find"), "find(const int&)")
+                        u"find_by_order(size_t) · O(log n)")
+        self.assertEqual(self._detail(src, "find"),
+                        u"find(const int&) · O(log n)")
 
     def test_pbds_hash_map_signatures(self):
         src = u"gp_hash_table<long long, string> h; h."
         self.assertEqual(self._detail(src, "operator[]"),
-                        "operator[](const long long&)")
+                         u"operator[](const long long&) · O(1) avg")
         self.assertEqual(self._detail(src, "insert"),
-                        "insert({const long long&, string})")
+                         u"insert({const long long&, string}) · O(1) avg")
 
     def test_split_args_keeps_nested_templates(self):
         args = ca_engine._split_args(

@@ -3,6 +3,29 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## Unreleased
+
+### Removed
+
+- The bundled `Basic` template pack (`us`, `inc`, `fastio`, `mainf`,
+  `solvef`, `pii`) is gone; the plugin now ships Geometry, Graph, DS,
+  Strings and Math packs only.
+
+### Completion display
+
+- Local variables, parameters, functions, structs, enums, macros and
+  aliases now carry concrete details in the builtin fallback:
+  `total` becomes `int`, `add` becomes `int add(int x, int y)`, and
+  parameters are labelled `parameter`.
+- Completion ranking prefers local symbols first, then user-defined
+  functions and types, then the STL database, then keywords.
+- STL and `__gnu_pbds` member signatures now show complexity hints such as
+  `push_back(int) · O(1)`, `find(const long long&) · O(log n)`, and
+  `insert(...) · O(1) avg` for hash tables.
+- User snippets and installed template packs are annotated with their
+  origin, for example `kmp · 字符串模板` / `kmp · Strings template`,
+  so the popup no longer hides where an entry came from.
+
 ## v2.1.1
 
 Completes and fixes the OIer-focused 2.1.0 update. The 2.1.0 tag pointed at

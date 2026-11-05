@@ -1,23 +1,6 @@
 {
   "packs": [
     {
-      "id": "basic",
-      "name": "Basic CP Templates",
-      "description": "Essential competitive programming templates (us, inc, fastio, mainf, solvef, pii)",
-      "version": "1.0.0",
-      "author": "CppAssistant Team",
-      "bundled": true,
-      "tags": ["basic", "essential", "beginner"],
-      "snippets": [
-        "us",
-        "inc",
-        "fastio",
-        "mainf",
-        "solvef",
-        "pii"
-      ]
-    },
-    {
       "id": "geometry",
       "name": "Computational Geometry",
       "description": "Geometry templates: Point, Line, Circle, Polygon, Convex Hull, Intersections",
