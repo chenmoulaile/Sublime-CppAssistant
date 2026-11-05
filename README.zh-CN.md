@@ -36,9 +36,16 @@ CppAssistant 为竞赛编程量身定制，提供赛场实用的功能：
 - **FastEngine 兜底** — 零依赖增量解析器，clangd 不可用时提供同文件符号
 - **libclang 语义引擎** — 可选，PCH 加速，热缓存语义补全
 - **模板参数推导** — `vector<int> v; v.push_back(` → 显示 `push_back(int)`
+- **`auto` 类型推导** — `auto it = v.find(x)` 显示 `vector<int>::iterator`；`auto v = m.at("k")` 显示 `int`
+- **复杂度提示** — `push_back(int) · O(1)`、`find(const long long&) · O(log n)`、`insert(...) · O(1) avg`
+- **来源标注** — 用户片段/模板包显示 `kmp · 字符串模板`，局部符号显示 `int · 局部变量`
 - **智能头文件插入** — 自动补 `#include`，识别 `bits/stdc++.h` 和已包含头文件
+- **PBDS 头文件自动插入** — 补全 `__gnu_pbds::tree` 会插入 `ext/pb_ds/assoc_container.hpp` 与 `tree_policy.hpp`（万能头不覆盖 PBDS）
+- **`__gnu_pbds::` 命名空间补全** — `tree`、`gp_hash_table`、`rb_tree_tag`、`tree_order_statistics_node_update`，插入时带完整模板骨架
+- **C++20 子集** — `ranges::sort`、`views::filter`、`integral<T>` 等，标注 `C++20`，默认排在 C++14 档之后
 - **用户片段 + 随包模板包** — 几何、图论、数据结构等按需安装
 - **Snippet Tab Stop 导航** — `$0` `$1` `${1:default}` 跳转
+- **模板浏览器** — 插入前可预览任意片段的前 20 行
 
 ### 🔍 诊断
 - **即时基础检查** — 括号、全角标点、未闭合字符串/注释 (< 10ms)
@@ -46,14 +53,17 @@ CppAssistant 为竞赛编程量身定制，提供赛场实用的功能：
 - **clangd 检查** — LSP 风格实时诊断，无编译器进程
 - **libclang 检查** — PCH 加速，精确跨文件位置
 - **数组越界检查** — `int a[10]; a[10]=1` 即时报错
+- **全角标点一键修复** — `Ctrl+Alt+,` 把代码区的 `，；：（）` 换成半角；注释、字符串、原始字符串里的中文标点保持原样
 - **诊断一键复制** — `Ctrl+Shift+C` 复制 `[文件:行:列] 等级: 信息 (中文)`
 - **诊断过滤** — 抑制 `-Wunused-variable`、`-Wunused-parameter` 等
 - **默认抑制未使用变量警告** — CSP-S/NOIP 风格
 
 ### 🧭 跳转与导航
 - **F12 跳转定义** — 同文件作用域感知、跨文件、标准库回退
-- **查找引用** — 跨项目头文件
+- **查找引用** — 跨项目头文件，按文件分组并编号
+- **调用/类型层级** — 谁调用了当前函数、当前函数调用了谁、类的继承链（clangd）
 - **语义重命名** — clangd 驱动的全项目重命名
+- **状态栏提示** — 补全来源 + 当前调用签名与第几个实参
 
 ### ⚡ 代码操作与格式化
 - **代码操作** — 快速修复、添加 `#include`、提取函数等重构
@@ -147,7 +157,9 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `CppAssistant: Go to Definition` | 跳转定义 (F12) |
 | `CppAssistant: Code Actions` | 显示快速修复与重构 |
 | `CppAssistant: Rename Symbol` | 跨项目重命名符号 |
-| `CppAssistant: Find References` | 列出光标处符号的引用 |
+| `CppAssistant: Find References` | 列出光标处符号的引用（按文件分组） |
+| `CppAssistant: Call Hierarchy` | 查看当前函数的调用方/被调用方 |
+| `CppAssistant: Type Hierarchy` | 查看当前类型的基类与派生类 |
 | `CppAssistant: Show Diagnostics` | 显示诊断面板 |
 | `CppAssistant: Copy Diagnostic` | 复制当前行诊断到剪贴板 |
 | `CppAssistant: Install Template Pack` | 安装几何、图论、数据结构等模板包 |
@@ -155,6 +167,10 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `CppAssistant: Create User Snippet` | 从选中代码创建片段 |
 | `CppAssistant: Edit User Snippets` | 打开用户片段文件夹 |
 | `CppAssistant: Import Snippets` | 从 JSON 导入片段 |
+| `CppAssistant: Browse Templates` | 预览片段前 20 行并插入 |
+| `CppAssistant: Manage User Snippets` | 打开/重命名/回收片段文件 |
+| `CppAssistant: Fix Full-width Punctuation` | 只把代码区的全角标点改成半角 |
+| `CppAssistant: Validate Settings` | 报告会被 Sublime 静默忽略的设置值 |
 | `CppAssistant: Toggle Menu Language` | 菜单中英切换 |
 | `CppAssistant: Completion Engine Status` | 查看 clangd/FastEngine 状态 |
 | `Preferences: CppAssistant Settings` | 编辑设置 |
@@ -179,6 +195,8 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `clangd_completion_wait_ms` | `0` | 同步等待 clangd 毫秒数；`0` = 不阻塞 |
 | `enable_clangd_style_completion` | `true` | `true` = LSP-clangd 模糊模式；`false` = 严格前缀 |
 | `auto_insert_includes` | `true` | 接受补全时自动插入 `#include` |
+| `cpp_auto_insert_pbds_includes` | `true` | PBDS 补全后自动插入 `ext/pb_ds/*`（万能头不覆盖 PBDS） |
+| `show_status_hint` | `true` | 状态栏显示补全来源 + 调用签名 + 第几个实参 |
 | `enable_hover` | `true` | 显示 clangd 悬停文档 |
 | `enable_signature_help` | `true` | 函数调用括号内显示签名帮助 |
 | `enable_linting` | `true` | 实时诊断总开关 |

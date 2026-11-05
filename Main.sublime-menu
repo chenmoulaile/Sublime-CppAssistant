@@ -170,26 +170,36 @@
 			{ "caption": "Code Actions", "id": "cppassistant-code-actions", "command": "ca_code_actions" },
 			{ "caption": "Rename Symbol", "id": "cppassistant-rename", "command": "ca_rename" },
 			{ "caption": "Find References", "id": "cppassistant-find-references", "command": "ca_find_references" },
+			{ "caption": "Call Hierarchy", "id": "cppassistant-call-hierarchy", "command": "ca_call_hierarchy" },
+			{ "caption": "Type Hierarchy", "id": "cppassistant-type-hierarchy", "command": "ca_type_hierarchy" },
 			{ "caption": "-" },
 			{ "caption": "Format Selection", "id": "cppassistant-format-selection", "command": "ca_format_selection" },
 			{ "caption": "Format Document", "id": "cppassistant-format-document", "command": "ca_format_document" },
 			{ "caption": "Go to Definition", "id": "cppassistant-goto-definition", "command": "ca_goto_definition" },
 			{ "caption": "Show Diagnostics", "id": "cppassistant-show-diagnostics", "command": "ca_show_diagnostics" },
 			{ "caption": "Copy Diagnostic", "id": "cppassistant-copy-diagnostic", "command": "ca_copy_diagnostic" },
+			{ "caption": "Fix Full-width Punctuation", "id": "cppassistant-fix-fullwidth", "command": "ca_fix_fullwidth_punctuation" },
 			{ "caption": "-" },
 			{
 				"caption": "Templates",
 				"id": "cppassistant-templates",
 				"children": [
+					{ "caption": "Browse Templates", "id": "cppassistant-browse-templates", "command": "ca_browse_templates" },
 					{ "caption": "Install Template Pack", "id": "cppassistant-install-template-pack", "command": "ca_install_template_pack" },
 					{ "caption": "Manage Templates", "id": "cppassistant-manage-templates", "command": "ca_manage_templates" },
 					{ "caption": "-" },
 					{ "caption": "Create User Snippet", "id": "cppassistant-create-user-snippet", "command": "ca_create_user_snippet" },
+					{ "caption": "Manage User Snippets", "id": "cppassistant-manage-user-snippets", "command": "ca_manage_user_snippets" },
 					{ "caption": "Edit User Snippets", "id": "cppassistant-edit-user-snippets", "command": "ca_edit_user_snippets" },
 					{ "caption": "Import Snippets", "id": "cppassistant-import-snippets", "command": "ca_import_snippets" }
 				]
 			},
 			{ "caption": "-" },
+			{
+				"caption": "Validate Settings",
+				"id": "cppassistant-validate-settings",
+				"command": "ca_validate_settings"
+			},
 			{
 				"caption": "Settings",
 				"id": "cppassistant-menu-settings",

@@ -36,6 +36,24 @@ class ClangdHelperTests(unittest.TestCase):
         self.assertEqual(
             ca_clangd._extract_includes(item), ["vector", "utility"])
 
+    def test_parse_call_hierarchy_items(self):
+        result = [{
+            "name": "solve",
+            "detail": "void ()",
+            "uri": "file:///tmp/a.cpp",
+            "selectionRange": {"start": {"line": 4, "character": 5}},
+        }]
+        parsed = ca_clangd.parse_call_hierarchy_items(result)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["name"], "solve")
+        self.assertEqual(parsed[0]["line"], 5)
+        self.assertEqual(parsed[0]["character"], 6)
+        self.assertIs(parsed[0]["raw"], result[0])
+
+    def test_parse_call_hierarchy_skips_incomplete_items(self):
+        result = [{"name": "no_uri"}, {"uri": "file:///a"}, "junk", None]
+        self.assertEqual(ca_clangd.parse_call_hierarchy_items(result), [])
+
     def test_extract_includes_deduplicates(self):
         item = {
             "additionalTextEdits": [
@@ -386,6 +404,95 @@ class MemberSignatureTests(unittest.TestCase):
         args = ca_engine._split_args(
             u"string, vector<pair<int,int>>")
         self.assertEqual(args, [u"string", u"vector<pair<int,int>>"])
+
+
+class CpDatabaseTests(unittest.TestCase):
+    """PBDS namespace, ranges/concepts and include details."""
+
+    def _items(self, src):
+        """``|`` 标记光标位置；没有标记时用文本末尾。"""
+        if u"|" in src:
+            offset = src.index(u"|")
+            src = src[:offset] + src[offset + 1:]
+        else:
+            offset = len(src)
+        items = ca_engine.analyze(src, offset)
+        return dict((r["trigger"], r) for r in items)
+
+    def test_pbds_namespace_lists_short_triggers(self):
+        by_trigger = self._items(u"int main() {\n__gnu_pbds::|\n}\n")
+        for name in ("tree", "gp_hash_table", "cc_hash_table",
+                     "rb_tree_tag", "splay_tree_tag", "ov_tree_tag",
+                     "tree_order_statistics_node_update"):
+            self.assertIn(name, by_trigger)
+        self.assertTrue(by_trigger["tree"]["insert"].startswith("tree<"))
+        self.assertEqual(by_trigger["tree"]["kind"], "t")
+        # __gnu_pbds is not std: no "std::" prefix may be added
+        self.assertFalse(by_trigger["tree"]["insert"].startswith("std::"))
+
+    def test_pbds_namespace_works_with_pb_ds_alias(self):
+        by_trigger = self._items(u"int main() {\npb_ds::|\n}\n")
+        self.assertIn("tree", by_trigger)
+
+    def test_ranges_and_views_entries_exist(self):
+        by_trigger = self._items(u"ranges::s")
+        self.assertIn("sort", by_trigger)
+        entry = by_trigger["sort"]
+        self.assertEqual(entry["insert"], "sort(${1:v})")
+        self.assertIn("C++20", entry["annotation"])
+        # later-standard entries must carry an English annotation too
+        self.assertTrue(entry["annotation_en"])
+
+    def test_views_scope_lists_only_views(self):
+        by_trigger = self._items(u"views::t")
+        self.assertIn("take", by_trigger)
+        self.assertEqual(by_trigger["take"]["insert"], "take(${1:v}, ${2:n})")
+        self.assertNotIn("sort", by_trigger)
+
+    def test_concepts_have_explicit_triggers(self):
+        by_trigger = self._items(u"std::integr")
+        self.assertIn("integral", by_trigger)
+        self.assertTrue(
+            by_trigger["integral"]["insert"].startswith("integral"))
+
+    def test_include_completion_has_human_details(self):
+        by_trigger = self._items(u"#include <ext/pb_ds/assoc")
+        entry = by_trigger["ext/pb_ds/assoc_container.hpp"]
+        self.assertIn("PBDS", entry["detail"])
+        self.assertNotEqual(entry["detail"], "#include "
+                            "ext/pb_ds/assoc_container.hpp")
+
+    def test_bits_header_detail_explains_pbds_gap(self):
+        by_trigger = self._items(u"#include <bits/std")
+        self.assertIn("PBDS", by_trigger["bits/stdc++.h"]["detail"])
+
+    def test_macro_has_its_own_kind(self):
+        src = (u"#define MAXN 100\n"
+               u"int main() { int x = MAX; }\n")
+        offset = src.index(u"MAX;") + 3
+        by_trigger = dict((r["trigger"], r) for r in
+                          ca_engine.analyze(src, offset))
+        self.assertEqual(by_trigger["MAXN"]["kind"], "d")
+
+    def test_auto_iterator_binding_gets_iterator_type(self):
+        src = (u"vector<int> v;\n"
+               u"int main() {\n"
+               u"    auto it = v.find(1);\n"
+               u"}\n")
+        env = ca_engine.build_env(src)
+        self.assertEqual(env["var_types"]["it"], "vector<int>::iterator")
+
+    def test_inline_auto_binding_gets_iterator_type(self):
+        src = (u"vector<int> v;\n"
+               u"int main() { auto it = v.begin(); }\n")
+        env = ca_engine.build_env(src)
+        self.assertEqual(env["var_types"]["it"], "vector<int>::iterator")
+
+    def test_param_types_are_exposed(self):
+        src = u"void solve(int n, vector<int>& a) { }\n"
+        env = ca_engine.build_env(src)
+        self.assertEqual(env["param_types"]["n"], u"int")
+        self.assertEqual(env["param_types"]["a"], u"vector<int>&")
 
 
 if __name__ == "__main__":

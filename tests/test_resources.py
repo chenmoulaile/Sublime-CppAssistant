@@ -80,5 +80,139 @@ class ResourceTests(unittest.TestCase):
             ast.parse(source, filename=path, feature_version=(3, 3))
 
 
+class PackageIntegrityTests(unittest.TestCase):
+    """Everything referenced by commands/menu/keymap must actually exist."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = _read("CppAssistant.py")
+        cls.class_names = set(re.findall(r"^class\s+(\w+)",
+                                         cls.source, re.M))
+
+    def _class_for(self, command):
+        # ca_fix_fullwidth_punctuation -> CaFixFullwidthPunctuationCommand
+        name = command[3:] if command.startswith("ca_") else command
+        parts = [p for p in name.split("_") if p]
+        return "Ca" + "".join(p[:1].upper() + p[1:] for p in parts) + \
+            "Command"
+
+    def test_commands_exist_as_classes(self):
+        data = json.loads(_read("CppAssistant.sublime-commands"))
+        for entry in data:
+            command = entry["command"]
+            if not command.startswith("ca_"):
+                continue
+            cls = self._class_for(command)
+            self.assertIn(cls, self.class_names, command)
+
+    def test_menu_commands_exist(self):
+        data = json.loads(_read("Main.sublime-menu"))
+        stack = [data]
+        checked = 0
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list):
+                stack.extend(node)
+                continue
+            if not isinstance(node, dict):
+                continue
+            command = node.get("command")
+            if isinstance(command, str) and command.startswith("ca_"):
+                checked += 1
+                self.assertIn(self._class_for(command), self.class_names,
+                              command)
+            for value in node.values():
+                if isinstance(value, (list, dict)):
+                    stack.append(value)
+        self.assertGreater(checked, 5)
+
+    def test_menu_ids_are_unique(self):
+        data = json.loads(_read("Main.sublime-menu"))
+        ids = re.findall(r'"id"\s*:\s*"([^"]+)"', _read("Main.sublime-menu"))
+        self.assertEqual(len(ids), len(set(ids)))
+        # the parsed tree must be a list of top-level menus
+        self.assertIsInstance(data, list)
+
+    def test_keymap_commands_exist(self):
+        text = _read("Example.sublime-keymap")
+        text = re.sub(r"(?m)^\s*//.*$", "", text)
+        data = json.loads(text)
+        for entry in data:
+            command = entry.get("command") or ""
+            if command.startswith("ca_"):
+                self.assertIn(self._class_for(command), self.class_names,
+                              command)
+
+    def test_new_settings_have_defaults(self):
+        data = _load_sublime_settings("CppAssistant.sublime-settings")
+        self.assertIs(data["cpp_auto_insert_pbds_includes"], True)
+        self.assertIs(data["show_status_hint"], True)
+
+    def test_messages_json_is_valid(self):
+        data = json.loads(_read("messages.json"))
+        self.assertIn("install", data)
+        for key, value in data.items():
+            self.assertIsInstance(key, str)
+            self.assertIsInstance(value, str)
+            self.assertTrue(value.strip())
+
+    def test_cli_commands_documented_in_commands_file(self):
+        data = json.loads(_read("CppAssistant.sublime-commands"))
+        commands = set(entry["command"] for entry in data)
+        for command in ("ca_fix_fullwidth_punctuation",
+                        "ca_browse_templates",
+                        "ca_manage_user_snippets",
+                        "ca_call_hierarchy",
+                        "ca_validate_settings"):
+            self.assertIn(command, commands)
+
+
+class CompletionDatabaseIntegrityTests(unittest.TestCase):
+    """Guard the built-in completion data against silent regressions."""
+
+    @classmethod
+    def setUpClass(cls):
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        from cppassistant import ca_stdlib_data
+        cls.data = ca_stdlib_data
+
+    def test_no_duplicate_member_triggers(self):
+        for container, members in self.data.MEMBERS_DB.items():
+            triggers = [m[0].split("(")[0] for m in members]
+            self.assertEqual(len(triggers), len(set(triggers)), container)
+
+    def test_every_member_has_english_detail(self):
+        missing = []
+        for container, members in self.data.MEMBERS_DB.items():
+            for comp, _ann, _kind in members:
+                if not self.data.en_detail(comp, container) and \
+                        not self.data.en_detail(comp):
+                    missing.append((container, comp))
+        self.assertEqual(missing, [])
+
+    def test_std_triggers_are_unique(self):
+        triggers = [item["trigger"] for item in self.data.STD_ITEMS_ALL]
+        self.assertEqual(len(triggers), len(set(triggers)))
+
+    def test_every_std_item_has_english_annotation(self):
+        missing = [item["insert"] for item in self.data.STD_ITEMS_ALL
+                   if not self.data.en_detail(item["insert"])]
+        self.assertEqual(missing, [])
+
+    def test_pbds_headers_are_complete(self):
+        self.assertIn("ext/pb_ds/assoc_container.hpp",
+                      self.data.PBDS_HEADERS)
+        self.assertIn("ext/pb_ds/tree_policy.hpp",
+                      self.data.PBDS_HEADERS)
+
+    def test_header_details_cover_cp_headers(self):
+        for header in ("bits/stdc++.h", "ext/pb_ds/assoc_container.hpp",
+                       "ext/pb_ds/tree_policy.hpp", "ranges", "bit"):
+            detail = self.data.header_detail(header)
+            self.assertTrue(detail.startswith("#include <"), header)
+            self.assertIn(header, detail)
+
+
 if __name__ == "__main__":
     unittest.main()

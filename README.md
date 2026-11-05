@@ -36,9 +36,16 @@ CppAssistant is tailored for competitive programming with features that matter i
 - **FastEngine fallback** — zero-dependency incremental parser for same-file symbols when clangd is unavailable
 - **libclang semantic engine** — optional, PCH-accelerated, warm-cache completion
 - **Template parameter deduction** — `vector<int> v; v.push_back(` → shows `push_back(int)`
+- **`auto` type inference** — `auto it = v.find(x)` → `vector<int>::iterator`; `auto v = m.at("k")` → `int`
+- **Complexity hints** — `push_back(int) · O(1)`, `find(const long long&) · O(log n)`, `insert(...) · O(1) avg`
+- **Origin labels** — user snippets and packs show `kmp · Strings template`; locals show `int · local variable`
 - **Smart `#include` insertion** — respects `bits/stdc++.h`, skips existing headers
+- **PBDS header insertion** — `__gnu_pbds::tree` inserts `ext/pb_ds/assoc_container.hpp` + `tree_policy.hpp`, because the universal header does not cover PBDS
+- **`__gnu_pbds::` namespace** — `tree`, `gp_hash_table`, `rb_tree_tag`, `tree_order_statistics_node_update` with full template skeletons
+- **C++20 subset** — `ranges::sort`, `views::filter`, `integral<T>` and friends, tagged `C++20` so they rank after the C++14 database
 - **User snippets + bundled template packs** — install Geometry, Graph, DS, etc. on demand
 - **Snippet tab stops** — `$0`, `$1`, `${1:default}` navigation
+- **Template browser** — preview the first 20 lines of any installed snippet before inserting
 
 ### 🔍 Diagnostics
 - **Instant basic check** — brackets, full-width punctuation, unclosed strings/comments (< 10ms)
@@ -46,14 +53,17 @@ CppAssistant is tailored for competitive programming with features that matter i
 - **clangd check** — LSP-style live diagnostics, no compiler process
 - **libclang check** — PCH-accelerated, precise cross-file locations
 - **Array bounds checking** — `int a[10]; a[10]=1` → error
+- **One-key full-width fix** — `Ctrl+Alt+,` rewrites `，；：（）` to `,;:()` in code only; comments, strings and raw strings keep their Chinese punctuation
 - **Diagnostic one-click copy** — `Ctrl+Shift+C` copies `[file:line:col] severity: message (zh)`
 - **Diagnostic filtering** — suppress `-Wunused-variable`, `-Wunused-parameter`, etc.
 - **Unused warnings suppressed by default** — CSP-S/NOIP style
 
 ### 🧭 Navigation
 - **F12 Go to Definition** — scope-aware same-file, cross-file, stdlib fallback
-- **Find References** — across project headers
+- **Find References** — across project headers, grouped and numbered per file
+- **Call / Type Hierarchy** — who calls this function, what it calls, and the class inheritance chain (clangd)
 - **Semantic Rename** — clangd-powered project-wide rename
+- **Status bar hints** — completion source plus the current call signature and argument index
 
 ### ⚡ Code Actions & Formatting
 - **Code Actions** — quick fixes, `#include` suggestions, extract function
@@ -147,7 +157,9 @@ No default key bindings (to avoid conflicts). Copy desired entries from `Example
 | `CppAssistant: Go to Definition` | Jump to definition (F12) |
 | `CppAssistant: Code Actions` | Show quick fixes & refactors |
 | `CppAssistant: Rename Symbol` | Rename across project |
-| `CppAssistant: Find References` | List references to symbol |
+| `CppAssistant: Find References` | List references to symbol (grouped by file) |
+| `CppAssistant: Call Hierarchy` | Incoming / outgoing calls of the function under the cursor |
+| `CppAssistant: Type Hierarchy` | Base classes and derived classes of the type under the cursor |
 | `CppAssistant: Show Diagnostics` | Show diagnostics panel |
 | `CppAssistant: Copy Diagnostic` | Copy current diagnostic to clipboard |
 | `CppAssistant: Install Template Pack` | Install Geometry, Graph, DS, etc. |
@@ -155,6 +167,10 @@ No default key bindings (to avoid conflicts). Copy desired entries from `Example
 | `CppAssistant: Create User Snippet` | Create snippet from selection |
 | `CppAssistant: Edit User Snippets` | Open user snippets folder |
 | `CppAssistant: Import Snippets` | Import from JSON file |
+| `CppAssistant: Browse Templates` | Preview snippets (first 20 lines) and insert one |
+| `CppAssistant: Manage User Snippets` | Open / rename / recycle snippet files |
+| `CppAssistant: Fix Full-width Punctuation` | Rewrite `，；：（）` to half-width in code only |
+| `CppAssistant: Validate Settings` | Report values Sublime would silently ignore |
 | `CppAssistant: Toggle Menu Language` | Switch menu EN ↔ ZH |
 | `CppAssistant: Completion Engine Status` | Show clangd/FastEngine status |
 | `Preferences: CppAssistant Settings` | Edit settings |
@@ -179,6 +195,8 @@ Open via **Preferences: CppAssistant Settings** or edit `Packages/User/CppAssist
 | `clangd_completion_wait_ms` | `0` | Sync wait for clangd; `0` = never block |
 | `enable_clangd_style_completion` | `true` | `true` = fuzzy LSP style; `false` = strict prefix |
 | `auto_insert_includes` | `true` | Insert `#include` on completion accept |
+| `cpp_auto_insert_pbds_includes` | `true` | Insert `ext/pb_ds/*` for PBDS completions (universal header does not cover them) |
+| `show_status_hint` | `true` | Status bar: completion source + call signature + argument index |
 | `enable_hover` | `true` | Show clangd hover |
 | `enable_signature_help` | `true` | Show signature help in call parens |
 | `enable_linting` | `true` | Master switch for diagnostics |

@@ -302,6 +302,118 @@ MEMBERS_DB = {
     "pb_ds_hash_map": PBDS_HASH_MAP_MEMBERS,
 }
 
+
+def _dedupe_member_table(table):
+    """去掉同一容器里重复的成员触发器。
+
+    ``stringstream`` 同时继承了输入流和输出流的成员（``str``、``clear``
+    两边都有），直接拼接会让补全弹窗出现两条一模一样的条目。
+    """
+    out = {}
+    for key, members in table.items():
+        seen = set()
+        clean = []
+        for item in members:
+            name = item[0].split("(")[0]
+            if name in seen:
+                continue
+            seen.add(name)
+            clean.append(item)
+        out[key] = clean
+    return out
+
+
+MEMBERS_DB = _dedupe_member_table(MEMBERS_DB)
+
+# --------------------------------------------------------------------------
+# __gnu_pbds 命名空间补全
+#
+# bits/stdc++.h 不包含 PBDS 头文件，所以补全接受后需要单独插入
+# ext/pb_ds/*.hpp（见 PBDS_HEADERS）。trigger 保持短名（tree /
+# gp_hash_table ...），完整模板骨架放在 insert 里，符合
+# "短 label + 右侧完整签名" 的 LSP 习惯。
+# --------------------------------------------------------------------------
+
+PBDS_HEADERS = (
+    "ext/pb_ds/assoc_container.hpp",
+    "ext/pb_ds/tree_policy.hpp",
+)
+
+PBDS_NAMESPACE_ITEMS = [
+    {
+        "trigger": "tree",
+        "insert": ("tree<${1:int}, ${2:null_type}, ${3:less<int>}, "
+                   "${4:rb_tree_tag}, "
+                   "${5:tree_order_statistics_node_update}>"),
+        "annotation": u"有序树 · order_of_key O(log n)",
+        "annotation_en": u"ordered tree · order_of_key O(log n)",
+        "kind": "t",
+    },
+    {
+        "trigger": "gp_hash_table",
+        "insert": "gp_hash_table<${1:int}, ${2:int}>",
+        "annotation": u"哈希表(探测法) · O(1) avg",
+        "annotation_en": u"hash table (probing) · O(1) avg",
+        "kind": "t",
+    },
+    {
+        "trigger": "cc_hash_table",
+        "insert": "cc_hash_table<${1:int}, ${2:int}>",
+        "annotation": u"哈希表(链地址) · O(1) avg",
+        "annotation_en": u"hash table (chaining) · O(1) avg",
+        "kind": "t",
+    },
+    {
+        "trigger": "null_type",
+        "insert": "null_type",
+        "annotation": u"空映射类型(set 用)",
+        "annotation_en": u"no mapped type (for sets)",
+        "kind": "t",
+    },
+    {
+        "trigger": "rb_tree_tag",
+        "insert": "rb_tree_tag",
+        "annotation": u"红黑树(默认)",
+        "annotation_en": u"red-black tree (default)",
+        "kind": "c",
+    },
+    {
+        "trigger": "splay_tree_tag",
+        "insert": "splay_tree_tag",
+        "annotation": u"伸展树",
+        "annotation_en": u"splay tree",
+        "kind": "c",
+    },
+    {
+        "trigger": "ov_tree_tag",
+        "insert": "ov_tree_tag",
+        "annotation": u"有序向量树",
+        "annotation_en": u"ordered-vector tree",
+        "kind": "c",
+    },
+    {
+        "trigger": "tree_order_statistics_node_update",
+        "insert": "tree_order_statistics_node_update",
+        "annotation": u"启用 order_of_key / find_by_order",
+        "annotation_en": u"enables order_of_key / find_by_order",
+        "kind": "t",
+    },
+    {
+        "trigger": "hash_standard_resize_policy",
+        "insert": "hash_standard_resize_policy",
+        "annotation": u"哈希表扩容策略",
+        "annotation_en": u"hash table resize policy",
+        "kind": "t",
+    },
+    {
+        "trigger": "hash_exponential_size_policy",
+        "insert": "hash_exponential_size_policy",
+        "annotation": u"哈希表容量指数增长",
+        "annotation_en": u"exponential hash size policy",
+        "kind": "t",
+    },
+]
+
 # 元素类型推断表: 容器 -> 元素类型描述(用占位 T/K/V 表示模板参数)
 _ELEM_RULES = {
     "vector": "{T}", "deque": "{T}", "list": "{T}", "array": "{T}",
@@ -505,6 +617,64 @@ STD_TYPES = [
     ("cc_hash_table<${1:int}, ${2:int}>", "PBDS 链式散列映射", "t", False),
 ]
 
+# C++20 ranges / views / concepts 子集。
+#
+# 竞赛里 ranges::sort(v) 比 sort(v.begin(), v.end()) 短很多，但默认
+# cxx_standard 是 c++14：这些条目的 annotation 带 "C++20"，补全排序会
+# 把它们排到 C++14 档之后（_LATER_STD_RE），不会干扰老赛制。
+# 第五个元素是显式 trigger（概念名无法靠 "(" 切分）。
+STD_RANGES = [
+    # <algorithm> 的 ranges 版本
+    ("ranges::sort(${1:v})", "C++20 范围排序 O(n log n)", "f", True),
+    ("ranges::stable_sort(${1:v})", "C++20 范围稳定排序", "f", True),
+    ("ranges::reverse(${1:v})", "C++20 范围翻转", "f", True),
+    ("ranges::min(${1:v})", "C++20 范围最小值", "f", True),
+    ("ranges::max(${1:v})", "C++20 范围最大值", "f", True),
+    ("ranges::min_element(${1:v})", "C++20 最小值迭代器", "f", True),
+    ("ranges::max_element(${1:v})", "C++20 最大值迭代器", "f", True),
+    ("ranges::find(${1:v}, ${2:x})", "C++20 范围查找", "f", True),
+    ("ranges::count(${1:v}, ${2:x})", "C++20 范围计数", "f", True),
+    ("ranges::count_if(${1:v}, ${2:pred})", "C++20 条件计数", "f", True),
+    ("ranges::any_of(${1:v}, ${2:pred})", "C++20 存在满足", "f", True),
+    ("ranges::all_of(${1:v}, ${2:pred})", "C++20 全部满足", "f", True),
+    ("ranges::none_of(${1:v}, ${2:pred})", "C++20 全不满足", "f", True),
+    ("ranges::for_each(${1:v}, ${2:f})", "C++20 范围遍历", "f", True),
+    ("ranges::copy(${1:v}, ${2:out})", "C++20 范围复制", "f", True),
+    ("ranges::unique(${1:v})", "C++20 相邻去重", "f", True),
+    ("ranges::lower_bound(${1:v}, ${2:x})", "C++20 下界", "f", True),
+    ("ranges::upper_bound(${1:v}, ${2:x})", "C++20 上界", "f", True),
+    ("ranges::binary_search(${1:v}, ${2:x})", "C++20 二分存在性", "f", True),
+    ("ranges::iota(${1:v}, ${2:0})", "C++23 填充递增序列", "f", True),
+    # std::views
+    ("views::filter(${1:v}, ${2:pred})", "C++20 惰性过滤视图", "f", True),
+    ("views::transform(${1:v}, ${2:f})", "C++20 惰性映射视图", "f", True),
+    ("views::take(${1:v}, ${2:n})", "C++20 取前 n 个", "f", True),
+    ("views::drop(${1:v}, ${2:n})", "C++20 跳过前 n 个", "f", True),
+    ("views::reverse(${1:v})", "C++20 反向视图", "f", True),
+    ("views::join(${1:v})", "C++20 展平嵌套范围", "f", True),
+    ("views::iota(${1:0}, ${2:n})", "C++20 递增视图", "f", True),
+    ("views::common(${1:v})", "C++20 转成 common_range", "f", True),
+    ("views::counted(${1:it}, ${2:n})", "C++20 从迭代器取 n 个", "f", True),
+    # concepts
+    ("same_as<${1:T}, ${2:U}>", "C++20 类型相同约束", "t", True, "same_as"),
+    ("integral<${1:T}>", "C++20 整型约束", "t", True, "integral"),
+    ("floating_point<${1:T}>", "C++20 浮点约束", "t", True,
+     "floating_point"),
+    ("convertible_to<${1:From}, ${2:To}>", "C++20 可转换约束", "t", True,
+     "convertible_to"),
+    ("derived_from<${1:D}, ${2:B}>", "C++20 派生约束", "t", True,
+     "derived_from"),
+    ("totally_ordered<${1:T}>", "C++20 全序约束", "t", True,
+     "totally_ordered"),
+    ("ranges::range<${1:T}>", "C++20 范围约束", "t", True, "ranges::range"),
+    ("ranges::sized_range<${1:T}>", "C++20 已知长度范围", "t", True,
+     "ranges::sized_range"),
+    ("ranges::forward_range<${1:T}>", "C++20 前向范围", "t", True,
+     "ranges::forward_range"),
+    ("ranges::random_access_range<${1:T}>", "C++20 随机访问范围", "t", True,
+     "ranges::random_access_range"),
+]
+
 KEYWORDS = [
     "alignas", "auto", "bool", "break", "case", "catch", "char", "class",
     "const", "constexpr", "const_cast", "continue", "decltype", "default",
@@ -533,11 +703,57 @@ HEADERS = [
     "list", "iterator", "memory", "cassert",
     # C++20/23
     "span", "format", "ranges", "concepts", "coroutine", "source_location",
-    "stop_token", "filesystem", "charconv", "numbers", "version",
+    "stop_token", "filesystem", "charconv", "numbers", "version", "bit",
     # CP-specific
     "ext/pb_ds/assoc_container.hpp", "ext/pb_ds/tree_policy.hpp",
+    "ext/pb_ds/priority_queue.hpp",
     "ext/rope", "ext/numeric", "sys/types.h",
 ]
+
+# #include 补全的说明文字（英文，详情面板展示）。
+# 竞赛选手最常忘的是 PBDS 与 bits 的区别，这里直接写清楚包含范围。
+HEADER_DETAILS = {
+    "bits/stdc++.h":
+        u"#include <bits/stdc++.h> · all standard library headers "
+        u"(GCC only, not PBDS)",
+    "ext/pb_ds/assoc_container.hpp":
+        u"#include <ext/pb_ds/assoc_container.hpp> · PBDS containers "
+        u"(tree, gp_hash_table, cc_hash_table)",
+    "ext/pb_ds/tree_policy.hpp":
+        u"#include <ext/pb_ds/tree_policy.hpp> · PBDS ordered tree policies "
+        u"(rb_tree_tag, tree_order_statistics_node_update)",
+    "ext/rope":
+        u"#include <ext/rope> · persistent rope (O(log n) insert/erase)",
+    "ext/numeric":
+        u"#include <ext/numeric> · GNU power() and other numeric extensions",
+    "ext/pb_ds/priority_queue.hpp":
+        u"#include <ext/pb_ds/priority_queue.hpp> · heap with join/erase",
+    "sys/types.h": u"#include <sys/types.h> · POSIX typedefs (pid_t, ssize_t)",
+    "ranges": u"#include <ranges> · C++20 ranges and views",
+    "concepts": u"#include <concepts> · C++20 standard concepts",
+    "numbers": u"#include <numbers> · C++20 math constants (pi, e)",
+    "format": u"#include <format> · C++20 std::format (GCC 13+)",
+    "span": u"#include <span> · C++20 non-owning view over contiguous data",
+    "bit": u"#include <bit> · C++20 bit operations (popcount, countl_zero)",
+}
+
+_GENERIC_HEADER_DETAIL = u"#include <%s> · standard library header"
+_GCC_HEADER_DETAIL = u"#include <%s> · GCC implementation header"
+
+
+def header_detail(header):
+    """``#include`` 补全的详情文本（英文，与 LSP 详情面板一致）。"""
+    name = str(header or "")
+    known = HEADER_DETAILS.get(name)
+    if known:
+        return known
+    if name.startswith("ext/"):
+        return _GCC_HEADER_DETAIL % name
+    if name.startswith("bits/"):
+        return _GCC_HEADER_DETAIL % name
+    if name.startswith("sys/"):
+        return _GCC_HEADER_DETAIL % name
+    return _GENERIC_HEADER_DETAIL % name
 
 # --------------------------------------------------------------------------
 # 标准符号 -> 头文件映射 (用于 F12 跳转定义的 std 名称空间回退)
@@ -1603,9 +1819,17 @@ QUOTE_NORMALIZE = ((u"\u2018", "'"), (u"\u2019", "'"), (u"\u201c", '"'), (u"\u20
 # --------------------------------------------------------------------------
 
 
-def _entry(comp, ann, kind, want_std=False):
+def _entry(comp, ann, kind, want_std=False, trigger=None):
+    if trigger is None:
+        trigger = comp.split("(")[0]
+        if trigger.count("<") > trigger.count(">"):
+            # function<${1:void(int)}> 这类：按 "(" 切会切在模板实参里，
+            # 退回取最前面的标识符，弹窗标签才不会被截断。
+            m = _re.match(r"^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", comp)
+            if m:
+                trigger = m.group(0)
     return {
-        "trigger": comp.split("(")[0],
+        "trigger": trigger,
         "insert": comp,
         "annotation": ann or "",
         "kind": kind,
@@ -1619,8 +1843,16 @@ MEMBERS_DB_FAST = dict(
 )
 GENERIC_MEMBERS_FAST = [_entry(c, a, k) for (c, a, k) in GENERIC_MEMBERS]
 
-_STD_COMBINED = STD_FUNCTIONS + STD_TYPES + GLOBAL_CONSTANTS
-STD_ITEMS_ALL = [_entry(c, a, k, w) for (c, a, k, w) in _STD_COMBINED]
+_STD_COMBINED = STD_FUNCTIONS + STD_TYPES + GLOBAL_CONSTANTS + STD_RANGES
+STD_ITEMS_ALL = []
+# 同一触发器只保留第一条（如 <cmath> 和 <cstdlib> 都提供 abs）。
+_STD_SEEN = set()
+for _std_item in _STD_COMBINED:
+    _entry_item = _entry(*_std_item)
+    if _entry_item["trigger"] in _STD_SEEN:
+        continue
+    _STD_SEEN.add(_entry_item["trigger"])
+    STD_ITEMS_ALL.append(_entry_item)
 
 # 性能优化：预计算 set 用于 O(1) 查找
 KEYWORDS_SET = frozenset(KEYWORDS)
@@ -1886,6 +2118,24 @@ DETAIL_EN = {
     "string": "String",
     "bitset<${1:N}>": "Fixed-size bit set",
     "complex<${1:double}>": "Complex number",
+    # __gnu_pbds 专有成员（其它容器没有，直接放全局表）
+    "order_of_key(${1:x})":
+        "Number of elements strictly less than x, O(log n)",
+    "find_by_order(${1:k})":
+        "Iterator to the k-th smallest element (0-based), O(log n)",
+    "operator[](${1:k})": "Access or default-insert the value for a key",
+    "insert({${1:k}, ${2:v}})": "Insert a key-value pair",
+    # PBDS 容器类型（完整模板骨架作为键）
+    "__gnu_pbds::tree<${1:int}, null_type, less<${1:int}>, rb_tree_tag, "
+    "tree_order_statistics_node_update>":
+        "PBDS ordered set: order_of_key / find_by_order, O(log n)",
+    "__gnu_pbds::tree<${1:int}, ${2:int}, less<${1:int}>, rb_tree_tag, "
+    "tree_order_statistics_node_update>":
+        "PBDS ordered map: order_of_key / find_by_order, O(log n)",
+    "gp_hash_table<${1:int}, null_type>": "PBDS hash set (open addressing)",
+    "gp_hash_table<${1:int}, ${2:int}>": "PBDS hash map (open addressing)",
+    "cc_hash_table<${1:int}, null_type>": "PBDS hash set (chaining)",
+    "cc_hash_table<${1:int}, ${2:int}>": "PBDS hash map (chaining)",
     "mt19937": "Mersenne Twister random engine (random)",
     "function<${1:void(int)}>": "Type-erased callable",
 }
@@ -1918,6 +2168,10 @@ DETAIL_EN_BY_CONTEXT = {
     ("unordered_multiset", "clear()"): "Remove all elements",
     ("unordered_set", "clear()"): "Remove all elements",
     ("vector", "clear()"): "Remove all elements",
+    ("pb_ds_tree_set", "clear()"): "Remove all elements",
+    ("pb_ds_tree_map", "clear()"): "Remove all elements",
+    ("pb_ds_hash_set", "clear()"): "Remove all elements",
+    ("pb_ds_hash_map", "clear()"): "Remove all elements",
     ("array", "front()"): "First element",
     ("basic_string", "front()"): "First character",
     ("deque", "front()"): "First element",
@@ -1958,6 +2212,52 @@ DETAIL_EN_BY_CONTEXT = {
     ("stack", "top()"): "Top element",
 }
 
+# C++20 ranges / views / concepts 的英文说明。
+# 单独放一张表：DETAIL_EN 的键是 "名字(...)" 形式的补全模板，概念条目
+# 没有括号，混在一起容易看漏。
+DETAIL_EN_RANGES = {
+    "ranges::sort(${1:v})": "C++20 range sort, O(n log n)",
+    "ranges::stable_sort(${1:v})": "C++20 range stable sort",
+    "ranges::reverse(${1:v})": "C++20 reverse a range",
+    "ranges::min(${1:v})": "C++20 smallest element of a range",
+    "ranges::max(${1:v})": "C++20 largest element of a range",
+    "ranges::min_element(${1:v})": "C++20 iterator to the smallest element",
+    "ranges::max_element(${1:v})": "C++20 iterator to the largest element",
+    "ranges::find(${1:v}, ${2:x})": "C++20 find in a range",
+    "ranges::count(${1:v}, ${2:x})": "C++20 count equal elements",
+    "ranges::count_if(${1:v}, ${2:pred})": "C++20 count matching elements",
+    "ranges::any_of(${1:v}, ${2:pred})": "C++20 true if any element matches",
+    "ranges::all_of(${1:v}, ${2:pred})": "C++20 true if all elements match",
+    "ranges::none_of(${1:v}, ${2:pred})": "C++20 true if no element matches",
+    "ranges::for_each(${1:v}, ${2:f})": "C++20 apply f to every element",
+    "ranges::copy(${1:v}, ${2:out})": "C++20 copy a range",
+    "ranges::unique(${1:v})": "C++20 drop consecutive duplicates",
+    "ranges::lower_bound(${1:v}, ${2:x})": "C++20 first element >= x",
+    "ranges::upper_bound(${1:v}, ${2:x})": "C++20 first element > x",
+    "ranges::binary_search(${1:v}, ${2:x})": "C++20 binary search on a range",
+    "ranges::iota(${1:v}, ${2:0})": "C++23 fill with increasing values",
+    "views::filter(${1:v}, ${2:pred})": "C++20 lazy filtering view",
+    "views::transform(${1:v}, ${2:f})": "C++20 lazy mapping view",
+    "views::take(${1:v}, ${2:n})": "C++20 first n elements view",
+    "views::drop(${1:v}, ${2:n})": "C++20 skip first n elements",
+    "views::reverse(${1:v})": "C++20 reversed view",
+    "views::join(${1:v})": "C++20 flatten a range of ranges",
+    "views::iota(${1:0}, ${2:n})": "C++20 increasing value view",
+    "views::common(${1:v})": "C++20 adapt to a common_range",
+    "views::counted(${1:it}, ${2:n})": "C++20 n elements from an iterator",
+    "same_as<${1:T}, ${2:U}>": "C++20 same-type constraint",
+    "integral<${1:T}>": "C++20 integral constraint",
+    "floating_point<${1:T}>": "C++20 floating-point constraint",
+    "convertible_to<${1:From}, ${2:To}>": "C++20 convertibility constraint",
+    "derived_from<${1:D}, ${2:B}>": "C++20 derivation constraint",
+    "totally_ordered<${1:T}>": "C++20 total order constraint",
+    "ranges::range<${1:T}>": "C++20 range constraint",
+    "ranges::sized_range<${1:T}>": "C++20 sized range constraint",
+    "ranges::forward_range<${1:T}>": "C++20 forward range constraint",
+    "ranges::random_access_range<${1:T}>":
+        "C++20 random access range constraint",
+}
+
 
 def en_detail(trigger, container=None):
     """English annotation for a built-in database entry, or None."""
@@ -1965,4 +2265,7 @@ def en_detail(trigger, container=None):
         v = DETAIL_EN_BY_CONTEXT.get((container, trigger))
         if v:
             return v
+    v = DETAIL_EN_RANGES.get(trigger)
+    if v:
+        return v
     return DETAIL_EN.get(trigger)

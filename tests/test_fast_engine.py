@@ -256,6 +256,105 @@ class CompletionTests(unittest.TestCase):
                         "kind", "detail", "detail_en"):
                 self.assertIn(key, d)
 
+    def test_auto_iterator_type_is_inferred(self):
+        src = (u"vector<int> v;\n"
+               u"int main() {\n"
+               u"    auto it = v.find(1);\n"
+               u"    it\n"
+               u"}\n")
+        offset = src.rindex(u"it") + 2
+        items = self.engine.complete(src, offset)
+        by_trigger = dict((d["trigger"], d) for d in items)
+        self.assertEqual(by_trigger["it"]["detail"],
+                         "vector<int>::iterator")
+
+    def test_auto_value_type_from_at(self):
+        src = (u"map<string, int> m;\n"
+               u"void f() { auto value = m.at(\"k\"); value; }\n")
+        offset = src.rindex(u"value") + 5
+        items = self.engine.complete(src, offset)
+        by_trigger = dict((d["trigger"], d) for d in items)
+        self.assertEqual(by_trigger["value"]["detail"], "int")
+
+    def test_macro_kind_is_macro(self):
+        src = u"#define MAXN 100\nint a[MAXN];\nint main() { MAX }\n"
+        offset = src.rindex(u"MAX") + 3
+        items = self.engine.complete(src, offset)
+        by_trigger = dict((d["trigger"], d) for d in items)
+        self.assertEqual(by_trigger["MAXN"]["kind"], "d")
+
+    def test_pbds_namespace_completion(self):
+        src = u"int main() {\n    __gnu_pbds::\n}\n"
+        offset = src.index(u"__gnu_pbds::") + len(u"__gnu_pbds::")
+        triggers = self._triggers(src, offset)
+        for name in ("tree", "gp_hash_table", "rb_tree_tag"):
+            self.assertIn(name, triggers)
+
+    def test_include_completion_details(self):
+        src = u"#include <ext/pb_ds/assoc\n"
+        offset = len(src) - 1
+        items = self.engine.complete(src, offset)
+        by_trigger = dict((d["trigger"], d) for d in items)
+        entry = by_trigger["ext/pb_ds/assoc_container.hpp"]
+        self.assertIn("PBDS", entry["detail"])
+
+
+class CallInfoTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = ca_fast.FastEngine()
+
+    def test_signature_and_argument_index(self):
+        src = (u"void solve(int n, vector<int>& a) {\n}\n"
+               u"int main() {\n"
+               u"    solve(n, a);\n"
+               u"}\n")
+        offset = src.index(u"a);") + 1
+        info = self.engine.call_info(src, offset)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.name, "solve")
+        self.assertEqual(info.arg_index, 1)
+        self.assertEqual(info.arg_count, 2)
+        self.assertEqual(info.param, "vector<int>& a")
+        self.assertEqual(info.signature,
+                         "void solve(int n, vector<int>& a)")
+
+    def test_first_argument(self):
+        src = (u"void solve(int n, vector<int>& a) {\n}\n"
+               u"int main() { solve(|); }\n")
+        offset = src.index(u"|")
+        info = self.engine.call_info(src, offset)
+        self.assertEqual(info.arg_index, 0)
+        self.assertEqual(info.param, "int n")
+
+    def test_unknown_function_still_reports_name(self):
+        src = u"int main() { helper(1, 2); }\n"
+        offset = src.index(u"2")
+        info = self.engine.call_info(src, offset)
+        self.assertEqual(info.name, "helper")
+        self.assertEqual(info.arg_index, 1)
+        self.assertEqual(info.signature, "")
+
+    def test_outside_call_returns_none(self):
+        src = u"int main() { int x = 1; }\n"
+        offset = src.index(u"1;")
+        self.assertIsNone(self.engine.call_info(src, offset))
+
+    def test_nested_call_counts_only_outer_commas(self):
+        src = (u"void f(int a, int b, int c) {}\n"
+               u"int main() { f(g(1, 2), 3, 4); }\n")
+        offset = src.index(u"3,") + 1
+        info = self.engine.call_info(src, offset)
+        self.assertEqual(info.name, "f")
+        self.assertEqual(info.arg_index, 1)
+
+    def test_template_call_name(self):
+        src = (u"template <class T> void go(int a, int b) {}\n"
+               u"int main() { go<int>(1, 2); }\n")
+        offset = src.index(u"2)")
+        info = self.engine.call_info(src, offset)
+        self.assertEqual(info.name, "go")
+        self.assertEqual(info.arg_index, 1)
+
 
 class DefinitionTests(unittest.TestCase):
     def setUp(self):

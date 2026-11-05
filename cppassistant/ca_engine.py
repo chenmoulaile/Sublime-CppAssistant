@@ -18,6 +18,7 @@ from .ca_stdlib_data import (
     HEADERS, TRANSLATIONS, QUOTE_NORMALIZE,
     WARNING_FLAG_ZH, _ELEM_RULES,
     STD_SYMBOL_HEADER, STD_HEADERS_SET, en_detail,
+    PBDS_NAMESPACE_ITEMS, PBDS_HEADERS, header_detail,
 )
 
 # ---------------------------------------------------------------------------
@@ -607,7 +608,26 @@ def build_env(text):
         itv, cont = m.group(1), m.group(2)
         if cont in vars_:
             iters[itv] = cont
+            # `auto it = v.find(x)` 的类型是 vector<int>::iterator；
+            # 补全里直接显示迭代器类型，比 "auto" 有用得多。
+            ctype = var_types.get(cont)
+            inferred = _iter_type_of(ctype, m.group(3)) if ctype else u""
+            if inferred:
+                current = str(var_types.get(itv) or "")
+                if not current or current.startswith("auto"):
+                    var_types[itv] = inferred
     return env
+
+
+def _iter_type_of(container_type, method):
+    """把容器类型 + 成员函数名推断成迭代器类型（保守：不确定就返回空）。"""
+    name = _collapse_ws(container_type)
+    if not name:
+        return u""
+    if method in ("begin", "end", "rbegin", "rend", "find",
+                  "lower_bound", "upper_bound"):
+        return name + u"::iterator"
+    return u""
 
 
 def _resolve_receiver(env, receiver, accessor, char_before=None):
@@ -780,7 +800,7 @@ def user_items(text, env=None):
         add(name, "t", u"枚举", u"enum", u"enum " + name)
     for m in _DEFINE_RE.finditer(text):
         name = m.group(1)
-        add(name, "c", u"宏定义", u"macro", u"#define " + name)
+        add(name, "d", u"宏定义", u"macro", u"#define " + name)
     for m in _ALIAS_RE.finditer(text):
         name = m.group(1)
         end = text.find(u";", m.start())
@@ -900,7 +920,7 @@ def analyze(text, offset, cache_key=None, cache_version=None,
             results.append({"trigger": h, "insert": h,
                             "annotation": u"头文件", "annotation_en": "header",
                             "kind": "t",
-                            "detail": "#include " + h, "_score": sc})
+                            "detail": header_detail(h), "_score": sc})
         results.sort(key=lambda d: (d["_score"], len(d["trigger"])))
         for d in results:
             del d["_score"]
@@ -946,6 +966,29 @@ def analyze(text, offset, cache_key=None, cache_version=None,
                  False,
                  en_detail(it["insert"], key) or en_detail(it["insert"]) or u"",
                  detail, detail))
+    elif accessor == "scope" and receiver in ("__gnu_pbds", "pb_ds"):
+        # PBDS 命名空间成员：trigger 是短名，insert 带完整模板骨架。
+        # want_std=False：__gnu_pbds 不是 std 的子命名空间，绝不能补 std::。
+        for it in PBDS_NAMESPACE_ITEMS:
+            raw_items.append(
+                (2, it["trigger"], it["insert"], it["annotation"],
+                 it["kind"], False, it["annotation_en"],
+                 it["insert"], it["insert"]))
+    elif accessor == "scope" and receiver in ("ranges", "views"):
+        # std::ranges:: / std::views:: 作用域：只列出该子命名空间的成员，
+        # 并去掉前缀（用户已经打出了 ranges:: / views::）。
+        ns = receiver + "::"
+        for it in STD_ITEMS_ALL:
+            insert = it["insert"]
+            if not insert.startswith(ns):
+                continue
+            short_insert = insert[len(ns):]
+            short_trigger = it["trigger"][len(ns):] \
+                if it["trigger"].startswith(ns) else short_insert
+            raw_items.append(
+                (2, short_trigger, short_insert, it["annotation"],
+                 it["kind"], False,
+                 en_detail(insert) or u"", short_insert, short_insert))
     elif accessor == "scope":
         raw_items = [(2, it["trigger"], it["insert"], it["annotation"],
                       it["kind"], False, en_detail(it["insert"]) or u"",
@@ -996,6 +1039,12 @@ def analyze(text, offset, cache_key=None, cache_version=None,
         del d["_score"]
     if len(results) > 200:
         results = results[:200]
+
+    if accessor == "scope" and receiver in ("__gnu_pbds", "pb_ds"):
+        # 这些条目全部来自 PBDS：补全被接受后必须插入 ext/pb_ds 头文件
+        # （bits/stdc++.h 不包含它们）。
+        for d in results:
+            d["includes"] = list(PBDS_HEADERS)
 
     # 写入缓存（mode 也写进去，下次切换模式时会自动失效）
     if cache_key is not None:

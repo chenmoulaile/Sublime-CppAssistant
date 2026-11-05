@@ -26,6 +26,7 @@ import threading
 import time
 import zlib
 import json
+import xml.etree.ElementTree as ET
 
 import sublime
 import sublime_plugin
@@ -34,14 +35,17 @@ import sublime_plugin
 # 一定可用。这里不再修改模块搜索路径 —— 那会影响其它包（Package Control
 # 审查意见），也没有必要。
 from .cppassistant import ca_clangd  # noqa: E402
+from .cppassistant import ca_config  # noqa: E402
 from .cppassistant import ca_engine  # noqa: E402
 from .cppassistant import ca_filters  # noqa: E402
 from .cppassistant import ca_fast  # noqa: E402
+from .cppassistant import ca_fixes  # noqa: E402
 from .cppassistant import ca_menu_language  # noqa: E402
 from .cppassistant import ca_semantic  # noqa: E402
 from .cppassistant import ca_template_packs  # noqa: E402
 from .cppassistant import ca_user_snippets  # noqa: E402
-from .cppassistant.ca_stdlib_data import SNIPPETS, en_detail  # noqa: E402
+from .cppassistant.ca_stdlib_data import (  # noqa: E402
+    SNIPPETS, en_detail, PBDS_HEADERS)
 
 
 def _hidden_window_startupinfo():
@@ -84,6 +88,11 @@ _basic_gen = {}        # view_id -> 代号（丢弃过期基础检查结果）
 _lint_procs = {}       # view_id -> 运行中的编译器进程（被取代时立刻终止）
 _lint_state = {}       # view_id -> {"compiler": [...], "basic": [...]}
 _LINT_CACHE = {}       # view_id -> (缓存键, 诊断)；文本与设置未变则零延迟复用
+
+# 状态栏：视图 -> 最近一次补全来源（clangd / builtin / libclang），
+# 以及调用签名提示的防抖定时器。
+_last_completion_source = {}
+_status_timers = {}
 
 
 # ---------------------------------------------------------------------------
@@ -153,13 +162,14 @@ def plugin_unloaded():
         except Exception:
             pass
     _lint_procs.clear()
-    for timers in (_lint_timers, _basic_timers, _sig_timers):
+    for timers in (_lint_timers, _basic_timers, _sig_timers, _status_timers):
         for t in list(timers.values()):
             try:
                 t.cancel()
             except Exception:
                 pass
         timers.clear()
+    _last_completion_source.clear()
     _phantom_sets.clear()
     _diag_store.clear()
     _diag_items.clear()
@@ -197,6 +207,73 @@ def _is_cpp(view):
     return view.score_selector(0, CPP_SCOPE) > 0
 
 
+_STATUS_KEY = "cppassistant"
+
+
+def _update_status_hint(view):
+    """状态栏提示：补全来源 + 当前调用签名 + 第几个参数。
+
+    Sublime 没有 CodeLens，状态栏是唯一"随时可见又不挡代码"的位置。
+    开销控制：只在文件 < 400KB 时分析，且复用 FastEngine 的增量缓存
+    （与补全共用同一份 Analysis）。
+    """
+    try:
+        if not view.is_valid():
+            return
+        if not _s("show_status_hint", True) or not _is_cpp(view):
+            view.erase_status(_STATUS_KEY)
+            return
+        parts = []
+        source = _last_completion_source.get(view.id())
+        if source:
+            parts.append(u"[%s]" % source)
+        info = None
+        size = view.size()
+        if size <= 400000:
+            sel = view.sel()
+            if sel:
+                text = view.substr(sublime.Region(0, size))
+                info = ca_fast.call_info(
+                    text, sel[0].begin(),
+                    cache_key=view.buffer_id(),
+                    version=view.change_count())
+        if info:
+            signature = info.signature or u"%s(...)" % info.name
+            if len(signature) > 90:
+                signature = signature[:87] + u"..."
+            parts.append(signature)
+            if info.param:
+                parts.append(u"arg %d/%d: %s"
+                             % (info.arg_index + 1, info.arg_count,
+                                info.param))
+        text = u" · ".join([p for p in parts if p])
+        if text:
+            view.set_status(_STATUS_KEY, text)
+        else:
+            view.erase_status(_STATUS_KEY)
+    except Exception as e:
+        _log_error("status hint", e)
+
+
+def _schedule_status_hint(view):
+    """光标移动后 120ms 更新状态栏（防抖，避免连续按键时重复分析）。"""
+    try:
+        if not _s("show_status_hint", True):
+            return
+        vid = view.id()
+        timer = _status_timers.pop(vid, None)
+        if timer is not None:
+            timer.cancel()
+        timer = threading.Timer(
+            0.12, lambda: sublime.set_timeout(
+                lambda: _update_status_hint(view), 0))
+        timer.daemon = True
+        timer.start()
+        _status_timers[vid] = timer
+    except Exception as e:
+        _log_error("status hint schedule", e)
+
+
 # ---------------------------------------------------------------------------
 # 补全
 # ---------------------------------------------------------------------------
@@ -222,6 +299,7 @@ _KIND_LABEL = {
     "k": (u"keyword", u"关键字"),
     "u": (u"custom", u"自定义"),
     "s": (u"snippet", u"代码片段"),
+    "d": (u"macro", u"宏"),
 }
 
 
@@ -247,6 +325,8 @@ _KIND_MAP = {
     "k": lambda: (sublime.KIND_ID_KEYWORD, "k", _kind_label("k")),
     "u": lambda: (sublime.KIND_ID_FUNCTION, "u", _kind_label("u")),
     "s": lambda: (sublime.KIND_ID_SNIPPET, "S", _kind_label("s")),
+    # 宏不是函数：用变量图标 + macro 标签，避免补全列表里宏和函数混淆。
+    "d": lambda: (sublime.KIND_ID_VARIABLE, "d", _kind_label("d")),
 }
 
 
@@ -866,9 +946,14 @@ def _stash_includes(view, dicts):
     try:
         if not _s("auto_insert_includes", True):
             return
+        pbds_ok = bool(_s("cpp_auto_insert_pbds_includes", True))
         items = []
         for d in dicts:
             incs = d.get("includes")
+            if not incs:
+                continue
+            if not pbds_ok:
+                incs = [h for h in incs if h not in PBDS_HEADERS]
             if not incs:
                 continue
             items.append((d.get("trigger") or "",
@@ -884,6 +969,30 @@ def _stash_includes(view, dicts):
         }
     except Exception as e:
         _log_error("include insertion staging", e)
+
+
+# PBDS 符号：bits/stdc++.h 不包含 ext/pb_ds，必须单独插入头文件。
+_PBDS_COMPLETION_RE = re.compile(
+    r"(?:__gnu_pbds|pb_ds|gp_hash_table|cc_hash_table|"
+    r"tree_order_statistics_node_update|rb_tree_tag|splay_tree_tag|"
+    r"ov_tree_tag|hash_standard_resize_policy|"
+    r"hash_exponential_size_policy|order_of_key|find_by_order)")
+
+
+def _attach_pbds_includes(dicts):
+    """给 PBDS 相关补全项挂上 ext/pb_ds 头文件。"""
+    if not _s("cpp_auto_insert_pbds_includes", True):
+        return dicts
+    try:
+        for d in dicts:
+            if d.get("includes"):
+                continue
+            blob = u"%s %s" % (d.get("trigger") or "", d.get("insert") or "")
+            if _PBDS_COMPLETION_RE.search(blob):
+                d["includes"] = list(PBDS_HEADERS)
+    except Exception as e:
+        _log_error("pbds include attach", e)
+    return dicts
 
 
 def _apply_pending_includes(view, hdrs):
@@ -905,15 +1014,19 @@ def _apply_pending_includes(view, hdrs):
 
 
 class CaInsertPendingIncludesCommand(sublime_plugin.TextCommand):
-    """把缺失的 #include <X> 插到最后一个 #include 行之后（无则插文件开头）。"""
+    """把缺失的 #include <X> 插到最后一个 #include 行之后（无则插文件开头）。
+
+    万能头 ``bits/stdc++.h`` 会压掉普通头文件的插入，但它**不包含**
+    PBDS（``ext/pb_ds/*``），所以 PBDS 头文件不受万能头影响。
+    """
 
     def run(self, edit, includes=None):
         view = self.view
         if not includes:
             return
         text = view.substr(sublime.Region(0, view.size()))
-        if "bits/stdc++.h" in text:
-            return
+        has_bits = "bits/stdc++.h" in text
+        pbds_ok = bool(_s("cpp_auto_insert_pbds_includes", True))
         missing = []
         seen = set()
         for h in includes:
@@ -921,6 +1034,11 @@ class CaInsertPendingIncludesCommand(sublime_plugin.TextCommand):
             if not h or h in seen:
                 continue
             seen.add(h)
+            if h in PBDS_HEADERS:
+                if not pbds_ok:
+                    continue
+            elif has_bits:
+                continue
             if ('#include <%s>' % h) in text or ('#include "%s"' % h) in text:
                 continue
             missing.append(h)
@@ -938,6 +1056,13 @@ class CaInsertPendingIncludesCommand(sublime_plugin.TextCommand):
             pt = 0
             block = "\n".join("#include <%s>" % h for h in missing) + "\n"
         view.insert(edit, pt, block)
+        sublime.status_message("[CppAssistant] added %s"
+                               % ", ".join("#include <%s>" % h
+                                           for h in missing))
+        # 头文件变了：让 clangd 立刻重新同步文档，随后的补全不用重新输入
+        # 就能拿到新的符号表（也顺手丢掉 include 缓存）。
+        if _is_cpp(view):
+            sublime.set_timeout(lambda: _warm_clangd_document(view), 0)
 
 
 def _maybe_refresh_popup(view, key):
@@ -1035,9 +1160,13 @@ class CaEventListener(sublime_plugin.EventListener):
                             if d.get("trigger") not in seen_lc]
                         _clangd_state["stats"]["libclang"] += 1
             dicts = _tier_sort_static(results, prefix)
+            _attach_pbds_includes(dicts)
+            _stash_includes(view, dicts)
             _clangd_state["stats"]["builtin"] += 1
+            _last_completion_source[view.id()] = u"builtin"
         else:
             _clangd_state["stats"]["clangd"] += 1
+            _last_completion_source[view.id()] = u"clangd"
         if not dicts:
             return None
         if clangd_style:
@@ -1081,6 +1210,7 @@ class CaEventListener(sublime_plugin.EventListener):
                 items = cache.get(key)
                 if items:
                     dicts = _snippet_items_for_prefix(prefix) + items
+                    _attach_pbds_includes(dicts)
                     _stash_includes(view, dicts)
                     return dicts
                 return None
@@ -1116,6 +1246,7 @@ class CaEventListener(sublime_plugin.EventListener):
         if not parsed:
             return None  # 本次先弹内置数据库兜底，clangd 结果到了再刷新
         dicts = _snippet_items_for_prefix(prefix) + parsed
+        _attach_pbds_includes(dicts)
         _stash_includes(view, dicts)
         return dicts
 
@@ -1132,6 +1263,12 @@ class CaEventListener(sublime_plugin.EventListener):
         if _is_cpp(view) and _s("enable_clangd_engine", True):
             sublime.set_timeout(
                 lambda: _warm_clangd_document(view), 50)
+        _schedule_status_hint(view)
+
+    # ---- 状态栏：调用签名 / 补全来源 ----
+    def on_selection_modified_async(self, view):
+        if _is_cpp(view):
+            _schedule_status_hint(view)
 
     # ---- 补全被接受后的头文件插入 ----
     def on_text_changed_async(self, view, changes):
@@ -1270,10 +1407,12 @@ class CaEventListener(sublime_plugin.EventListener):
 
     def on_close(self, view):
         vid = view.id()
-        for timers in (_lint_timers, _basic_timers, _sig_timers):
+        for timers in (_lint_timers, _basic_timers, _sig_timers,
+                       _status_timers):
             t = timers.pop(vid, None)
             if t is not None:
                 t.cancel()
+        _last_completion_source.pop(vid, None)
         proc = _lint_procs.pop(vid, None)
         if proc is not None:
             try:
@@ -1447,6 +1586,8 @@ def plugin_loaded():
     # 应用 menu_language（默认 en 也会写一个空覆盖文件，清掉旧版本可能
     # 留下的无效菜单）。延迟一点，等 Sublime 完成资源扫描。
     sublime.set_timeout(_sync_menu_language, 300)
+    # 非法设置值会被 Sublime 静默忽略，加载后立刻提示一次。
+    sublime.set_timeout(_report_settings_problems, 900)
 
 
 # ---------------------------------------------------------------------------
@@ -3774,15 +3915,33 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
             if not unique:
                 view.set_status("ca_refs", u"no references found")
                 return
+            # 按文件分组：先按路径排序，再在每项前面标 [该文件第 n 个/共 m 个]，
+            # quick panel 里同一文件的引用会连续出现，也保留了快速过滤。
+            def sort_key(loc):
+                path = ca_clangd.uri_to_path(loc.get("uri"))
+                line0, char0 = _location_start(loc)
+                return (path or loc.get("uri") or "", line0, char0)
+
+            unique.sort(key=sort_key)
             shown = unique[:1000]
+            counts = {}
+            for loc in unique:
+                file_key = ca_clangd.uri_to_path(loc.get("uri")) or \
+                    loc.get("uri") or u""
+                counts[file_key] = counts.get(file_key, 0) + 1
             cache = {}
+            seen_in_file = {}
             items = []
             for loc in shown:
                 path = ca_clangd.uri_to_path(loc.get("uri"))
                 line0, char0 = _location_start(loc)
                 where = os.path.basename(path) or loc.get("uri") or u"?"
+                file_key = path or loc.get("uri") or u""
+                seen_in_file[file_key] = seen_in_file.get(file_key, 0) + 1
                 items.append([
-                    u"%s:%d:%d" % (where, line0 + 1, char0 + 1),
+                    u"[%d/%d] %s:%d:%d" % (
+                        seen_in_file[file_key], counts.get(file_key, 0),
+                        where, line0 + 1, char0 + 1),
                     _location_preview(loc, cache),
                 ])
 
@@ -4232,3 +4391,507 @@ class CaImportSnippetsCommand(sublime_plugin.WindowCommand):
         except Exception as e:
             _log_error("import snippets", e)
             sublime.error_message("Failed to import snippets: %s" % e)
+
+
+# ---------------------------------------------------------------------------
+# 全角标点：一键修复（注释 / 字符串保持原样）
+# ---------------------------------------------------------------------------
+
+class CaFixFullwidthPunctuationCommand(sublime_plugin.TextCommand):
+    """把代码区里的全角标点替换为半角。
+
+    只处理注释与字符串之外的区域：``printf("答案：%d", x)`` 里的中文
+    标点是用户想要的，不能动。有选区时只改选区。
+    """
+
+    def run(self, edit):
+        view = self.view
+        if not _is_cpp(view):
+            sublime.status_message(
+                "CppAssistant: full-width fix only works in C/C++ buffers")
+            return
+        selections = view.sel()
+        region = selections[0] if selections and not selections[0].empty() \
+            else None
+        start = region.begin() if region is not None else 0
+        end = region.end() if region is not None else view.size()
+        text = view.substr(sublime.Region(start, end))
+        fixes = ca_fixes.find_fullwidth(text)
+        if not fixes:
+            sublime.status_message(
+                "CppAssistant: no full-width punctuation in code")
+            return
+        message = (u"Replace %d full-width character(s) with half-width?\n\n"
+                   u"%s" % (len(fixes), ca_fixes.describe(fixes)))
+        if not sublime.ok_cancel_dialog(message, u"Fix"):
+            return
+        for fix in reversed(fixes):
+            point = start + fix.offset
+            view.replace(edit, sublime.Region(point, point + 1), fix.new)
+        sublime.status_message(
+            "[CppAssistant] replaced %d full-width character(s)" % len(fixes))
+
+
+# ---------------------------------------------------------------------------
+# 模板 / 片段浏览与管理
+# ---------------------------------------------------------------------------
+
+def _all_cpp_snippets():
+    """所有参与补全的 C/C++ 片段（用户片段 + 已安装模板包）。"""
+    try:
+        return ca_user_snippets.get_cpp_snippets(force_reload=True)
+    except Exception as e:
+        _log_error("snippet catalog", e)
+        return []
+
+
+def _snippet_preview_item(entry, max_lines=20):
+    """Quick Panel 条目：标题行 + 前 N 行预览（Sublime 支持多行条目）。"""
+    content = entry.get("insert") or u""
+    lines = content.splitlines() or [u""]
+    desc = entry.get("detail") or entry.get("annotation") or u""
+    header = u"%s  ·  %s  ·  %d line(s)" % (
+        entry.get("trigger") or u"?", desc, len(lines))
+    item = [header]
+    for line in lines[:max_lines]:
+        item.append(u"    " + line.replace("\t", "    "))
+    if len(lines) > max_lines:
+        item.append(u"    ... %d more line(s)" % (len(lines) - max_lines))
+    return item
+
+
+class CaBrowseTemplatesCommand(sublime_plugin.WindowCommand):
+    """浏览可用模板片段：Quick Panel 内联预览前 20 行，选中即插入。"""
+
+    def run(self):
+        entries = _all_cpp_snippets()
+        if not entries:
+            sublime.status_message(
+                "CppAssistant: no snippets installed - run "
+                "'Install Template Pack' first")
+            return
+        view = self.window.active_view()
+        items = [_snippet_preview_item(e) for e in entries]
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            if view is None or not view.is_valid():
+                sublime.status_message("CppAssistant: no active view")
+                return
+            entry = entries[idx]
+            view.run_command("insert_snippet",
+                             {"contents": entry.get("insert") or u""})
+            sublime.status_message("[CppAssistant] inserted %s"
+                                   % (entry.get("trigger") or u"snippet"))
+
+        self.window.show_quick_panel(items, on_done, sublime.MONOSPACE_FONT)
+
+
+def _parse_snippet_file(path):
+    """读取一个 .sublime-snippet，返回 trigger/content/desc 或 None。"""
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        return None
+    if root.tag != "snippet":
+        return None
+    trigger = (root.findtext("tabTrigger") or "").strip()
+    content = root.findtext("content") or ""
+    desc = (root.findtext("description") or "").strip() or trigger
+    scope = (root.findtext("scope") or "").strip()
+    if not trigger or not content:
+        return None
+    return {"trigger": trigger, "content": content, "desc": desc,
+            "scope": scope, "path": path}
+
+
+def _snippet_files():
+    """用户片段目录 + 已安装模板包里的片段文件清单。"""
+    roots = []
+    try:
+        roots.append(("user", _user_snippets_dir()))
+    except Exception as e:
+        _log_error("user snippet dir", e)
+    pack_root = _template_root()
+    if os.path.isdir(pack_root):
+        try:
+            for name in sorted(os.listdir(pack_root)):
+                path = os.path.join(pack_root, name)
+                if os.path.isdir(path):
+                    roots.append((name, path))
+        except OSError:
+            pass
+    out = []
+    for origin, directory in roots:
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".sublime-snippet"):
+                continue
+            parsed = _parse_snippet_file(os.path.join(directory, name))
+            if parsed is None:
+                continue
+            parsed["origin"] = origin
+            out.append(parsed)
+    return out
+
+
+def _snippet_trash_dir():
+    """删除的片段放这里，并改掉扩展名，避免仍被补全扫描到。"""
+    path = os.path.join(sublime.packages_path(), "User",
+                        "CppAssistantSnippetTrash")
+    if not os.path.isdir(path):
+        os.makedirs(path)
+    return path
+
+
+class CaManageUserSnippetsCommand(sublime_plugin.WindowCommand):
+    """管理片段文件：打开 / 重命名 trigger / 移入回收站。"""
+
+    def run(self):
+        entries = _snippet_files()
+        if not entries:
+            sublime.status_message("CppAssistant: no snippet files found")
+            return
+        items = []
+        for entry in entries:
+            origin = u"user" if entry["origin"] == "user" else entry["origin"]
+            items.append([u"%s  ·  %s" % (entry["trigger"], entry["desc"]),
+                          u"%s  (%s)" % (entry["path"], origin)])
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            self._choose_action(entries[idx])
+
+        self.window.show_quick_panel(items, on_done)
+
+    def _choose_action(self, entry):
+        actions = [u"Open snippet file", u"Rename trigger",
+                   u"Move to trash (recoverable)"]
+
+        def on_done(idx):
+            if idx < 0:
+                return
+            if idx == 0:
+                self.window.open_file(entry["path"])
+            elif idx == 1:
+                self._rename(entry)
+            else:
+                self._trash(entry)
+
+        self.window.show_quick_panel(actions, on_done)
+
+    def _rename(self, entry):
+        def on_done(value):
+            trigger = (value or "").strip()
+            if not trigger or trigger == entry["trigger"]:
+                return
+            if not _safe_snippet_name(trigger):
+                sublime.error_message("Invalid snippet trigger: %s" % trigger)
+                return
+            name = _safe_snippet_name(trigger) + ".sublime-snippet"
+            directory = os.path.dirname(entry["path"])
+            target = os.path.join(directory, name)
+            overwrite = False
+            if os.path.exists(target) and os.path.abspath(target) != \
+                    os.path.abspath(entry["path"]):
+                if not sublime.ok_cancel_dialog(
+                        "Snippet '%s' already exists. Overwrite?" % trigger):
+                    return
+                overwrite = True
+            try:
+                if overwrite and os.path.exists(target):
+                    os.remove(target)
+                ca_template_packs.write_snippet(
+                    target, trigger, entry["content"], entry["desc"],
+                    entry.get("scope") or "source.c++, source.c")
+                if os.path.abspath(target) != os.path.abspath(entry["path"]):
+                    os.remove(entry["path"])
+                _snippet_cache_reload()
+                sublime.status_message("Snippet renamed: %s -> %s"
+                                       % (entry["trigger"], trigger))
+            except Exception as e:
+                _log_error("rename snippet", e)
+                sublime.error_message("Failed to rename snippet: %s" % e)
+
+        self.window.show_input_panel("New snippet trigger:",
+                                     entry["trigger"], on_done, None, None)
+
+    def _trash(self, entry):
+        if not sublime.ok_cancel_dialog(
+                "Move snippet '%s' to the recycle folder?" % entry["trigger"]):
+            return
+        try:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            base = os.path.basename(entry["path"]).replace(
+                ".sublime-snippet", "")
+            target = os.path.join(
+                _snippet_trash_dir(),
+                "%s-%s.sublime-snippet.off" % (base, stamp))
+            shutil.move(entry["path"], target)
+            _snippet_cache_reload()
+            sublime.status_message(
+                "Snippet moved to %s" % os.path.dirname(target))
+        except Exception as e:
+            _log_error("trash snippet", e)
+            sublime.error_message("Failed to move snippet: %s" % e)
+
+
+# ---------------------------------------------------------------------------
+# 设置校验
+# ---------------------------------------------------------------------------
+
+def _settings_problems():
+    try:
+        data = _settings().to_dict()
+    except Exception as e:
+        _log_error("read settings", e)
+        return []
+    try:
+        return ca_config.validate(data)
+    except Exception as e:
+        _log_error("settings validation", e)
+        return []
+
+
+def _report_settings_problems():
+    problems = _settings_problems()
+    if not problems:
+        return
+    try:
+        print("[CppAssistant] invalid settings:/n"
+              + ca_config.report_text(problems))
+    except Exception:
+        pass
+    sublime.status_message("[CppAssistant] %s" % ca_config.summary(problems))
+
+
+class CaValidateSettingsCommand(sublime_plugin.ApplicationCommand):
+    """检查设置值；非法值在 Sublime 里会被静默忽略，这里明确报出来。"""
+
+    def run(self):
+        problems = _settings_problems()
+        if not problems:
+            sublime.status_message("[CppAssistant] settings look valid")
+            return
+        report = ca_config.report_text(problems)
+        try:
+            print("[CppAssistant] invalid settings:/n" + report)
+        except Exception:
+            pass
+        window = sublime.active_window()
+        if window is not None:
+            try:
+                panel = window.create_output_panel("cppassistant_settings")
+                panel.run_command("append", {"characters": report + "\n"})
+                window.run_command(
+                    "show_panel", {"panel": "output.cppassistant_settings"})
+            except Exception as e:
+                _log_error("settings panel", e)
+        sublime.status_message(
+            "[CppAssistant] %d invalid setting(s) - see the output panel"
+            % len(problems))
+
+
+# ---------------------------------------------------------------------------
+# clangd 调用层级（谁调用我 / 我调用谁）
+# ---------------------------------------------------------------------------
+
+class CaCallHierarchyCommand(sublime_plugin.TextCommand):
+    """clangd 层级浏览基类：调用层级 / 类型层级共用同一套 quick panel 流程。
+
+    子类只需改 ``STATUS_KEY``、``DIRECTIONS``、``PREPARE`` 与
+    ``FETCH``，prepare/fetch 的具体请求方法由 ``_prepare`` / ``_fetch``
+    决定。
+    """
+
+    STATUS_KEY = "ca_calls"
+    PREPARE_LABEL = "hierarchy"
+    NO_SYMBOL_MESSAGE = (u"no function at the cursor "
+                         u"(or clangd is not ready)")
+    # (标题, 说明模板, LSP 方法, 结果标题)
+    DIRECTIONS = (
+        (u"Incoming calls", u"functions that call %s",
+         "callHierarchy/incomingCalls", u"incoming calls"),
+        (u"Outgoing calls", u"functions called by %s",
+         "callHierarchy/outgoingCalls", u"outgoing calls"),
+    )
+
+    def _prepare(self, client, fname, text, point):
+        return client.prepare_call_hierarchy(fname, text, point, timeout=2.5)
+
+    def _fetch(self, client, method, raw):
+        return client.call_hierarchy(method, raw, timeout=3.0)
+
+    def run(self, edit):
+        view = self.view
+        if not _is_cpp(view):
+            sublime.status_message(
+                "CppAssistant: only C/C++ files are supported")
+            return
+        client = _clangd_client_for(view, self.STATUS_KEY)
+        if client is None:
+            return
+        selections = view.sel()
+        if not selections:
+            return
+        point = selections[0].begin()
+        size = view.size()
+        if size > _CLANGD_MAX_CHARS:
+            view.set_status(self.STATUS_KEY,
+                            u"file is too large for clangd")
+            return
+        fname = view.file_name()
+        text = view.substr(sublime.Region(0, size))
+        change_count = view.change_count()
+        view.set_status(self.STATUS_KEY,
+                        u"preparing %s..." % self.PREPARE_LABEL)
+
+        def worker():
+            try:
+                items = self._prepare(client, fname, text, point)
+            except Exception as e:
+                _log_error("prepare " + self.PREPARE_LABEL, e)
+                items = None
+            sublime.set_timeout(
+                lambda: self._choose(view, client, items, change_count), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _choose(self, view, client, items, change_count):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status(self.STATUS_KEY,
+                                u"cancelled: buffer changed")
+                return
+            if not items:
+                view.set_status(self.STATUS_KEY, self.NO_SYMBOL_MESSAGE)
+                return
+            item = items[0]
+            label = item.get("name") or u"symbol"
+            if item.get("detail"):
+                label += u"  " + item["detail"]
+            window = view.window()
+            if window is None:
+                return
+
+            def on_done(idx):
+                if idx < 0:
+                    return
+                direction = self.DIRECTIONS[idx]
+                method = direction[2]
+                view.set_status(self.STATUS_KEY,
+                                u"loading %s..." % direction[0].lower())
+
+                def worker():
+                    try:
+                        calls = self._fetch(client, method, item["raw"])
+                    except Exception as e:
+                        _log_error(self.PREPARE_LABEL, e)
+                        calls = []
+                    sublime.set_timeout(
+                        lambda: self._show_results(view, method, calls,
+                                                   change_count), 0)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            window.show_quick_panel(
+                [[d[0], d[1] % label] for d in self.DIRECTIONS], on_done)
+        except Exception as e:
+            _log_error(self.PREPARE_LABEL + " choose", e)
+
+    def _show_results(self, view, method, results, change_count):
+        try:
+            if not view.is_valid():
+                return
+            if view.change_count() != change_count:
+                view.set_status(self.STATUS_KEY,
+                                u"cancelled: buffer changed")
+                return
+            title = self.PREPARE_LABEL
+            for direction in self.DIRECTIONS:
+                if direction[2] == method:
+                    title = direction[3]
+                    break
+            items = []
+            locs = []
+            for result in results:
+                peer = self._peer_of(result)
+                if not peer:
+                    continue
+                name = (peer.get("name") or u"?").strip()
+                detail = (peer.get("detail") or "").strip()
+                uri = peer.get("uri") or ""
+                if not uri:
+                    continue
+                start = self._start_of(result, peer)
+                loc = {"uri": uri, "range": {"start": start}}
+                locs.append(loc)
+                path = ca_clangd.uri_to_path(uri)
+                where = os.path.basename(path) or uri
+                try:
+                    line = int(start.get("line", 0) or 0) + 1
+                except Exception:
+                    line = 1
+                items.append([u"%s %s" % (name, detail),
+                              u"%s:%d" % (where, line)])
+            if not items:
+                view.set_status(self.STATUS_KEY, u"no %s" % title)
+                return
+
+            def on_done(idx):
+                if idx >= 0:
+                    _jump_to_location(view.window(), locs[idx])
+
+            window = view.window()
+            if window is not None:
+                window.show_quick_panel(items, on_done)
+            view.set_status(self.STATUS_KEY, u"%d %s" % (len(items), title))
+        except Exception as e:
+            _log_error(self.PREPARE_LABEL + " results", e)
+
+    def _peer_of(self, result):
+        """层级结果里的"对端"条目：调用层级是 from/to，类型层级是裸 item。"""
+        if not isinstance(result, dict):
+            return None
+        if result.get("name") and result.get("uri"):
+            return result
+        return result.get("from") or result.get("to") or None
+
+    def _start_of(self, result, peer):
+        """优先用调用点位置（fromRanges），否则用条目自身的选择区间。"""
+        ranges = result.get("fromRanges") or []
+        if ranges and isinstance(ranges[0], dict):
+            start = ranges[0].get("start")
+            if isinstance(start, dict):
+                return start
+        rng = peer.get("selectionRange") or peer.get("range") or {}
+        start = rng.get("start") if isinstance(rng, dict) else None
+        return start if isinstance(start, dict) else {}
+
+
+class CaTypeHierarchyCommand(CaCallHierarchyCommand):
+    """clangd 类型层级：基类（supertypes）与派生类（subtypes）。"""
+
+    STATUS_KEY = "ca_types"
+    PREPARE_LABEL = "type hierarchy"
+    NO_SYMBOL_MESSAGE = (u"no class/struct at the cursor "
+                         u"(or clangd is not ready)")
+    DIRECTIONS = (
+        (u"Supertypes", u"base classes of %s",
+         "typeHierarchy/supertypes", u"supertypes"),
+        (u"Subtypes", u"derived classes of %s",
+         "typeHierarchy/subtypes", u"subtypes"),
+    )
+
+    def _prepare(self, client, fname, text, point):
+        return client.prepare_type_hierarchy(fname, text, point, timeout=2.5)
+
+    def _fetch(self, client, method, raw):
+        return client.type_hierarchy(method, raw, timeout=3.0)

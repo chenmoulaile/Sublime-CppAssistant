@@ -104,6 +104,20 @@
     //   - if that header is already present, it is skipped;
     //   - otherwise it is inserted after the last #include line.
     "auto_insert_includes": true,
+    // PBDS header insertion: `bits/stdc++.h` does NOT provide `__gnu_pbds`, / PBDS 头文件插入：`bits/stdc++.h` **不包含** `__gnu_pbds`，
+    // so completing `__gnu_pbds::tree` / `gp_hash_table` inserts / 所以补全 `__gnu_pbds::tree` / `gp_hash_table` 时会自动插入
+    // `#include <ext/pb_ds/...>` even when the universal header is present. / `#include <ext/pb_ds/...>`（即使文件已有万能头）。
+    //   true  (default) insert PBDS headers automatically. /   true（默认）自动插入 PBDS 头文件。
+    //   false never insert them (still shows the completion). /   false 不自动插入（补全本身仍可用）。
+    "cpp_auto_insert_pbds_includes": true,
+    // Status bar hints: show the active completion source (clangd / builtin) / 状态栏提示：显示当前补全来源（clangd / builtin）、
+    // and the signature of the call under the cursor, including which / 光标所在调用的签名，以及当前是第几个实参
+    // argument you are typing, e.g. / 例如
+    // `[clangd] · void solve(int n, vector<int>& a) · arg 2/2: vector<int>& a`. / `[clangd] · void solve(int n, vector<int>& a) · arg 2/2: vector<int>& a`。
+    // A lightweight stand-in for CodeLens, which Sublime does not have. / 轻量替代 CodeLens（Sublime 没有 CodeLens）。
+    //   true  (default) update after a 120ms idle pause on cursor moves. /   true（默认）光标移动后空闲 120ms 更新。
+    //   false hide the hint. /   false 关闭。
+    "show_status_hint": true,
     // Hover docs: show clangd's type/documentation popup when the mouse / 悬浮文档：鼠标悬停符号上显示 clangd 的类型/文档弹窗
     // hovers over a symbol.
     "enable_hover": true,

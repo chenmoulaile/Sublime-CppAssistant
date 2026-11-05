@@ -25,6 +25,64 @@ semantic versioning; Package Control installs the newest tag.
 - User snippets and installed template packs are annotated with their
   origin, for example `kmp · 字符串模板` / `kmp · Strings template`,
   so the popup no longer hides where an entry came from.
+- Macros use their own kind (`macro`, variable icon) instead of being
+  grouped with functions, and `#include` completions explain what the
+  header contains (`bits/stdc++.h` → all standard headers, **not** PBDS).
+- `auto` variables are inferred at completion time: `auto it = v.find(x)`
+  shows `vector<int>::iterator`, `auto value = m.at("k")` shows `int`.
+- Duplicate triggers inside one container (for example `stringstream`,
+  which inherits both stream directions) no longer appear twice.
+- `std::ranges` / `std::views` / `std::concepts` entries are tagged
+  `C++20`, so they rank after the C++14 database until the standard is
+  raised.
+
+### Features
+
+- **PBDS header insertion**: completing `__gnu_pbds::tree`,
+  `gp_hash_table` or `order_of_key` inserts
+  `#include <ext/pb_ds/assoc_container.hpp>` and
+  `#include <ext/pb_ds/tree_policy.hpp>` automatically. `bits/stdc++.h`
+  does **not** cover PBDS, so these two headers are still inserted when
+  the universal header is present. New setting:
+  `cpp_auto_insert_pbds_includes` (default `true`). After the insertion
+  clangd re-syncs the document immediately, so the next completion is
+  already based on the new include.
+- **`__gnu_pbds::` namespace completion**: `tree`, `gp_hash_table`,
+  `cc_hash_table`, `rb_tree_tag`, `splay_tree_tag`, `ov_tree_tag`,
+  `tree_order_statistics_node_update`, `null_type` and the resize
+  policies, with the full template skeleton in the insert text.
+- **Template browser with preview**: `CppAssistant: Browse Templates`
+  shows every installed snippet in a quick panel with a preview of the
+  first 20 lines, its origin and its line count; selecting an entry
+  inserts it as a real snippet (`$0` / `${1:default}` tab stops work).
+- **Snippet management**: `CppAssistant: Manage User Snippets` lists user
+  and template-pack snippets with open / rename-trigger / move-to-trash
+  actions. Trashed files go to `Packages/User/CppAssistantSnippetTrash`
+  with a `.off` extension, so they stop appearing in completion but can
+  be restored.
+- **Full-width punctuation fix**: `CppAssistant: Fix Full-width
+  Punctuation` (`Ctrl+Alt+,`) replaces `，；：（）` and friends with their
+  half-width forms **only in code** — comments, string/char literals and
+  raw strings keep their Chinese punctuation. Works on the selection when
+  one exists, asks for confirmation, and reports how many characters it
+  changed.
+- **Call / type hierarchy**: `CppAssistant: Call Hierarchy` asks clangd
+  for incoming and outgoing calls of the function under the cursor;
+  `CppAssistant: Type Hierarchy` lists base classes (supertypes) and
+  derived classes (subtypes). Both open the result in a quick panel and
+  jump on selection.
+- **Status bar hints** (`show_status_hint`, default `true`): shows the
+  active completion source and the call under the cursor, including which
+  argument is being typed, e.g.
+  `[clangd] · void solve(int n, vector<int>& a) · arg 2/2: vector<int>& a`.
+  A lightweight stand-in for CodeLens.
+- **Settings validation**: `CppAssistant: Validate Settings` (also run at
+  startup) reports values Sublime would silently ignore, such as
+  `cxx_standard: "c++2x"`, `lint_timeout: 0` or
+  `include_paths: "D:/inc"`, in the console, the status bar and an output
+  panel.
+- **Grouped find references**: results are sorted by file, numbered
+  `[3/7]` per file, and keep the inline preview line.
 
 ## v2.1.1
 

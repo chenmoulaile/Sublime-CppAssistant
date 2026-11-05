@@ -346,6 +346,42 @@ def parse_locations(result):
     return out
 
 
+def parse_call_hierarchy_items(result):
+    """解析 prepareCallHierarchy 结果。
+
+    每项保留原始 dict（后续 incoming/outgoing 请求要原样回传），
+    另外拍平出 name/detail/uri/line/character 方便 UI 使用。
+    """
+    if not isinstance(result, list):
+        return []
+    out = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("name") or "").strip()
+        uri = item.get("uri") or ""
+        if not name or not uri:
+            continue
+        rng = item.get("selectionRange") or item.get("range") or {}
+        start = rng.get("start") if isinstance(rng, dict) else None
+        if not isinstance(start, dict):
+            start = {}
+        try:
+            line = int(start.get("line", 0) or 0) + 1
+            char = int(start.get("character", 0) or 0) + 1
+        except Exception:
+            line, char = 1, 1
+        out.append({
+            "name": name,
+            "detail": (item.get("detail") or "").strip(),
+            "uri": uri,
+            "line": line,
+            "character": char,
+            "raw": item,
+        })
+    return out
+
+
 def parse_publish_diagnostics(params):
     """解析 textDocument/publishDiagnostics 通知。
 
@@ -1233,3 +1269,49 @@ class ClangdClient(object):
             "options": {"tabSize": 4, "insertSpaces": True},
         }, timeout=timeout)
         return parse_text_edits(result)
+
+    # ---- 调用层级 / 类型层级（LSP 3.16）----
+
+    def _prepare_hierarchy(self, method, path, text, offset, timeout):
+        pos = self._sync_and_position(path, text, offset)
+        if pos is None:
+            return None
+        uri, line, col = pos
+        result = self.request(method, {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": col},
+        }, timeout=timeout)
+        return parse_call_hierarchy_items(result)
+
+    def prepare_call_hierarchy(self, path, text, offset, timeout=2.5):
+        """请求 textDocument/prepareCallHierarchy。
+
+        返回 ``parse_call_hierarchy_items`` 的列表（空列表 = 光标处不是
+        可调用符号）；服务器未就绪时返回 ``None``。
+        """
+        return self._prepare_hierarchy(
+            "textDocument/prepareCallHierarchy", path, text, offset,
+            timeout)
+
+    def call_hierarchy(self, method, item, timeout=2.5):
+        """请求 callHierarchy/incomingCalls 或 outgoingCalls。"""
+        return self._item_request(method, item, timeout)
+
+    def prepare_type_hierarchy(self, path, text, offset, timeout=2.5):
+        """请求 textDocument/prepareTypeHierarchy（类/结构体继承链）。"""
+        return self._prepare_hierarchy(
+            "textDocument/prepareTypeHierarchy", path, text, offset,
+            timeout)
+
+    def type_hierarchy(self, method, item, timeout=2.5):
+        """请求 typeHierarchy/supertypes 或 subtypes。"""
+        return self._item_request(method, item, timeout)
+
+    def _item_request(self, method, item, timeout):
+        """把 prepare 返回的原始 item 再发一次（层级请求共用）。"""
+        if not self.is_ready():
+            return []
+        result = self.request(method, {"item": item}, timeout=timeout)
+        if not isinstance(result, list):
+            return []
+        return [r for r in result if isinstance(r, dict)]

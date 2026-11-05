@@ -26,6 +26,7 @@ builds embed Python 3.3.
 """
 
 import bisect
+import collections
 import re
 import time
 
@@ -33,6 +34,12 @@ import time
 # ---------------------------------------------------------------------------
 # Public data objects
 # ---------------------------------------------------------------------------
+
+# 光标所在的调用上下文；namedtuple 让 mypy 把字段当 Any，跨模块做
+# 计数/下标运算时不会报 object 不可运算。
+CallInfo = collections.namedtuple(
+    "CallInfo", "name signature arg_index arg_count param")
+
 
 class Token(object):
     """A lexical token.  ``line`` is 1-based, ``col`` is 0-based."""
@@ -138,7 +145,7 @@ class Analysis(object):
         "type_scopes", "includes", "using_std", "diags", "lex_diags",
         "comment_ranges", "line_starts", "line_states", "lex_ms", "parse_ms",
         "total_ms", "completion_cache", "text_len", "incremental",
-        "reused_tokens",
+        "reused_tokens", "auto_types",
     )
 
     def __init__(self):
@@ -167,6 +174,7 @@ class Analysis(object):
         self.text_len = 0
         self.incremental = False
         self.reused_tokens = 0
+        self.auto_types = None
 
     def scope_at(self, offset):
         """Innermost scope containing ``offset`` (best effort)."""
@@ -1942,6 +1950,19 @@ def _legacy_engine():
             return None
 
 
+def _header_detail(header):
+    """``#include`` 的说明文字；数据库模块不可用时退回裸头文件名。"""
+    try:
+        from .ca_stdlib_data import header_detail
+        return header_detail(header)
+    except Exception:
+        try:
+            from ca_stdlib_data import header_detail as fallback
+            return fallback(header)
+        except Exception:
+            return "#include " + str(header)
+
+
 def _score(name, prefix):
     if not prefix:
         return 0
@@ -2033,6 +2054,133 @@ def _extract_template_args(type_text):
                         template_map["value_type"] = args[1]
                     return template_map
     return {}
+
+
+# ---------------------------------------------------------------------------
+# auto 类型推断 / 调用上下文
+# ---------------------------------------------------------------------------
+
+# `auto it = v.find(x)`：只处理"接收者.成员(…)"这一种最常见形式。
+_AUTO_CALL_RE = re.compile(
+    r"\bauto\s*&{0,2}\s*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*"
+    r"(?:\.|->)\s*([A-Za-z_]\w*)\s*\(")
+
+_CONTAINER_ITER_METHODS = frozenset((
+    "begin", "end", "rbegin", "rend", "cbegin", "cend", "find",
+    "lower_bound", "upper_bound", "equal_range", "insert", "emplace",
+    "erase",
+))
+_CONTAINER_VALUE_METHODS = frozenset(("at", "front", "back", "top"))
+_CONTAINER_SIZE_METHODS = frozenset(("size", "length", "count"))
+_MAP_TYPE_NAMES = frozenset((
+    "map", "multimap", "unordered_map", "unordered_multimap",
+))
+_SET_TYPE_NAMES = frozenset((
+    "set", "multiset", "unordered_set", "unordered_multiset",
+))
+
+
+def _split_type_args(text):
+    """按顶层逗号切分模板实参。"""
+    parts = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return [p for p in parts if p]
+
+
+def _container_type_args(type_text):
+    """``map<string, int>`` -> ``("map", ["string", "int"])``。"""
+    s = str(type_text or "").strip()
+    for word in ("const", "volatile", "typename"):
+        s = re.sub(r"\b" + word + r"\b", " ", s)
+    s = s.replace("&", " ").replace("*", " ").strip()
+    if s.startswith("std::"):
+        s = s[5:]
+    if "<" not in s or not s.endswith(">"):
+        return s.split("::")[-1], []
+    head = s[:s.index("<")].strip()
+    args = _split_type_args(s[s.index("<") + 1:-1])
+    return head.split("::")[-1], args
+
+
+def _method_result_type(receiver_type, method):
+    """推断 ``receiver.method(...)`` 的返回类型；不确定时返回 ``""``。"""
+    base, args = _container_type_args(receiver_type)
+    if not base or not args:
+        return ""
+    full = "%s<%s>" % (base, ", ".join(args))
+    if method in _CONTAINER_ITER_METHODS:
+        return full + "::iterator"
+    if method in _CONTAINER_SIZE_METHODS:
+        return "size_type"
+    if base in _MAP_TYPE_NAMES and len(args) >= 2:
+        if method in ("at", "operator[]"):
+            return args[1]
+        return "pair<const %s, %s>" % (args[0], args[1])
+    if base in _SET_TYPE_NAMES:
+        return args[0]
+    if method in _CONTAINER_VALUE_METHODS:
+        return args[0]
+    return ""
+
+
+def _signature_params(signature):
+    """把 ``void solve(int n, vector<int>& a)`` 拆成参数列表。"""
+    s = str(signature or "")
+    open_idx = s.find("(")
+    if open_idx < 0:
+        return []
+    depth = 0
+    close_idx = -1
+    for i in range(open_idx, len(s)):
+        if s[i] == "(":
+            depth += 1
+        elif s[i] == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = i
+                break
+    if close_idx < 0:
+        return []
+    return _split_type_args(_tidy_signature(s[open_idx + 1:close_idx]))
+
+
+def _tidy_signature(sig):
+    """规范化 token 拼接出的签名：``vector < int > & a`` -> ``vector<int>& a``。"""
+    s = str(sig or "")
+    if not s:
+        return s
+    s = re.sub(r"\s*<\s*", "<", s)
+    s = re.sub(r"\s*>\s*", ">", s)
+    s = re.sub(r"\s*,\s*", ", ", s)
+    s = re.sub(r"\s*&\s*", "& ", s)
+    s = re.sub(r"\s*\*\s*", "* ", s)
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace("&  ", "& ").replace("&,", "&,")
+    return s.strip()
+
+
+_DECL_PATTERN_CACHE = {}
+
+
+def _decl_pattern(name):
+    """匹配 ``vector<int> name`` 之类的声明，取回带模板实参的原始类型。"""
+    pattern = _DECL_PATTERN_CACHE.get(name)
+    if pattern is None:
+        pattern = re.compile(
+            r"\b([A-Za-z_]\w*)\s*(<[^;{}()\n]*?>)?\s*[&*]?\s*"
+            + re.escape(name) + r"\s*(?=[;=,)\[{])")
+        _DECL_PATTERN_CACHE[name] = pattern
+    return pattern
 
 
 class FastEngine(object):
@@ -2288,6 +2436,7 @@ class FastEngine(object):
                     items.append(d)
                     seen.add(d.get("trigger"))
 
+        items = self._apply_auto_types(a, items)
         items = self._finish_items(items, prefix, clangd_style)
         a.completion_cache[cache_key_c] = items
         if len(a.completion_cache) > 64:
@@ -2334,7 +2483,8 @@ class FastEngine(object):
             out.append({
                 "trigger": h, "insert": h, "annotation": u"头文件",
                 "annotation_en": "header", "kind": "t",
-                "detail": "#include " + h, "detail_en": "#include " + h,
+                "detail": _header_detail(h),
+                "detail_en": _header_detail(h),
                 "_score": sc,
             })
         out.sort(key=lambda d: (d["_score"], len(d["trigger"])))
@@ -2473,7 +2623,7 @@ class FastEngine(object):
             code = "v"
             ann = u"参数" if kind == "parameter" else u"变量"
             ann_en = "parameter" if kind == "parameter" else "variable"
-            detail = sym.type or kind
+            detail = _tidy_signature(sym.type or kind)
         elif kind in ("type", "alias", "template type"):
             code = "t"
             ann, ann_en = u"类型", "type"
@@ -2487,7 +2637,7 @@ class FastEngine(object):
             ann, ann_en = u"枚举值", "enumerator"
             detail = sym.type or "enumerator"
         elif kind == "macro":
-            code = "u"
+            code = "d"
             ann, ann_en = u"宏", "macro"
             detail = sym.signature or "macro"
         elif kind == "namespace":
@@ -2518,6 +2668,140 @@ class FastEngine(object):
             import re
             result = re.sub(r'\b' + re.escape(param) + r'\b', arg, result)
         return result
+
+    def _auto_types(self, a):
+        """``auto`` 变量的推断类型：``auto it = v.find(x)`` 等。"""
+        if a.auto_types is not None:
+            return a.auto_types
+        out = {}
+        for m in _AUTO_CALL_RE.finditer(a.text):
+            name, receiver, method = m.group(1), m.group(2), m.group(3)
+            sym = self._lookup(a, receiver, m.end())
+            recv_type = getattr(sym, "type", "") if sym is not None else ""
+            if "<" not in recv_type:
+                # 结构化解析会把模板实参抹掉（vector<int> -> vector），
+                # 退回源码里的原始声明文本再取一次。
+                found = _decl_pattern(receiver).search(a.text)
+                if found:
+                    recv_type = (found.group(1) + (found.group(2) or ""))
+            if not recv_type:
+                continue
+            inferred = _method_result_type(recv_type, method)
+            if inferred:
+                out[name] = inferred
+        a.auto_types = out
+        return out
+
+    def _apply_auto_types(self, a, items):
+        """把变量补全里的 ``auto`` 详情换成推断出的真实类型。"""
+        mapping = self._auto_types(a)
+        if not mapping:
+            return items
+        for d in items:
+            detail = d.get("detail")
+            if not detail or not str(detail).startswith("auto"):
+                continue
+            inferred = mapping.get(d.get("trigger"))
+            if inferred:
+                d["detail"] = inferred
+                d["detail_en"] = inferred
+        return items
+
+    # -- call context ------------------------------------------------------
+
+    def call_info(self, text, offset, cache_key=None, version=None):
+        """光标所在的函数调用上下文。
+
+        返回 ``{name, signature, arg_index, arg_count, param}`` 或 ``None``：
+          - ``name``      被调用函数名（``solve``、``v.push_back`` 取末段）
+          - ``signature`` 同文件里找到的完整签名
+          - ``arg_index`` 当前是第几个实参（0 起）
+          - ``param``     该实参对应的形参声明
+        状态栏用它显示 "当前调用签名 + 第几个参数"，比 hover 轻量。
+        """
+        a = self.analyze(text, cache_key, version)
+        offset = max(0, min(offset, len(text)))
+        if not a.tokens or a.in_comment(offset):
+            return None
+        open_index = self._enclosing_call(a, text, offset)
+        if open_index < 0:
+            return None
+        name = self._callee_name(a, text, open_index)
+        if not name:
+            return None
+        arg_index, arg_count = self._arg_position(a, text, open_index, offset)
+        sym = self._lookup(a, name, offset)
+        signature = ""
+        if sym is not None and sym.kind in ("function", "method"):
+            signature = _tidy_signature(sym.signature or "")
+        params = _signature_params(signature)
+        param = params[arg_index] if 0 <= arg_index < len(params) else ""
+        return CallInfo(name, signature, arg_index,
+                        max(arg_count, len(params)), param)
+
+    def _enclosing_call(self, a, text, offset):
+        """token 下标：光标所在的未闭合 ``(``；不在调用里返回 -1。"""
+        depth = 0
+        idx = bisect.bisect_left(a.token_starts, offset) - 1
+        for i in range(idx, -1, -1):
+            tok = a.tokens[i]
+            if tok.kind != "op":
+                continue
+            s = text[tok.start:tok.end]
+            if s in (")", "]", "}"):
+                depth += 1
+                continue
+            if s not in ("(", "[", "{"):
+                continue
+            if depth:
+                depth -= 1
+                continue
+            return i if s == "(" else -1
+        return -1
+
+    def _callee_name(self, a, text, open_index):
+        j = open_index - 1
+        if j < 0:
+            return ""
+        tok = a.tokens[j]
+        if tok.kind == "id":
+            return text[tok.start:tok.end]
+        if text[tok.start:tok.end] == ">":
+            # f<int>(...) / v.emplace_back<...>(...)：跳过模板实参
+            depth = 1
+            j -= 1
+            while j >= 0 and depth > 0:
+                prev = a.tokens[j]
+                s = text[prev.start:prev.end]
+                if s == ">":
+                    depth += 1
+                elif s == "<":
+                    depth -= 1
+                j -= 1
+            if j >= 0 and a.tokens[j].kind == "id":
+                return text[a.tokens[j].start:a.tokens[j].end]
+        return ""
+
+    def _arg_position(self, a, text, open_index, offset):
+        """返回 (第几个实参, 已出现的实参总数)。"""
+        depth = 0
+        index = 0
+        count = 1
+        for i in range(open_index + 1, len(a.tokens)):
+            tok = a.tokens[i]
+            if tok.start >= offset:
+                break
+            if tok.kind != "op":
+                continue
+            s = text[tok.start:tok.end]
+            if s in ("(", "[", "{"):
+                depth += 1
+            elif s in (")", "]", "}"):
+                depth -= 1
+            elif s == "," and depth == 0:
+                index += 1
+                count += 1
+        return index, count
 
     def _finish_items(self, items, prefix, clangd_style):
         max_score = 999 if clangd_style else 5
@@ -2666,6 +2950,10 @@ def complete(text, offset, prefix=None, cache_key=None, version=None,
 
 def find_definitions(text, symbol, offset=0, cache_key=None, version=None):
     return _ENGINE.find_definitions(text, symbol, offset, cache_key, version)
+
+
+def call_info(text, offset, cache_key=None, version=None):
+    return _ENGINE.call_info(text, offset, cache_key, version)
 
 
 def diagnostics(text, cache_key=None, version=None):
