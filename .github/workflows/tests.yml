@@ -34,7 +34,7 @@ jobs:
         run: pip install mypy types-requests
       - name: Run mypy
         run: |
-          mypy --ignore-missing-imports --python-version 3.3 \
+          mypy --ignore-missing-imports --python-version 3.10 \
             cppassistant/ CppAssistant.py || true
 
   unittest:
@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12", "3.14"]
+        python-version: ["3.9", "3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,8 +84,7 @@ jobs:
           python-version: "3.12"
       - name: Create .sublime-package
         run: |
-          cd ..
-          zip -r CppAssistant.sublime-package Sublime-CppAssistant \
+          zip -r CppAssistant.sublime-package . \
             -x "*.git*" -x "*/__pycache__/*" -x "*.pyc" \
             -x "tests/*" -x ".github/*" -x "*.md" -x "LICENSE" \
             -x "CHANGELOG.md" -x ".gitignore" -x ".gitattributes"
@@ -93,7 +92,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CppAssistant.sublime-package
-          path: ../CppAssistant.sublime-package
+          path: CppAssistant.sublime-package
 
   release:
     name: Create Release
@@ -107,6 +106,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: CppAssistant.sublime-package
+          path: .
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
