@@ -1,0 +1,9 @@
+CppAssistant 2.2.0
+
+- PBDS completions insert <ext/pb_ds/assoc_container.hpp> and <ext/pb_ds/tree_policy.hpp> for you (bits/stdc++.h does not cover PBDS); new setting cpp_auto_insert_pbds_includes.
+- __gnu_pbds:: namespace completion, C++20 ranges/views/concepts, auto type inference (auto it = v.find(x) -> vector<int>::iterator), complexity hints and origin labels in the popup.
+- New commands: Browse Templates (inline preview of the first 20 lines), Manage User Snippets, Fix Full-width Punctuation (Ctrl+Alt+,), Call/Type Hierarchy, Validate Settings.
+- Status bar shows the completion source and the call signature you are typing; Find References is grouped and numbered per file.
+- The Basic template pack (us/inc/fastio/mainf/solvef/pii) is removed; Geometry, Graph, DS, Strings and Math remain.
+
+See CHANGELOG.md for details.

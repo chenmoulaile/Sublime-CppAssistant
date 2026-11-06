@@ -3,6 +3,38 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.2.1 — 2026-11-06
+
+Packaging hotfix. **Package Control could not install or upgrade CppAssistant**
+on any platform; Windows failed hardest with an uncaught
+`OSError: [Errno 22] Invalid argument` in the install worker thread.
+
+### Fixed
+
+- `messages.json` stored the full release-note text as the value of every
+  version key. Package Control expects a **path to a text file inside the
+  package**: `print_messages()` does
+  `open(os.path.join(package_dir, value))`. With a whole paragraph as the
+  "path" (newlines, colons, `<`, `>`, quotes), Windows rejected it with
+  errno 22. Only `FileNotFoundError` is caught there, so the install thread
+  died and the package was rolled back. This had been latent since 2.1.1 and
+  became visible as soon as 2.2.0 was installed through Package Control.
+- Release notes now live in `messages/install.txt`, `messages/2.1.1.txt`,
+  `messages/2.2.0.txt` and `messages/2.2.1.txt`; `messages.json` maps only
+  `install` / version keys to those paths.
+- Fixed a typo in the install message (`/n` instead of a line break).
+
+### Tests and packaging
+
+- `test_messages_json_is_valid` now asserts that every value is a safe,
+  existing in-package text file (no newlines, no absolute paths, no `..`,
+  no Windows-invalid characters).
+- `test_package_control_can_read_every_message` reproduces Package Control's
+  `read_message()` open path, and `test_build_does_not_exclude_message_files`
+  makes sure the `.sublime-package` build keeps `messages/`.
+
+No functional changes to completion, diagnostics, navigation or commands.
+
 ## v2.2.0 — 2026-11-05
 
 2.2.0 is the "make the popup tell you more, and stop making you retype things"

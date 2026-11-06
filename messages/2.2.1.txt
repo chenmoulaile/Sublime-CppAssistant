@@ -1,0 +1,11 @@
+CppAssistant 2.2.1
+
+Fixed a packaging bug that made Package Control fail to install or upgrade the plugin:
+messages.json contained the full message text, but Package Control expects a path to
+a text file inside the package. On Windows it tried to open the whole paragraph as a
+filename and raised "OSError: [Errno 22] Invalid argument", aborting the install.
+
+Release notes now live in messages/*.txt and messages.json only maps versions to those
+files. A regression test verifies every path exists before a release is packaged.
+
+No functional changes. See CHANGELOG.md for details.

@@ -149,12 +149,47 @@ class PackageIntegrityTests(unittest.TestCase):
         self.assertIs(data["show_status_hint"], True)
 
     def test_messages_json_is_valid(self):
+        """Package Control joins each value onto the package dir and opens it.
+
+        A previous release stored the whole message text as the value, so
+        ``open()`` received a paragraph with newlines and colons and raised
+        ``OSError: [Errno 22] Invalid argument`` on Windows, aborting the
+        install. Keep the values as real in-package file paths.
+        """
         data = json.loads(_read("messages.json"))
         self.assertIn("install", data)
+        root = os.path.realpath(ROOT)
         for key, value in data.items():
             self.assertIsInstance(key, str)
+            self.assertTrue(key == "install" or
+                            re.match(r"^\d+\.\d+\.\d+$", key), key)
             self.assertIsInstance(value, str)
-            self.assertTrue(value.strip())
+            self.assertTrue(value.strip(), key)
+            self.assertNotIn("\n", value, key)
+            self.assertNotIn("\r", value, key)
+            self.assertFalse(os.path.isabs(value), key)
+            self.assertNotIn("..", value.split("/"), key)
+            for char in '<>:"|?*':
+                self.assertNotIn(char, value, key)
+            self.assertTrue(value.endswith((".txt", ".md")), key)
+            path = os.path.join(ROOT, value)
+            self.assertTrue(os.path.isfile(path), key)
+            self.assertTrue(os.path.realpath(path).startswith(root), key)
+            with open(path, "r", encoding="utf-8") as fobj:
+                self.assertTrue(fobj.read().strip(), key)
+
+    def test_package_control_can_read_every_message(self):
+        """Reproduce package_control.package_manager.read_message()."""
+        data = json.loads(_read("messages.json"))
+        for version, rel_path in data.items():
+            path = os.path.join(ROOT, rel_path)
+            with open(path, "r", encoding="utf-8", errors="replace") as fobj:
+                text = fobj.read()
+            self.assertIn("CppAssistant", text, version)
+
+    def test_build_does_not_exclude_message_files(self):
+        workflow = _read(os.path.join(".github", "workflows", "tests.yml"))
+        self.assertNotIn('-x "messages', workflow)
 
     def test_cli_commands_documented_in_commands_file(self):
         data = json.loads(_read("CppAssistant.sublime-commands"))

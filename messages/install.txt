@@ -1,0 +1,40 @@
+Welcome to CppAssistant!
+
+Quick start:
+1. Open a .cpp/.h file and start typing - semantic completions appear automatically
+2. Press F12 to go to definition
+3. Press Shift+Alt+F to format the document (jiangly style)
+4. Press Ctrl+. for code actions
+
+Key commands:
+- F12: Go to Definition
+- Shift+F12: Find References
+- Shift+Alt+F: Format Document
+- Ctrl+Alt+F: Format Selection
+- Ctrl+.: Code Actions
+- Ctrl+Alt+R: Rename Symbol
+- Ctrl+Alt+D: Show Diagnostics
+- Ctrl+Shift+C: Copy Diagnostic
+- Ctrl+Alt+,: Fix Full-width Punctuation
+- Command Palette: Browse Templates, Call/Type Hierarchy, Validate Settings
+
+Setup clangd (recommended):
+- Windows (MSYS2): pacman -S mingw-w64-x86_64-clang
+- Linux: sudo apt install clangd
+- macOS: brew install llvm
+Without clangd the built-in engine still provides completion, F12 and instant checks.
+
+Configuration:
+Preferences > Package Settings > CppAssistant > Settings
+
+Documentation:
+- README.md (English) / README.zh-CN.md (Chinese)
+- CHANGELOG.md
+
+For OIers:
+- Geometry, Graph, DS, Strings and Math template packs
+- PBDS header insertion, __gnu_pbds namespace completion, C++20 ranges
+- Full-width punctuation fix (Ctrl+Alt+,)
+- Array bounds checking and bits/stdc++.h PCH acceleration
+
+Tip: set "display_language": "zh" for Chinese diagnostics

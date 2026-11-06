@@ -1,0 +1,7 @@
+CppAssistant 2.1.1
+
+- Menu localization: "CppAssistant: Toggle Menu Language" switches CppAssistant's own menu between English and Chinese.
+- Template packs are bundled and install on demand; uninstalled packs stay hidden.
+- Array bounds checking, template parameter deduction, diagnostic filters and CI fixes.
+
+See CHANGELOG.md for details.
