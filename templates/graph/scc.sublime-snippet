@@ -1,21 +1,53 @@
 <snippet>
     <content><![CDATA[vector<int> dfn, low, stk, in_stk, scc;
 int timer = 0, scc_cnt = 0;
-void tarjan(int u, const vector<vector<int>> &g) {
-    dfn[u] = low[u] = ++timer;
-    stk.push_back(u); in_stk[u] = 1;
-    for (int v : g[u]) {
-        if (!dfn[v]) { tarjan(v, g); low[u] = min(low[u], low[v]); }
-        else if (in_stk[v]) low[u] = min(low[u], dfn[v]);
-    }
-    if (low[u] == dfn[u]) {
-        ++scc_cnt;
-        while (true) {
-            int v = stk.back(); stk.pop_back();
-            in_stk[v] = 0; scc[v] = scc_cnt;
-            if (v == u) break;
+// 显式栈迭代版 Tarjan：1e5+ 的深链用递归会爆栈。
+// 栈帧为 (u, 下一条待考察边的下标)，子帧弹出时把 low 上传给父帧。
+void tarjan(int root, const vector<vector<int>> &g) {
+    vector<pair<int, int>> st;
+    dfn[root] = low[root] = ++timer;
+    stk.push_back(root); in_stk[root] = 1;
+    st.push_back({root, 0});
+    while (!st.empty()) {
+        int u = st.back().first;
+        int &i = st.back().second;
+        if (i < (int)g[u].size()) {
+            int v = g[u][i++];
+            if (!dfn[v]) {
+                dfn[v] = low[v] = ++timer;
+                stk.push_back(v); in_stk[v] = 1;
+                st.push_back({v, 0});
+            } else if (in_stk[v]) {
+                low[u] = min(low[u], dfn[v]);
+            }
+        } else {
+            st.pop_back();
+            if (!st.empty()) {
+                int p = st.back().first;
+                low[p] = min(low[p], low[u]);
+            }
+            if (low[u] == dfn[u]) {
+                ++scc_cnt;
+                while (true) {
+                    int v = stk.back(); stk.pop_back();
+                    in_stk[v] = 0; scc[v] = scc_cnt;
+                    if (v == u) break;
+                }
+            }
         }
     }
+}
+// 调用入口：初始化全部裸全局数组，并对每个未访问点跑 Tarjan。
+vector<int> run_tarjan(int n, const vector<vector<int>> &g) {
+    dfn.assign(n + 1, 0);
+    low.assign(n + 1, 0);
+    in_stk.assign(n + 1, 0);
+    scc.assign(n + 1, 0);
+    stk.clear();
+    timer = 0; scc_cnt = 0;
+    for (int u = 1; u <= n; ++u)
+        if (!dfn[u]) tarjan(u, g);
+    return scc;
 }
 $0]]></content>
     <tabTrigger>scc</tabTrigger>

@@ -496,6 +496,11 @@ class SemanticEngine(object):
         self._pch_building = set()
         self._pch_disabled = set()
         self._pch_errors = {}
+        # 最近一次成功构建的 PCH sig：周期清扫以此为准保留在用目录。
+        self._pch_active_sig = None
+        # PCH 构建失败的指数退避：sig -> 连败次数 / 下次允许尝试的时刻。
+        self._pch_fail_streak = {}
+        self._pch_retry_after = {}
         if self.enable_pch and not self._clangpp_matches():
             self.enable_pch = False
         # Initial PCH sweep to clean up old/failed builds
@@ -776,6 +781,18 @@ class SemanticEngine(object):
             i += 1
         return out
 
+    def _note_pch_failure(self, sig, message):
+        """记录构建失败并按连败次数指数退避（30s 起步、封顶 600s）。
+
+        没有退避时，0.1s 一次的补全 debounce 会在每次 miss 上反复
+        spawn 必败的 clang++。
+        """
+        self._pch_errors[sig] = message
+        streak = self._pch_fail_streak.get(sig, 0) + 1
+        self._pch_fail_streak[sig] = streak
+        self._pch_retry_after[sig] = time.time() + min(
+            30 * (2 ** min(streak - 1, 5)), 600)
+
     def _build_pch(self, args, sig):
         d, hdr, pch = self._pch_paths(sig)
         tmp = pch + ".tmp"
@@ -804,28 +821,44 @@ class SemanticEngine(object):
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL, creationflags=creationflags,
                 startupinfo=_hidden_startupinfo())
-            _, err = proc.communicate(timeout=180)
+            try:
+                _, err = proc.communicate(timeout=180)
+            except subprocess.TimeoutExpired:
+                # 超时不杀会留下孤儿 clang++，还可能与下一次构建并发
+                # 写同一个 .tmp；杀掉并回收后再走失败记录。
+                proc.kill()
+                try:
+                    proc.communicate(timeout=10)
+                except Exception:
+                    pass
+                raise Exception("PCH build timed out after 180s")
             if proc.returncode == 0 and os.path.isfile(tmp):
                 os.replace(tmp, pch)
                 self.stats["pch_builds"] += 1
+                self._pch_active_sig = sig
+                self._pch_fail_streak.pop(sig, None)
+                self._pch_retry_after.pop(sig, None)
                 self._sweep_pch(sig)
             else:
-                self._pch_errors[sig] = (err or b"").decode(
-                    "utf-8", "replace")[-400:]
+                self._note_pch_failure(
+                    sig, (err or b"").decode("utf-8", "replace")[-400:])
                 try:
                     os.remove(tmp)
                 except OSError:
                     pass
         except Exception as e:
-            self._pch_errors[sig] = str(e)
+            self._note_pch_failure(sig, str(e))
         finally:
             with self._pch_lock:
                 self._pch_building.discard(sig)
 
     def _sweep_pch(self, keep_sig):
         try:
+            # 正在构建中的 sig 目录不能删：clang 正往里写 .tmp，
+            # 删了会让本次构建在 os.replace 时落空（下轮 miss 重建）。
+            building = getattr(self, "_pch_building", None) or ()
             for name in os.listdir(self.pch_dir):
-                if name == keep_sig:
+                if name == keep_sig or name in building:
                     continue
                 path = os.path.join(self.pch_dir, name)
                 if os.path.isdir(path):
@@ -838,6 +871,8 @@ class SemanticEngine(object):
             return
         if self._pch_ready(sig):
             return
+        if time.time() < self._pch_retry_after.get(sig, 0):
+            return      # 上次构建刚失败：退避窗口内不再 spawn clang++
         with self._pch_lock:
             if sig in self._pch_building:
                 return
@@ -915,6 +950,10 @@ class SemanticEngine(object):
     # -- parsing -----------------------------------------------------------
 
     def _create_tu(self, filename, args, unsaved, options):
+        if not self._index:
+            # close() 之后旧引用若继续 parse，会把 NULL CXIndex 传进
+            # clang_parseTranslationUnit2，旧版 libclang 可能段错误。
+            raise SemanticError("semantic engine is closed")
         fname = filename.encode("utf-8")
         arg_array = (ctypes.c_char_p * len(args))(
             *[a.encode("utf-8") for a in args]) if args else None
@@ -1097,6 +1136,28 @@ class SemanticEngine(object):
     def complete(self, text, offset, filename=None, args=None, cache_key=None,
                  version=None, prefix=None, limit=200, allow_parse=True):
         """Return plugin-shaped completion dictionaries, sorted by libclang."""
+        # allow_parse=False 意味着调用方在 UI 线程上只读缓存：后台解析
+        # 可能持锁数秒，is_busy 的检查与这里的加锁之间不是原子的，所以
+        # 用 50ms 试锁兜底——拿不到锁立刻放弃，宿主用内置数据库兜底。
+        # 手动 acquire 必须在 finally 里对称 release：RLock 可重入，
+        # 下面的 with 只会抵消它自己那一次，漏掉这次锁计数净 +1，
+        # UI 线程会把引擎锁永久占死。
+        manual_acquire = False
+        if not allow_parse:
+            if not self._lock.acquire(True, 0.05):
+                return []
+            manual_acquire = True
+        try:
+            return self._complete_locked(text, offset, filename, args,
+                                         cache_key, version, prefix, limit,
+                                         allow_parse)
+        finally:
+            if manual_acquire:
+                self._lock.release()
+
+    def _complete_locked(self, text, offset, filename=None, args=None,
+                         cache_key=None, version=None, prefix=None,
+                         limit=200, allow_parse=True):
         with self._lock:
             filename = self._filename(filename)
             if not allow_parse and not self.is_cached(
@@ -1246,6 +1307,22 @@ class SemanticEngine(object):
         ``col`` is 0-based and ``line`` is 1-based, matching the host
         plugin's F12 candidate format.  Cross-file locations include ``file``.
         """
+        # F12 与 complete 一样跑在 UI 线程且 allow_parse=False：后台解析
+        # 持锁时 50ms 试锁放弃，别把 UI 线程卡住。
+        if not allow_parse and not self._lock.acquire(True, 0.05):
+            return []
+        manual_acquire = not allow_parse
+        try:
+            return self._find_definitions_locked(text, offset, filename, args,
+                                                 cache_key, version,
+                                                 allow_parse)
+        finally:
+            if manual_acquire:
+                self._lock.release()
+
+    def _find_definitions_locked(self, text, offset=0, filename=None,
+                                 args=None, cache_key=None, version=None,
+                                 allow_parse=True):
         with self._lock:
             filename = self._filename(filename)
             if not allow_parse and not self.is_cached(
@@ -1339,6 +1416,50 @@ _ENGINE = None
 _ENGINE_PATH = None
 _ENGINE_SIG = None
 _ENGINE_LOCK = threading.Lock()
+_PCH_SWEEP_TIMER = None   # 当前自续清扫链的 Timer（重建引擎时取消）
+_PCH_SWEEP_GEN = 0        # 清扫链世代号：旧链回调发现代号不符即停止续期
+
+
+def _stop_pch_sweep():
+    """Cancel the running sweep chain, if any.
+
+    A callback that already fired can no longer be cancelled; the
+    generation check makes it stop rescheduling instead.
+    """
+    global _PCH_SWEEP_TIMER, _PCH_SWEEP_GEN
+    _PCH_SWEEP_GEN += 1
+    t = _PCH_SWEEP_TIMER
+    _PCH_SWEEP_TIMER = None
+    if t is not None:
+        t.cancel()
+
+
+def _start_pch_sweep():
+    """Start one self-rescheduling periodic PCH sweep chain (30 min)."""
+    global _PCH_SWEEP_TIMER
+    gen = _PCH_SWEEP_GEN
+
+    def _periodic_pch_sweep():
+        global _PCH_SWEEP_TIMER
+        if gen != _PCH_SWEEP_GEN:
+            return  # 引擎已重建，本链属于上一代，就此终止
+        try:
+            eng = _ENGINE
+            if eng is not None:
+                # 保留引擎最近成功构建的在用 PCH，而不是全删（F5）。
+                eng._sweep_pch(eng._pch_active_sig)
+        except Exception:
+            pass
+        # Reschedule
+        t = threading.Timer(1800, _periodic_pch_sweep)
+        t.daemon = True
+        _PCH_SWEEP_TIMER = t
+        t.start()
+
+    t = threading.Timer(1800, _periodic_pch_sweep)
+    t.daemon = True
+    _PCH_SWEEP_TIMER = t
+    t.start()
 
 
 def engine(path=None, clang_path=None, enable_pch=True, args=None,
@@ -1355,6 +1476,7 @@ def engine(path=None, clang_path=None, enable_pch=True, args=None,
         if _ENGINE is not None and sig == _ENGINE_SIG:
             return _ENGINE
         if _ENGINE is not None:
+            _stop_pch_sweep()  # 旧引擎的清扫链随之终止，不随重建累积
             try:
                 _ENGINE.close()
             except Exception:
@@ -1367,16 +1489,7 @@ def engine(path=None, clang_path=None, enable_pch=True, args=None,
         _ENGINE_SIG = sig
         # Start periodic PCH sweep (every 30 minutes)
         if _ENGINE.enable_pch:
-            def _periodic_pch_sweep():
-                try:
-                    _ENGINE._sweep_pch(None)
-                except Exception:
-                    pass
-                # Reschedule
-                threading.Timer(1800, _periodic_pch_sweep).start()
-            t = threading.Timer(1800, _periodic_pch_sweep)
-            t.daemon = True
-            t.start()
+            _start_pch_sweep()
         return _ENGINE
 
 

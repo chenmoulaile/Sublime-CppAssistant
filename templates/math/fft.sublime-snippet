@@ -1,5 +1,6 @@
 <snippet>
     <content><![CDATA[using cd = complex<double>;
+const double PI = acos(-1.0);
 void fft(vector<cd> &a, bool invert) {
     int n = a.size();
     for (int i = 1, j = 0; i < n; ++i) {

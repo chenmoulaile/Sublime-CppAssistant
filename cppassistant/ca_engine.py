@@ -34,11 +34,48 @@ LINE_BREAK_RE = re.compile(r"\n")
 _TMPL_KINDS = (r"vector|deque|list|array|set|multiset|unordered_set|"
                r"unordered_multiset|map|multimap|unordered_map|"
                r"unordered_multimap|stack|queue|priority_queue|string|"
-               r"basic_string|pair|tree|gp_hash_table|cc_hash_table")
-DECL_RE = re.compile(
-    r"\b(" + _TMPL_KINDS + r")\s*(<((?:[^<>]|<[^<>]*>)+)>)?\s*&?\s*"
-    r"([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)"
+               r"basic_string|pair|tree|gp_hash_table|cc_hash_table|"
+               r"stringstream|istringstream|ostringstream")
+# 模板实参用括号配对扫描提取：正则形态 (?:[^<>]|<[^<>]*>)+ 只能覆盖
+# 一层嵌套，vector<vector<vector<int>>> 三层即失配（XS8）。
+_DECL_HEAD_RE = re.compile(r"\b(" + _TMPL_KINDS + r")\b\s*(<)?")
+_DECL_TAIL_RE = re.compile(
+    r"\s*&?\s*([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)"
     r"(?:\((?:[^()]|\([^()]*\))*\)\s*)?(?:=[^;\n]*)?[;,){}]")
+
+
+def _match_angle(text, lt):
+    """lt 指向 '<'，返回配对 '>' 之后的位置；未闭合返回 -1。"""
+    depth = 0
+    i, n = lt, len(text)
+    while i < n:
+        c = text[i]
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _iter_decl_matches(text):
+    """yield (kind, targs, name, kind_start, name_start)。"""
+    for m in _DECL_HEAD_RE.finditer(text):
+        if m.group(2):
+            gt = _match_angle(text, m.end(2) - 1)
+            if gt == -1:
+                continue
+            targs = text[m.end(2):gt - 1]
+            tail_from = gt
+        else:
+            targs = ""
+            tail_from = m.end()
+        tail = _DECL_TAIL_RE.match(text, tail_from)
+        if not tail:
+            continue
+        yield (m.group(1), targs, tail.group(1), m.start(1), tail.start(1))
 _RANGEFOR_RE = re.compile(
     r"\(\s*(?:const\s+)?(?:auto|[A-Za-z_][\w:<>,\s*&]*?)\s*&?\s*"
     r"([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\)")
@@ -135,8 +172,13 @@ def _scan_into(st, text):
         if c == "/" and i + 1 < n:
             nxt = text[i + 1]
             if nxt == "/":
+                # 行注释状态要记下：光标在 // 内时补全须退场（XS12）。
+                st["comment"] = True
                 j = text.find("\n", i)
                 i = n if j == -1 else j
+                if i < n and text[i] == "\n":
+                    st["comment"] = False   # 行注释不跨行
+                    i += 1
                 continue
             if nxt == "*":
                 st["block"] = True
@@ -264,8 +306,8 @@ _TAIL_CACHE = {"text": None, "offset": -1, "ctx": None}
 
 
 def _advance_line(st, line_text):
-    s = {"block": st["block"], "str": st["str"],
-         "chr": st["chr"], "raw": st["raw"]}
+    s = {"block": st["block"], "str": st["str"], "chr": st["chr"],
+         "raw": st["raw"], "comment": st.get("comment", False)}
     return _scan_into(s, line_text + "\n")
 
 
@@ -294,8 +336,8 @@ def _state_at(text, offset, key, ver):
     li = text.count("\n", 0, offset)
     st = states[li] if li < len(states) else _CLEAN_STATE
     nl = text.rfind("\n", 0, offset)
-    cur = {"block": st["block"], "str": st["str"],
-           "chr": st["chr"], "raw": st["raw"]}
+    cur = {"block": st["block"], "str": st["str"], "chr": st["chr"],
+           "raw": st["raw"], "comment": st.get("comment", False)}
     return _scan_into(cur, text[nl + 1:offset])
 
 
@@ -312,7 +354,7 @@ def detect_context(text, offset, cache_key=None, cache_version=None):
         st = _scan(text[max(0, offset - 60000):offset])
     if st["raw"] or st["str"] or st["chr"]:
         return ("string", "", "none", "", None)
-    if st["block"]:
+    if st["block"] or st.get("comment"):
         return ("comment", "", "none", "", None)
 
     # 性能：仅取光标前 800 字节做尾部分析（足够识别 . -> :: #）
@@ -363,7 +405,12 @@ def _receiver_of(left):
         return ""
     if not rest:
         return name
-    if rest.endswith(_TAIL_DOT) or rest.endswith(_TAIL_ARROW) or rest.endswith(_TAIL_SCOPE):
+    if rest.endswith(_TAIL_SCOPE):
+        # 嵌套限定名（std::ranges::、std::__gnu_pbds::）：返回最后一段
+        # 限定名，子命名空间补全分支才能可达。
+        return name
+    if rest.endswith(_TAIL_DOT) or rest.endswith(_TAIL_ARROW):
+        # obj.member. 的尾段不是接收者，保持通用成员回退。
         return ""
     return name
 
@@ -568,12 +615,12 @@ def build_env(text):
     var_types = env["var_types"]
     param_types = env["param_types"]
 
-    for m in DECL_RE.finditer(text):
-        kind, targs, name = m.group(1), m.group(3), m.group(4)
+    for kind, targs, name, kind_start, name_start in \
+            _iter_decl_matches(text):
         if name in _CTRL_WORDS:
             continue
         vars_[name] = (kind, targs)
-        type_text = _collapse_ws(text[m.start(1):m.start(4)])
+        type_text = _collapse_ws(text[kind_start:name_start])
         if type_text:
             var_types[name] = type_text
 
@@ -616,6 +663,19 @@ def build_env(text):
                 current = str(var_types.get(itv) or "")
                 if not current or current.startswith("auto"):
                     var_types[itv] = inferred
+
+    # `auto x = m.at("k")` 等方法返回值推断（fast 引擎同款规则），
+    # 接收者类型优先取局部变量，其次取函数参数。
+    for m in _AUTO_CALL_RE.finditer(text):
+        name, recv, method = m.group(1), m.group(2), m.group(3)
+        rtype = var_types.get(recv) or param_types.get(recv) or ""
+        if not rtype:
+            continue
+        inferred = _method_result_type(rtype, method)
+        if inferred:
+            current = str(var_types.get(name) or "")
+            if not current or current.startswith("auto"):
+                var_types[name] = inferred
     return env
 
 
@@ -628,6 +688,59 @@ def _iter_type_of(container_type, method):
                   "lower_bound", "upper_bound"):
         return name + u"::iterator"
     return u""
+
+
+# `auto x = m.at("k")` 的方法返回值推断，规则与 ca_fast 引擎的
+# _method_result_type 保持一致（CHANGELOG 宣称的 "shows int" 不分引擎）。
+_AUTO_CALL_RE = re.compile(
+    r"\bauto\s*&{0,2}\s*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*"
+    r"(?:\.|->)\s*([A-Za-z_]\w*)\s*\(")
+_AUTO_ITER_METHODS = frozenset((
+    "begin", "end", "rbegin", "rend", "cbegin", "cend", "find",
+    "lower_bound", "upper_bound", "equal_range", "insert", "emplace",
+    "erase"))
+_AUTO_VALUE_METHODS = frozenset(("at", "front", "back", "top"))
+_AUTO_SIZE_METHODS = frozenset(("size", "length", "count"))
+_AUTO_MAP_TYPES = frozenset(("map", "multimap", "unordered_map",
+                             "unordered_multimap"))
+_AUTO_SET_TYPES = frozenset(("set", "multiset", "unordered_set",
+                             "unordered_multiset"))
+
+
+def _container_type_args(type_text):
+    """``map<string, int>`` -> ``("map", ["string", "int"])``。"""
+    s = str(type_text or "").strip()
+    for word in ("const", "volatile", "typename"):
+        s = re.sub(r"\b" + word + r"\b", " ", s)
+    s = s.replace("&", " ").replace("*", " ").strip()
+    if s.startswith("std::"):
+        s = s[5:]
+    if "<" not in s or not s.endswith(">"):
+        return s.split("::")[-1], []
+    head = s[:s.index("<")].strip()
+    args = _split_args(s[s.index("<") + 1:-1])
+    return head.split("::")[-1], [a for a in args if a]
+
+
+def _method_result_type(receiver_type, method):
+    """推断 ``receiver.method(...)`` 的返回类型；不确定时返回 ``""``。"""
+    base, args = _container_type_args(receiver_type)
+    if not base or not args:
+        return ""
+    full = "%s<%s>" % (base, ", ".join(args))
+    if method in _AUTO_ITER_METHODS:
+        return full + "::iterator"
+    if method in _AUTO_SIZE_METHODS:
+        return "size_type"
+    if base in _AUTO_MAP_TYPES and len(args) >= 2:
+        if method in ("at", "operator[]"):
+            return args[1]
+        return "pair<const %s, %s>" % (args[0], args[1])
+    if base in _AUTO_SET_TYPES:
+        return args[0]
+    if method in _AUTO_VALUE_METHODS:
+        return args[0]
+    return ""
 
 
 def _resolve_receiver(env, receiver, accessor, char_before=None):
@@ -1037,8 +1150,10 @@ def analyze(text, offset, cache_key=None, cache_version=None,
     for d in results:
         del d["_priority"]
         del d["_score"]
-    if len(results) > 200:
-        results = results[:200]
+    # 弹窗上限要盖住全库条目数（204+）：bare std:: 按 trigger 长度排序
+    # 后，带模板骨架的 PBDS 条目排最尾，上限太小恰好把它们裁掉。
+    if len(results) > 256:
+        results = results[:256]
 
     if accessor == "scope" and receiver in ("__gnu_pbds", "pb_ds"):
         # 这些条目全部来自 PBDS：补全被接受后必须插入 ext/pb_ds 头文件
@@ -1070,8 +1185,12 @@ _DEF_PATTERNS = (
                             r"\s*=|\btypedef\b[^;\n]*?\b" + sym + r"\s*;")),
     (u"function definition",
      lambda sym: re.compile(
-         r"\b" + sym + r"\s*\((?:[^()]|\([^()]*\))*\)\s*(?:const\s*)?"
-         r"(?:->[^{;\n]+)?\s*\{")),
+         # SYM( 前必须有返回类型词或作用域前缀（同一行内）：否则
+         # REP(i,1,n) { 这类宏调用行会被误判成函数定义（XS7）。
+         r"(?:(?:[A-Za-z_][\w:<>,\*&\[\]\t ]*[ \t*&]+)"
+         r"|(?:[A-Za-z_]\w*::)+)"
+         r"(?P<sym>\b" + sym + r"\s*\((?:[^()]|\([^()]*\))*\)\s*"
+         r"(?:const\s*)?(?:->[^{;\n]+)?\s*\{)")),
     (u"variable definition",
      lambda sym: re.compile(
          r"^[ \t]*(?:static\s+|const\s+|constexpr\s+)*"
@@ -1094,7 +1213,9 @@ def find_definitions(text, symbol):
         except Exception:
             continue
         for m in pat.finditer(text):
-            idx = m.start()
+            # 带 "sym" 命名组的模式（函数定义）前缀含返回类型，定位
+            # 要落在符号本身上。
+            idx = m.start("sym") if "sym" in pat.groupindex else m.start()
             if mask[idx]:
                 continue
             if label != u"macro definition" and label != u"function definition":
@@ -1362,6 +1483,14 @@ def goto_definition_advanced(symbol, view_text, view, include_paths=None,
 _DIAG_RE = re.compile(
     r"^(.+?):(\d+):(?:(\d+):)?[ \t]*(fatal error|error|warning|note):[ \t]*(.*)$")
 
+# 驱动级/链接器错误（无 file:line:col 前缀）：g++: error: /
+# cc1plus: error: / collect2: error: / clang: error: / ld: ...（XC3）。
+_DRIVER_RE = re.compile(
+    r"^(?:.*[/\\])?"
+    r"(g\+\+|gcc|cc1plus|collect2|clang\+\+|clang|ld)(?:\.exe)?"
+    r"(?:\([^)]*\))?:\s*"
+    r"(fatal error|error|warning|note):[ \t]*(.*)$", re.IGNORECASE)
+
 # gcc/clang 的上下文行
 _CTX_RE = re.compile(
     r"^.*?:[ \t]*In (function|constructor|destructor|member function|"
@@ -1443,11 +1572,17 @@ def parse_compiler_output(output):
     output = output.replace("\r\n", "\n").replace("\r", "\n")
     entries = []
     pending_ctx = ("", "")
+    matched_any = False
     for line in output.split("\n"):
         if not line.strip():
             continue
+        # gcc10+ 在部分 locale 下用花引号（U+2018/2019）包上下文名，
+        # 先归一化成 ASCII 再匹配（XS5）。
+        for a, b in QUOTE_NORMALIZE:
+            line = line.replace(a, b)
         cm = _CTX_RE.match(line)
         if cm:
+            matched_any = True
             kind = cm.group(1)
             pending_ctx = (
                 u"In %s '%s': " % (kind, cm.group(2)),
@@ -1455,14 +1590,29 @@ def parse_compiler_output(output):
             continue
         im = _IN_FILE_RE.match(line)
         if im:
+            matched_any = True
             base = os_path_basename(im.group(1))
             pending_ctx = (
                 u"(included from %s line %s) " % (base, im.group(2)),
                 u"（由 %s 第 %s 行包含引入）" % (base, im.group(2)))
             continue
+        dm = _DRIVER_RE.match(line)
+        if dm:
+            matched_any = True
+            en, zh = translate_message(dm.group(3))
+            entries.append({
+                "file": "", "line": 1, "col": 1,
+                "sev_en": dm.group(2),
+                "msg": en, "zh": zh,
+                "ctx": pending_ctx[0], "ctx_zh": pending_ctx[1],
+                "notes": [], "code": "",
+            })
+            pending_ctx = ("", "")
+            continue
         m = _DIAG_RE.match(line)
         if not m:
             continue
+        matched_any = True
         sev = m.group(4)
         raw_msg = m.group(5)
         flag_match = _WARN_FLAG_RE.search(raw_msg)
@@ -1493,6 +1643,18 @@ def parse_compiler_output(output):
             "code": code,
         })
         pending_ctx = ("", "")
+    if not entries and not matched_any and output.strip():
+        # 输出非空却没有任何可识别的诊断行：多半是规则未覆盖的
+        # 驱动/链接器形态（undefined reference 块等）。兜底成一条
+        # 错误，否则编译参数配置错误会静默失效（XC3）。
+        head = "\n".join(
+            ln for ln in output.split("\n") if ln.strip())[:400]
+        en, zh = translate_message(head)
+        entries.append({
+            "file": "", "line": 1, "col": 1, "sev_en": "error",
+            "msg": en, "zh": zh, "ctx": "", "ctx_zh": "",
+            "notes": [], "code": "",
+        })
     return entries
 
 
@@ -1578,8 +1740,14 @@ def basic_checks(code):
             continue
         if ctx.str:
             if c == "\\":
+                if i + 1 < n and code[i + 1] == "\n":
+                    # 反斜杠+换行拼接：物理行号必须推进，否则后续所有
+                    # 诊断的行号整体偏移（XS10）。
+                    line += 1
+                    col = 0
+                else:
+                    col += 2
                 i += 2
-                col += 2
                 continue
             if c == '"':
                 ctx.str = False
@@ -1587,8 +1755,12 @@ def basic_checks(code):
             continue
         if ctx.chr:
             if c == "\\":
+                if i + 1 < n and code[i + 1] == "\n":
+                    line += 1
+                    col = 0
+                else:
+                    col += 2
                 i += 2
-                col += 2
                 continue
             if c == "'":
                 ctx.chr = False
@@ -1665,6 +1837,17 @@ def basic_checks(code):
         problems.append((line, col, "warning",
                          u"Unterminated block comment: missing closing */",
                          u"块注释 /* 未闭合"))
+    if ctx.str:
+        # EOF 前无尾换行时未闭合字符串在这里兜底（XS11）。
+        ln, cl = ctx.pos
+        problems.append((ln, cl, "warning",
+                         u'Unterminated string: missing closing "',
+                         u"字符串缺少结尾双引号"))
+    if ctx.chr:
+        problems.append(ctx.pos + (
+            "warning",
+            u"Unterminated character literal: missing closing '",
+            u"字符常量缺少结尾单引号"))
     for oc, ol, ocl in stack:
         problems.append((ol, ocl, "error",
                          _UNCLOSED_EN % opener_name[oc],
@@ -1859,6 +2042,9 @@ def _format_one_line(raw_line, st, depth, indent_width):
     整篇格式化与选区格式化的结果一致。
     """
     pre = _copy_state(st)
+    # 行首状态要在 _replay 变异 pre 之前取：续行字符串/字符的判定
+    # 看的是本行从什么状态开始（XS9）。
+    enter_sstr, enter_chr = st.sstr, st.chr
     code_spans, prot_spans = _replay(raw_line, pre)
     st.block, st.sstr, st.chr, st.raw = (
         pre.block, pre.sstr, pre.chr, pre.raw)
@@ -1873,13 +2059,6 @@ def _format_one_line(raw_line, st, depth, indent_width):
     if not stripped:
         return "", depth, True
 
-    if (pre.block or pre.raw) and not any(
-            raw_line[a:b].strip() for a, b in code_spans):
-        return raw_line.rstrip(), max(depth, 0), False
-
-    if _PREPROC_RE.match(raw_line):
-        return stripped, depth, False
-
     opens = closes = 0
     for idx, ch in enumerate(raw_line):
         if not prot_mask[idx]:
@@ -1887,6 +2066,18 @@ def _format_one_line(raw_line, st, depth, indent_width):
                 opens += 1
             elif ch == "}":
                 closes += 1
+
+    if (pre.block or pre.raw) and not any(
+            raw_line[a:b].strip() for a, b in code_spans):
+        return raw_line.rstrip(), max(depth, 0), False
+
+    if enter_sstr or enter_chr:
+        # 反斜杠续行的字符串/字符：行首空白属于字面量内容，整行原样
+        # 保留（仅去尾部空白），括号深度仍按 code 区间推进（XS9）。
+        return raw_line.rstrip(), max(depth + opens - closes, 0), False
+
+    if _PREPROC_RE.match(raw_line):
+        return stripped, depth, False
 
     lead_closes = 0
     for ch in stripped:
@@ -1913,15 +2104,18 @@ def _format_one_line(raw_line, st, depth, indent_width):
         pieces.append(("code" if not prot_mask[len(raw_line) - 1]
                        else "prot", raw_line[last:]))
 
+    # line 与 mask 同循环同步构建（XC5）：code 分片 expandtabs 后变长，
+    # 按原始行长度分配的 mask 会与字符错位，深缩进行里的字符串会被改写。
+    # 只有 code 分片做 expandtabs，prot（字符串/注释）分片原样拼接，
+    # 字面量内容一个字节都不动（XC4）。
     buf = []
-    mask = bytearray(len(raw_line))
-    pos = 0
+    mask = bytearray()
     for tag, seg in pieces:
-        seg = seg.expandtabs(indent_width)
-        if tag == "prot":
-            mask[pos:pos + len(seg)] = b"\x01" * len(seg)
+        if tag == "code":
+            seg = seg.expandtabs(indent_width)
+        mask.extend(b"\x01" * len(seg) if tag == "prot"
+                    else b"\x00" * len(seg))
         buf.append(seg)
-        pos += len(seg)
     line = "".join(buf)
 
     rules = _LINE_RULES or _build_line_rules()

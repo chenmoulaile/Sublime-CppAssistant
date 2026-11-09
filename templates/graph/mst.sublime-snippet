@@ -3,16 +3,29 @@
 long long kruskal(int n, vector<Edge> edges) {
     sort(edges.begin(), edges.end(),
          [](const Edge &a, const Edge &b) { return a.w < b.w; });
-    vector<int> p(n + 1);
+    // 并查集：按大小合并 + 两趟迭代 find（无递归），链深不会退化成
+    // O(n) 而爆栈。
+    vector<int> p(n + 1), sz(n + 1, 1);
     for (int i = 1; i <= n; ++i) p[i] = i;
-    function<int(int)> find = [&](int x) {
-        return p[x] == x ? x : p[x] = find(p[x]);
+    auto find = [&](int x) {
+        int r = x;
+        while (p[r] != r) r = p[r];
+        while (p[x] != r) { int nxt = p[x]; p[x] = r; x = nxt; }
+        return r;
     };
     long long ans = 0;
+    int used = 0;
     for (const Edge &e : edges) {
         int a = find(e.u), b = find(e.v);
-        if (a != b) { p[a] = b; ans += e.w; }
+        if (a != b) {
+            if (sz[a] < sz[b]) swap(a, b);
+            p[b] = a; sz[a] += sz[b];
+            ans += e.w;
+            ++used;
+        }
     }
+    // 不连通：返回 -1，而不是静默给出最小生成森林的边权和。
+    if (used < n - 1) return -1;
     return ans;
 }
 $0]]></content>

@@ -1,15 +1,24 @@
 <snippet>
-    <content><![CDATA[vector<long long> berlekamp_massey(const vector<long long> &s, int mod) {
+    <content><![CDATA[long long bm_mod_pow(long long a, long long e, long long m) {
+    long long r = 1;
+    while (e) { if (e & 1) r = r * a % m; a = a * a % m; e >>= 1; }
+    return r;
+}
+vector<long long> berlekamp_massey(const vector<long long> &s, int mod) {
+    // Reduce the input into [0, mod) first: unreduced large/negative
+    // values overflow C[i] * s[n - i] and break the d == 0 check.
+    vector<long long> a = s;
+    for (long long &x : a) x = (x % mod + mod) % mod;
     vector<long long> C(1, 1), B(1, 1);
     int L = 0, m = 1;
     long long b = 1;
-    for (int n = 0; n < (int)s.size(); ++n) {
-        long long d = s[n];
+    for (int n = 0; n < (int)a.size(); ++n) {
+        long long d = a[n];
         for (int i = 1; i <= L; ++i)
-            d = (d + C[i] * s[n - i]) % mod;
+            d = (d + C[i] * a[n - i]) % mod;
         if (d == 0) { ++m; continue; }
         vector<long long> T = C;
-        long long coef = d * mod_pow(b, mod - 2) % mod;
+        long long coef = d * bm_mod_pow(b, mod - 2, mod) % mod;
         if ((int)C.size() < (int)B.size() + m)
             C.resize(B.size() + m, 0);
         for (int j = 0; j < (int)B.size(); ++j)

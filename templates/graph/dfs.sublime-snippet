@@ -1,10 +1,33 @@
 <snippet>
     <content><![CDATA[vector<int> dfs_order;
 vector<int> visited;
+// 显式栈迭代版：1e5+ 的深链用递归会爆栈；遍历序与递归版一致。
 void dfs(int u, const vector<vector<int>> &g) {
+    vector<pair<int, size_t>> st;
     visited[u] = 1;
     dfs_order.push_back(u);
-    for (int v : g[u]) if (!visited[v]) dfs(v, g);
+    st.push_back({u, 0});
+    while (!st.empty()) {
+        int v = st.back().first;
+        size_t &i = st.back().second;
+        if (i < g[v].size()) {
+            int to = g[v][i++];
+            if (!visited[to]) {
+                visited[to] = 1;
+                dfs_order.push_back(to);
+                st.push_back({to, 0});
+            }
+        } else {
+            st.pop_back();
+        }
+    }
+}
+// 调用入口：负责把裸全局数组初始化到本次规模并清空输出。
+vector<int> run_dfs(int s, int n, const vector<vector<int>> &g) {
+    visited.assign(n + 1, 0);
+    dfs_order.clear();
+    dfs(s, g);
+    return dfs_order;
 }
 $0]]></content>
     <tabTrigger>dfs</tabTrigger>

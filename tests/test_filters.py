@@ -21,7 +21,8 @@ class FilterTests(unittest.TestCase):
                              "unused-variable", value)
 
     def test_normalize_rejects_non_code_values(self):
-        for value in ("", None, 0, "-W", "not a flag", "-Wfoo bar", "a;b"):
+        for value in ("", None, 0, "-W", "W", "x", "not a flag",
+                      "-Wfoo bar", "a;b"):
             self.assertEqual(ca_filters.normalize_diagnostic_filter(value), "")
 
     def test_codes_are_deduplicated_and_ordered(self):

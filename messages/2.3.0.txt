@@ -1,0 +1,22 @@
+CppAssistant 2.3.0
+
+A verification-driven bugfix release: about 50 independently reproduced
+defects are fixed across the completion engines, the formatter, clangd
+integration, the C++ template packs and the libclang engine. Highlights:
+
+- Hover popups and signature help work for the first time: the command
+  classes did not follow Sublime's *Command naming rule, so both features
+  silently never ran.
+- Nested subscripts like cnt[a[i]] no longer raise false "unclosed bracket"
+  errors, and array-bounds diagnostics are now visible in the editor.
+- clangd diagnostics render with real clangd (the LSP-spec top-level
+  params.uri notification form is accepted).
+- The built-in formatter no longer rewrites the contents of string literals.
+- Template fixes, verified by real g++ -std=c++14 compiles: fft, lucas, crt
+  and berlekamp-massey compile standalone and compute correct results;
+  dijkstra, dfs, scc, mst and treap are c++14- and stack-safe.
+- The plugin now pins its Python host via .python-version (Python 3.14 on
+  current ST4 builds instead of the deprecated 3.3 host) and ships
+  Ctrl+Shift+C (Copy Diagnostic) enabled by default.
+
+See CHANGELOG.md for the complete list.

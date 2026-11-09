@@ -271,8 +271,10 @@ _HALFWIDTH = {
 _OPERATORS = (
     ">>=", "<<=", "<=>", "->*", "...", "::", "->", "++", "--", "<<", ">>",
     "<=", ">=", "==", "!=", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=",
-    "|=", "^=", "##", ".*", "[[", "]]",
+    "|=", "^=", "##", ".*",
 )
+# 注：[[ 与 ]] 故意不在多字符表里——括号配对、下标链与 C++11 属性剥离
+# 都按单字符 token 处理，合并成一个 token 会让 cnt[a[i]] 的 ] ] 配对失败。
 
 # Group multi-character operators by their first character so the lexer does
 # not try every operator for every punctuation token.  Longest first keeps
@@ -292,6 +294,7 @@ _STRING_PREFIX_START = frozenset("RuUL")
 _NORMAL_STATE = (0, None, 0, 0)  # mode, raw terminator, start line, start col
 _COMMENT_STATE = 1
 _RAW_STATE = 2
+_PP_STATE = 3   # a continuation line of a multi-line preprocessor directive
 
 _LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
 
@@ -491,7 +494,9 @@ def _lex(text, offset, line, col, state, states, comment_ranges=None):
                         k -= 1
                     if k >= start and text[k] == "\\":
                         l2 += 1
-                        states[l2] = _NORMAL_STATE
+                        # 续行属于多行指令：记成非 0 状态并带上指令首行，
+                        # 增量重析才能像块注释一样回溯到 # 行整体重词法。
+                        states[l2] = (_PP_STATE, None, start_line, start_col)
                         j += 1
                         continue
                     break
@@ -759,12 +764,68 @@ def _array_symbol_at(parser, token_idx, name, use_offset):
     return None
 
 
+_UNEVALUATED_KEYWORDS = frozenset(
+    ("sizeof", "alignof", "decltype", "typeid", "noexcept"))
+
+
+def _unevaluated_brackets(tokens, text):
+    """Indices of ``[`` tokens inside an unevaluated operand.
+
+    ``sizeof(a[10])`` never evaluates the subscript, so an out-of-bounds
+    index there is legal C++ and must not be reported.  The flag is set by
+    ``(`` directly after an unevaluated keyword and inherited by every
+    bracket nested inside it.
+    """
+    out = set()
+    stack = []
+    for idx, tok in enumerate(tokens):
+        if tok.kind != "op":
+            continue
+        s = text[tok.start:tok.end]
+        if s in "([{":
+            uneval = bool(stack) and stack[-1]
+            if idx > 0:
+                prev = tokens[idx - 1]
+                if prev.kind == "kw" and \
+                        text[prev.start:prev.end] in _UNEVALUATED_KEYWORDS:
+                    uneval = True
+            stack.append(uneval)
+        elif s in ")]}":
+            if stack:
+                stack.pop()
+            continue
+        if s == "[" and stack and stack[-1]:
+            out.add(idx)
+    return out
+
+
+def _is_unary_amp(tokens, text, amp_idx):
+    """Heuristic: is the ``&`` token at ``amp_idx`` a unary address-of?
+
+    ``&a[10]`` (one-past-the-end address) is legal while ``x & a[10]``
+    evaluates the subscript.  An identifier/number/keyword operand right
+    before ``&`` means binary; anything else (or nothing) reads as unary.
+    """
+    if amp_idx <= 0:
+        return True
+    prev = tokens[amp_idx - 1]
+    if prev.kind == "kw":
+        return True
+    if prev.kind != "op":
+        return False
+    return text[prev.start:prev.end] in (
+        "=", "(", "[", "{", ",", ";", ":", "?", "!", "+", "-", "*", "/",
+        "%", "^", "|", "~", "<", ">", "<<", ">>", "&&", "||", "==", "!=",
+        "<=", ">=", "->", "::")
+
+
 def _array_bounds_diags(text, tokens, parser):
     """Check for constant-index out-of-bounds array access."""
     diags = []
     decl_brackets = getattr(parser, "array_decl_brackets", None) or ()
     match_dict = parser.match
     handled = set()
+    uneval = _unevaluated_brackets(tokens, text)
 
     for idx, tok in enumerate(tokens):
         if idx in handled or idx in decl_brackets:
@@ -788,6 +849,19 @@ def _array_bounds_diags(text, tokens, parser):
             before = text[tokens[idx - 2].start:tokens[idx - 2].end]
             if before in (".", "->"):
                 continue
+            if before == "&" and _is_unary_amp(tokens, text, idx - 2):
+                # ``&a[size]`` (address one past the end) is legal, but
+                # ``&a[size + 1]`` is not; only exact one-past-end passes.
+                address_of = True
+            else:
+                address_of = False
+        else:
+            address_of = False
+        # ``sizeof a[10]`` without parentheses is unevaluated too.
+        if idx in uneval or (idx >= 2 and tokens[idx - 2].kind == "kw" and
+                             text[tokens[idx - 2].start:tokens[idx - 2].end]
+                             in _UNEVALUATED_KEYWORDS):
+            continue
         array_name = text[prev_tok.start:prev_tok.end]
         sym = _array_symbol_at(parser, idx, array_name, tok.start)
         if sym is None:
@@ -816,7 +890,8 @@ def _array_bounds_diags(text, tokens, parser):
                     _ARRAY_INDEX_RE.match(index_expr):
                 index_val = _parse_int_literal(index_expr)
                 if index_val is not None and \
-                        (index_val < 0 or index_val >= size):
+                        (index_val < 0 or index_val >= size) and \
+                        not (address_of and index_val == size):
                     _diag(
                         diags, bracket_tok.start, bracket_tok.line,
                         bracket_tok.col, "error",
@@ -901,6 +976,9 @@ class _Parser(object):
         self.by_name = {}
         self.type_scopes = {}
         self.type_names = set(KNOWN_TYPES)
+        # #define 出过的宏名：`#define ll long long` 后，ll 用作参数类型
+        # 的原型不能因参数无类型词而被当成函数风格初始化。
+        self.macro_names = set()
         self.includes = []
         self.using_std = False
         self.diags = []
@@ -1649,8 +1727,12 @@ class _Parser(object):
             args = [self._text(k) for k in range(open_idx + 1, close_idx)]
             looks_like_params = bool(args) and any(
                 a in TYPE_KEYWORDS or a in DECL_SPECIFIERS or
-                a in self.type_names for a in args)
-            if scope.kind in ("function", "block") and not looks_like_params:
+                a in self.type_names or a in self.macro_names
+                for a in args)
+            # 实参里没有任何类型词：是函数风格初始化（int x(5)、
+            # vector<int> v(n)），不是原型——全局/类作用域同样成立
+            # （XS4）；空参的 int f() 仍是原型。
+            if args and not looks_like_params:
                 return False
             if not args and ret in self.type_names and \
                     name[:1].islower():
@@ -1899,6 +1981,7 @@ class _Parser(object):
         if m:
             name = m.group(1)
             value = body[m.end():].strip()
+            self.macro_names.add(name)
             self._add_symbol(self.global_scope, name, "macro",
                              value or "macro",
                              "#define " + name + (" " + value if value else ""),

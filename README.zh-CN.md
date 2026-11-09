@@ -17,18 +17,18 @@
 
 ---
 
-## 🆕 2.2.0 更新要点
+## 🆕 2.3.0 更新要点
 
 | 变化 | 为什么重要 |
 |------|-----------|
-| **PBDS 头文件自动插入** | `bits/stdc++.h` 不含 `ext/pb_ds`；补全 `__gnu_pbds::tree` 会自动补上两个头文件 |
-| **`auto` 显示真实类型** | `auto it = v.find(x)` 补全显示 `vector<int>::iterator`，不再是 `auto` |
-| **签名带复杂度** | `push_back(int) · O(1)`、`find(const long long&) · O(log n)`、`insert(...) · O(1) avg` |
-| **全角标点一键修** | `Ctrl+Alt+,` 只把**代码区**的 `，；：（）` 换成半角，注释和字符串保持原样 |
-| **模板浏览器** | 插入前可预览任意片段的前 20 行、来源和行数 |
-| **调用/类型层级** | 谁调用了这个函数、它调用了谁、类的继承链 |
-| **状态栏提示** | `[clangd] · void solve(int n, vector<int>& a) · arg 2/2: int n` |
-| **设置校验** | `c++2x`、`lint_timeout: 0` 这类会被 Sublime 静默忽略的值会明确报出来 |
+| **悬停文档与签名帮助真正可用了** | 命令类名不符合 Sublime 的 `*Command` 命名规则，两个默认开启的功能此前从未生效 |
+| **不再有假的"括号未闭合"报错** | `cnt[a[i]]` 中的 `]]` 此前被合并成一个 token；嵌套下标现在解析正确，数组越界检查也能看到它们 |
+| **数组越界警告进入编辑器** | `int a[10]; a[10] = 1;` 立刻标红——检查逻辑早就存在，只是从未接到 UI |
+| **格式化不再改写你的字符串** | TAB 展开与保护掩码不再作用于字符串字面量和注释 |
+| **真实 clangd 的诊断能渲染了** | 此前忽略了 LSP 规范的顶层 `params.uri` 通知形态，clangd 诊断从未显示 |
+| **跑在新的插件宿主上** | 通过 `.python-version` 锁定宿主：新版 ST4 上运行 Python 3.14，而不是 2026 年就要移除的 3.3 宿主 |
+| **Ctrl+Shift+C 开箱即用** | 复制诊断的键位放进 `Default.sublime-keymap`，不再躺在 Sublime 不会自动加载的 Example 文件里 |
+| **模板经过真实编译验证** | fft/lucas/crt/berlekamp-massey 可独立编译且结果正确；dijkstra/dfs/scc/mst/treap 在 `-std=c++14` 与深递归下安全 |
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -237,7 +237,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 
 ## ⌨️ 快捷键
 
-以下快捷键随 `Example.sublime-keymap` 发布；与自己的键位冲突时删掉或在用户键位里覆盖。
+`Ctrl+Shift+C`（复制诊断）随包内 `Default.sublime-keymap` 默认生效，与自己的键位冲突时在用户键位里覆盖即可；其余快捷键在 `Example.sublime-keymap` 里，需要的条目自行复制到用户键位。
 
 | 按键 | 命令 |
 |------|------|
@@ -360,14 +360,15 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 - **可选**：`clang-format` — 完整格式化
 
 > 插件源码兼容 Python 3.3（旧 ST4 宿主），当前版本实际运行在 3.14 上。
-> 不需要任何第三方 Python 包。
+> 包根的 `.python-version`（内容 `3.8`）锁定宿主：4205+ 构建选择
+> Python 3.14，更早的 4050+ 构建选择 Python 3.8。不需要任何第三方 Python 包。
 
 ---
 
 ## 🧪 开发与测试
 
 ```bash
-# 全量测试（208 个）
+# 全量测试（213 个）
 python -m unittest discover -s tests -v
 
 # libclang 测试（可选，需 libclang + clang++）
@@ -404,6 +405,7 @@ CI 会跑 flake8、mypy、Python 3.9 / 3.10 / 3.12 / 3.14 的单元测试、libc
 
 | 问题 | 解决方式 |
 |------|----------|
+| **命令全部灰掉 / 菜单点不动** | 检查 `Preferences.sublime-settings` 的 `ignored_packages`：若列了 `CppAssistant`（或 `CppAssistantLocalization`），Sublime 会完全跳过插件加载。删掉对应条目等重载（或重启）即可；包无法把自己从忽略列表里移除，只能在用户设置里改 |
 | **找不到 clangd** | 安装 clangd（`pacman -S mingw-w64-x86_64-clang`、`apt install clangd`、`brew install llvm`）或设置 `clangd_binary` |
 | **F12 没反应** | 检查 `Example.sublime-keymap` 里的按键，或直接用命令面板 |
 | **回车只是换行** | Sublime 默认行为。用户键位里加 `{ "keys": ["enter"], "command": "insert", "args": {"characters": "\n"}, "context": [{ "key": "auto_complete_visible" }] }` |

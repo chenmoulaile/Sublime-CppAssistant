@@ -2,11 +2,16 @@
     <content><![CDATA[struct Treap {
     struct Node { int l, r, key, pri, sz; };
     vector<Node> t;
-    int root = 0, cnt = 0;
-    Treap(int n) { t.resize(n + 1); }
+    int root = 0;
+    Treap(int n) {
+        t.reserve(n + 1);
+        t.push_back({0, 0, 0, 0, 0});   // t[0] sentinel: null node, sz = 0
+    }
     int node(int key) {
-        t[++cnt] = {0, 0, key, rand(), 1};
-        return cnt;
+        // push_back grows the storage: exceeding the capacity hint from
+        // the constructor can never overflow-write past the vector.
+        t.push_back({0, 0, key, rand(), 1});
+        return (int)t.size() - 1;
     }
     void pushup(int x) { t[x].sz = t[t[x].l].sz + t[t[x].r].sz + 1; }
     void split(int x, int key, int &a, int &b) {

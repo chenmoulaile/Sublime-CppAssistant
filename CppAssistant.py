@@ -749,7 +749,10 @@ def _on_clangd_notify(method, params):
                     0)
             except Exception:
                 pass
-        uri = ((params or {}).get("textDocument") or {}).get("uri") or ""
+        # LSP 规范里 uri 在顶层（PublishDiagnosticsParams）；兼容旧的
+        # textDocument.uri 形态，与 parse_publish_diagnostics 的做法一致。
+        uri = ((params or {}).get("uri")
+               or ((params or {}).get("textDocument") or {}).get("uri")) or ""
         if uri:
             try:
                 _apply_clangd_diagnostics(uri)
@@ -806,8 +809,11 @@ def _get_clangd_client(view):
         if f not in fallback:
             fallback.append(f)
     # fallback 模式兜底：把编译器的标准库 include 路径喂给 clangd，
-    # 否则 CDB 缺条目时 fallback 命令解析不了 bits/stdc++.h
-    for d in _compiler_include_dirs():
+    # 否则 CDB 缺条目时 fallback 命令解析不了 bits/stdc++.h。
+    # cached_only=True：本函数在补全路径的 UI 线程上跑，绝不能同步
+    # 启动 compiler -E（最长 15s）；缓存未热就先不注入 -I，由加载时
+    # 的 _warm_include_dirs_async 预热线程补填，下次启动客户端生效。
+    for d in _compiler_include_dirs(cached_only=True):
         fallback.append("-I" + d)
     args = ["--background-index=false",
             # 补全风格用 clangd 默认（bundled）：类型/模板只出一条简洁
@@ -1724,6 +1730,11 @@ def _compile_with_cmd(cmd, src, workdir, view_id):
     # 必须直接写 0x08000000，审查器要求的是显式隐藏而非命名常量
     creationflags = 0x08000000 if os.name == "nt" else 0
     startupinfo = _hidden_window_startupinfo()
+    # 强制 C locale：诊断词汇（error:/warning:）必须保持英文形态才能被
+    # _DIAG_RE 匹配，本地化输出（错误:/警告:）会让诊断整体消失（XS6）。
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
     proc = None
     out = None
     try:
@@ -1733,7 +1744,7 @@ def _compile_with_cmd(cmd, src, workdir, view_id):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
             cwd=workdir, creationflags=creationflags,
-            startupinfo=startupinfo)
+            startupinfo=startupinfo, env=env)
         _lint_procs[view_id] = proc
         try:
             out, _ = proc.communicate(
@@ -1914,6 +1925,33 @@ def _basic_diags(problems):
     return out
 
 
+def _merge_fast_diags(basic, fast):
+    """把 ca_fast.diagnostics() 的结构诊断并入即时 tier（tier=basic）。
+
+    basic_checks 只跑词法（括号/字面量/全角/#if），数组越界等需要
+    parser 的诊断由完整分析产出。两条路径的词法诊断文案一致，按
+    (行, 0基列, 英文) 去重后只补充结构条目。fast 的列是 0 基，
+    与 _basic_diags 一样在入口统一 +1。
+    """
+    if not fast:
+        return basic
+    seen = set((d["line"], d["col"] - 1, d["msg"]) for d in basic)
+    out = list(basic)
+    for d in fast:
+        key = (d.get("line"), d.get("col"), d.get("en") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "line": d.get("line"), "col": int(d.get("col") or 0) + 1,
+            "sev_en": "error" if d.get("severity") == "error" else "warning",
+            "msg": d.get("en"), "zh": d.get("zh"),
+            "ctx": "", "ctx_zh": "", "notes": [],
+            "tier": "basic", "code": d.get("code") or "",
+        })
+    return out
+
+
 def run_basic_check(view):
     """第一级即时检查：纯 Python 词法扫描，毫秒级反馈结构性问题。"""
     if not view.is_valid() or not _is_cpp(view):
@@ -1933,16 +1971,29 @@ def run_basic_check(view):
                 # 独立缓存键：与补全/跳转的分析互不覆盖。
                 problems = ca_fast.basic_checks(
                     src, cache_key=("basic", vid), version=src_hash)
+                diags = _basic_diags(problems)
+                # 词法 tier 没有数组越界等 parser 级诊断（README 承诺
+                # `int a[10]; a[10] = 1` 立刻标红），这里走带缓存与增量
+                # 的完整分析补齐；成本与补全同源。
+                try:
+                    diags = _merge_fast_diags(
+                        diags,
+                        ca_fast.diagnostics(
+                            src, cache_key=("fastdiag", vid),
+                            version=src_hash))
+                except Exception as e:
+                    _log_error("fast structural check", e)
             else:
                 problems = ca_engine.basic_checks(src)
+                diags = _basic_diags(problems)
         except Exception as e:
             _log_error("basic check", e)
             try:
                 problems = ca_engine.basic_checks(src)
+                diags = _basic_diags(problems)
             except Exception as e2:
                 _log_error("basic check fallback", e2)
                 return
-        diags = _basic_diags(problems)
 
         def done():
             if not view.is_valid() or _basic_gen.get(vid) != gen:
@@ -2233,7 +2284,7 @@ def _clangd_fetch(fname, method, text, offset, timeout=0.5):
     return client.signature_help(fname, text, offset, timeout=timeout)
 
 
-class CaHoverText(sublime_plugin.TextCommand):
+class CaHoverCommand(sublime_plugin.TextCommand):
     """在指定位置弹出 clangd 悬停文档（UI 线程执行）。"""
 
     def is_enabled(self, **kwargs):
@@ -2252,7 +2303,7 @@ class CaHoverText(sublime_plugin.TextCommand):
             _log_error("hover popup", e)
 
 
-class CaSignaturePopupText(sublime_plugin.TextCommand):
+class CaSignaturePopupCommand(sublime_plugin.TextCommand):
     """弹出函数签名提示 popup（UI 线程执行）。"""
 
     def run(self, edit, got=None):
@@ -4054,13 +4105,16 @@ def _install_pack_async(pack, on_done=None):
                         raise Exception("Zip slip attempt detected: %s"
                                         % member)
                 zf.extractall(extract_dir)
-            if not os.path.isdir(dest_dir):
-                os.makedirs(dest_dir)
+            # dest_dir 在首个片段落盘时才创建：压缩包里没有 .sublime-snippet
+            # 而失败时，不能在 User/CppAssistantTemplates 下残留空目录
+            #（否则 Manage Templates 会列出一个空的 "[enabled]" 包）。
             count = 0
             for dirpath, _, filenames in os.walk(extract_dir):
                 for fname in filenames:
                     if not fname.endswith(".sublime-snippet"):
                         continue
+                    if not os.path.isdir(dest_dir):
+                        os.makedirs(dest_dir)
                     shutil.copyfile(os.path.join(dirpath, fname),
                                     os.path.join(dest_dir, fname))
                     count += 1
@@ -4234,6 +4288,19 @@ def _safe_snippet_name(trigger):
     return name
 
 
+def _valid_snippet_trigger(trigger):
+    """Reject empty and path-like triggers ("../x", "a\\b").
+
+    Path-like input would sanitize into a file name that no longer matches
+    the tabTrigger written into the XML; such triggers must fail the
+    "Invalid snippet trigger" guard instead of being silently sanitized.
+    """
+    trigger = str(trigger or "").strip()
+    if not trigger or not _safe_snippet_name(trigger):
+        return False
+    return "/" not in trigger and "\\" not in trigger
+
+
 def _user_snippets_dir():
     path = os.path.join(sublime.packages_path(), "User",
                         "CppAssistantSnippets")
@@ -4243,9 +4310,9 @@ def _user_snippets_dir():
 
 
 def _write_user_snippet(trigger, content, desc, scope=None):
-    name = _safe_snippet_name(trigger)
-    if not name:
+    if not _valid_snippet_trigger(trigger):
         raise ValueError("Invalid snippet trigger")
+    name = _safe_snippet_name(trigger)
     path = os.path.join(_user_snippets_dir(), name + ".sublime-snippet")
     ca_template_packs.write_snippet(
         path, trigger, content, desc or trigger,
@@ -4287,7 +4354,7 @@ class CaCreateUserSnippetCommand(sublime_plugin.TextCommand):
             trigger = (trigger or "").strip()
             if not trigger:
                 return
-            if not _safe_snippet_name(trigger):
+            if not _valid_snippet_trigger(trigger):
                 sublime.error_message("Invalid snippet trigger: %s" % trigger)
                 return
 
@@ -4590,7 +4657,7 @@ class CaManageUserSnippetsCommand(sublime_plugin.WindowCommand):
             trigger = (value or "").strip()
             if not trigger or trigger == entry["trigger"]:
                 return
-            if not _safe_snippet_name(trigger):
+            if not _valid_snippet_trigger(trigger):
                 sublime.error_message("Invalid snippet trigger: %s" % trigger)
                 return
             name = _safe_snippet_name(trigger) + ".sublime-snippet"
@@ -4663,7 +4730,7 @@ def _report_settings_problems():
     if not problems:
         return
     try:
-        print("[CppAssistant] invalid settings:/n"
+        print("[CppAssistant] invalid settings:\n"
               + ca_config.report_text(problems))
     except Exception:
         pass
@@ -4680,7 +4747,7 @@ class CaValidateSettingsCommand(sublime_plugin.ApplicationCommand):
             return
         report = ca_config.report_text(problems)
         try:
-            print("[CppAssistant] invalid settings:/n" + report)
+            print("[CppAssistant] invalid settings:\n" + report)
         except Exception:
             pass
         window = sublime.active_window()

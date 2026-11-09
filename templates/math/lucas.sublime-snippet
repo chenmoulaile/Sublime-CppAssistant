@@ -1,12 +1,17 @@
 <snippet>
-    <content><![CDATA[long long C(long long n, long long k, long long p) {
+    <content><![CDATA[long long mod_pow(long long a, long long e, long long m) {
+    long long r = 1;
+    while (e) { if (e & 1) r = r * a % m; a = a * a % m; e >>= 1; }
+    return r;
+}
+long long C(long long n, long long k, long long p) {
     if (k < 0 || k > n) return 0;
     long long a = 1, b = 1;
     for (long long i = 1; i <= k; ++i) {
         a = a * ((n - i + 1) % p) % p;
         b = b * i % p;
     }
-    return a * mod_pow(b, p - 2) % p;
+    return a * mod_pow(b, p - 2, p) % p;
 }
 long long lucas(long long n, long long k, long long p) {
     if (k == 0) return 1;

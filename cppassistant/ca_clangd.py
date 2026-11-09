@@ -387,8 +387,9 @@ def parse_publish_diagnostics(params):
 
     LSP 标准字段是顶层的 ``uri``；部分旧客户端把 uri 放在
     ``textDocument`` 里，这里两种形态都兼容。返回 ``(uri, items)``，
-    items 为 ``[(line0, col0, severity, message, ctx, ctx_zh)]``。
-    ctx 来自 relatedInformation（如 "in function X"）。
+    items 为 ``[(line0, col0, severity, message, ctx)]``。
+    ctx 来自 relatedInformation（如 "in function X"）；ctx_zh 不在这里
+    生成，由 UI 层的 translate_message 补齐（_apply_clangd_diagnostics_ui）。
     """
     if not isinstance(params, dict):
         return ("", [])
@@ -818,29 +819,31 @@ class ClangdClient(object):
                            "params": params})
 
     def _send_request(self, method, params, cb=None):
-        """发送请求；cb 在读线程被调用（参数为响应 dict 或 None=进程退出）。"""
+        """发送请求并返回 pending entry（含 "id"）。
+
+        entry 在写帧**之前**创建并登记，返回的是它的直接引用：响应可能在
+        本调用返回之前就被读线程处理（读线程会把它从 _pending 弹出），
+        调用方随后再从 _pending.get(rid) 取会拿到 None，把已到达的响应
+        整个丢掉——必须用这里给出的引用。
+        cb 在读线程被调用（参数为响应 dict 或 None=进程退出）。
+        """
         self._idgen[0] += 1
         rid = self._idgen[0]
         msg = {"jsonrpc": "2.0", "id": rid, "method": method}
         if params is not None:
             msg["params"] = params
-        if cb is not None:
-            self._pending[rid] = {"event": threading.Event(), "cb": cb,
-                                  "method": method}
-        else:
-            self._pending[rid] = {"event": threading.Event(), "cb": None,
-                                  "method": method}
+        entry = {"event": threading.Event(), "cb": cb, "method": method,
+                 "id": rid}
+        self._pending[rid] = entry
         self._write_frame(msg)
-        return rid
+        return entry
 
     def request_full(self, method, params, timeout=1.0):
         """同步请求，返回完整响应 dict（含 error），超时/进程退出返回 None。"""
         if self.proc is None or self._dead.is_set():
             return None
-        rid = self._send_request(method, params, cb=None)
-        entry = self._pending.get(rid)
-        if entry is None:
-            return None
+        entry = self._send_request(method, params, cb=None)
+        rid = entry["id"]
         entry["event"].wait(timeout)
         resp = entry.get("resp")
         self._pending.pop(rid, None)
@@ -961,18 +964,18 @@ class ClangdClient(object):
                 self._respond(rid, None)
             return
         if rid is not None:
-            entry = self._pending.get(rid)
+            entry = self._pending.pop(rid, None)
             if entry is not None:
                 entry["resp"] = msg
-                cb = entry.get("cb")
-                if cb is not None:
-                    self._pending.pop(rid, None)
+                # 回调已挂时由读线程独占送达（同步等待者醒来后看到
+                # async=True 会让路）；否则 set event 唤醒同步等待者。
+                entry["async"] = entry.get("cb") is not None
+                entry["event"].set()
+                if entry["async"]:
                     try:
-                        cb(msg.get("result"))
+                        entry["cb"](msg.get("result"))
                     except Exception:
                         pass
-                    return
-                entry["event"].set()
             return
         # 通知
         if method == "textDocument/publishDiagnostics":
@@ -1076,10 +1079,10 @@ class ClangdClient(object):
                    on_arrival=None):
         """请求补全。
 
-        - timeout>0：最多等待 timeout 秒；命中返回条目列表；
-          超时返回 None（若给了 on_arrival，结果到达后会以
-          on_arrival(items) 在读线程回调一次）。
-        - timeout<=0：纯异步模式，立刻返回 None，结果仅经 on_arrival。
+        - 给了 on_arrival：结果统一在读线程经 on_arrival(items) 送达，
+          本方法返回 None（即使 clangd 在 timeout 内就答复了）。
+        - on_arrival=None：timeout>0 时同步等待，命中返回条目列表，
+          超时返回 None；timeout<=0 立刻返回 None。
         - 请求前先把当前全文同步给 clangd，保证位置与最新文本一致。
         """
         if not self.is_ready():
@@ -1091,25 +1094,31 @@ class ClangdClient(object):
             self.change_document(path, text)
         line, col = line_col_utf16(text, offset)
         self.cancel_pending("textDocument/completion")
-        rid = self._send_request("textDocument/completion", {
+        # entry 是 _send_request 给出的直接引用：响应可能在写帧后立刻被
+        # 读线程处理（entry 随之离开 _pending），事后 get(rid) 会拿到
+        # None 而把已到达的响应丢掉。
+        entry = self._send_request("textDocument/completion", {
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": col},
             "context": {"triggerKind": 1},
         }, cb=None)
-        entry = self._pending.get(rid)
-        if entry is None:
-            return None
+        rid = entry["id"]
+        # 先挂回调再 wait：原实现 wait 判定超时之后才挂回调，判定与挂
+        # 回调之间到达的响应没有回调可走，结果丢失且 entry 永远滞留
+        # _pending。回调挂上后响应由读线程独占送达（读线程会把 entry
+        # 标记为 async 并弹出），同步路径不再重复消费。
+        if on_arrival is not None:
+            entry["cb"] = self._wrap_arrival(on_arrival)
         if timeout and timeout > 0:
             got = entry["event"].wait(timeout)
             if got:
                 resp = entry.get("resp")
                 self._pending.pop(rid, None)
+                if entry.get("async"):
+                    return None
                 if not isinstance(resp, dict):
                     return None
                 return parse_completion_result(resp.get("result"))
-        # 超时：挂上异步回调，结果稍后到达时在读线程回调一次
-        if on_arrival is not None:
-            entry["cb"] = self._wrap_arrival(on_arrival)
         return None
 
     def _wrap_arrival(self, on_arrival):

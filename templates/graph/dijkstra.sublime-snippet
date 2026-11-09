@@ -7,11 +7,17 @@
     dist[s] = 0;
     pq.push({0, s});
     while (!pq.empty()) {
-        auto [d, u] = pq.top(); pq.pop();
+        // pair + .first/.second（不用 C++17 结构化绑定，兼容 c++14）
+        pair<long long, int> top = pq.top(); pq.pop();
+        long long d = top.first;
+        int u = top.second;
         if (d != dist[u]) continue;
-        for (auto [v, w] : g[u]) if (d + w < dist[v]) {
-            dist[v] = d + w;
-            pq.push({dist[v], v});
+        for (const auto &e : g[u]) {
+            int v = e.first, w = e.second;
+            if (d + w < dist[v]) {
+                dist[v] = d + w;
+                pq.push({dist[v], v});
+            }
         }
     }
     return dist;

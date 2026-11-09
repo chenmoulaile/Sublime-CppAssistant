@@ -20,18 +20,18 @@ configure, nothing to index, no background daemon you have to babysit.
 
 ---
 
-## 🆕 What's new in 2.2.0
+## 🆕 What's new in 2.3.0
 
 | Change | Why it matters |
 |--------|----------------|
-| **PBDS headers are inserted for you** | `bits/stdc++.h` does not include `ext/pb_ds`; completing `__gnu_pbds::tree` now adds both headers automatically |
-| **`auto` shows its real type** | `auto it = v.find(x)` completes as `vector<int>::iterator`, not `auto` |
-| **Complexity in signatures** | `push_back(int) · O(1)`, `find(const long long&) · O(log n)`, `insert(...) · O(1) avg` |
-| **One-key full-width fix** | `Ctrl+Alt+,` rewrites `，；：（）` to half-width **in code only**, leaving comments and strings alone |
-| **Template browser** | Preview the first 20 lines of any installed snippet before inserting it |
-| **Call / type hierarchy** | Who calls this function, what it calls, and the class inheritance chain |
-| **Status bar hints** | `[clangd] · void solve(int n, vector<int>& a) · arg 2/2: int n` |
-| **Validate Settings** | Invalid values (`c++2x`, `lint_timeout: 0`) are reported instead of silently ignored |
+| **Hover docs & signature help actually work** | The command classes did not follow Sublime's `*Command` naming rule, so both default-on features silently never ran |
+| **No more false "unclosed bracket" errors** | `cnt[a[i]]` used to tokenize `]]` as one token; nested subscripts now parse correctly and array-bounds checks see them |
+| **Array-bounds warnings reach the editor** | `int a[10]; a[10] = 1;` is flagged instantly — the check existed but was never wired to the UI |
+| **The formatter never rewrites your strings** | TAB expansion and the protection mask no longer touch string literals and comments |
+| **clangd diagnostics render with real clangd** | The LSP-spec top-level `params.uri` notification form was ignored, so clangd diagnostics never appeared |
+| **Runs on the modern plugin host** | `.python-version` pins the host: Python 3.14 on current ST4 builds instead of the 3.3 host scheduled for removal in 2026 |
+| **Ctrl+Shift+C ships enabled** | Copy Diagnostic now ships in `Default.sublime-keymap`, not in an Example file Sublime never loads |
+| **Templates verified by real compiles** | fft/lucas/crt/berlekamp-massey compile standalone with correct results; dijkstra/dfs/scc/mst/treap are `-std=c++14`- and stack-safe |
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 
@@ -259,8 +259,10 @@ drop it into `Packages/` (or `Installed Packages/`), and restart Sublime Text.
 
 ## ⌨️ Key bindings
 
-These ship in `Example.sublime-keymap`. Delete or override any entry that
-conflicts with your own setup.
+`Ctrl+Shift+C` (Copy Diagnostic) is bound out of the box in the shipped
+`Default.sublime-keymap`; override it in your User keymap if it conflicts
+with your own setup. The remaining bindings ship in `Example.sublime-keymap` —
+copy the entries you want into your User keymap.
 
 | Keys | Command |
 |------|---------|
@@ -388,14 +390,16 @@ values Sublime would otherwise ignore.
 - **Optional**: `clang-format` — formatting
 
 > The plugin source is Python 3.3 compatible (older ST4 hosts) and runs on
-> 3.14 in current builds. No third-party Python packages are required.
+> 3.14 in current builds. A `.python-version` file in the package root pins
+> the host: `3.8` selects Python 3.14 on build 4205+ and Python 3.8 on
+> earlier 4050+ builds. No third-party Python packages are required.
 
 ---
 
 ## 🧪 Development
 
 ```bash
-# Full test suite (208 tests)
+# Full test suite (213 tests)
 python -m unittest discover -s tests -v
 
 # libclang tests (opt-in, needs libclang + clang++)
@@ -432,6 +436,7 @@ libclang tests, and builds the `.sublime-package` on every tag.
 
 | Issue | Solution |
 |-------|----------|
+| **All commands grayed out / menus dead** | Check `Preferences.sublime-settings` → `ignored_packages`: if `CppAssistant` (or `CppAssistantLocalization`) is listed there, Sublime skips loading the plugin entirely. Remove the entries and wait for the reload (or restart). A package cannot un-ignore itself, so this can only be fixed from the user settings |
 | **clangd not found** | Install clangd (`pacman -S mingw-w64-x86_64-clang`, `apt install clangd`, `brew install llvm`) or set `clangd_binary` |
 | **F12 does nothing** | Check the key binding in `Example.sublime-keymap`, or run the command from the palette |
 | **Enter inserts a newline** | Sublime default. Add `{ "keys": ["enter"], "command": "insert", "args": {"characters": "\n"}, "context": [{ "key": "auto_complete_visible" }] }` to your user keymap |

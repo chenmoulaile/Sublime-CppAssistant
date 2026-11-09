@@ -3,6 +3,136 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.0 — 2026-11-09
+
+A verification-driven bugfix release: every fix below was independently
+reproduced before patching (isolated probes against the real modules, real
+`g++ -std=c++14` compiles for templates, and a live clangd wire test), and the
+whole batch was re-verified afterwards (213 tests, `compileall`, plus new
+integrity gates).
+
+### Fixed — commands and completions
+
+- **Hover popups and signature help had never worked**: the `CaHoverText` /
+  `CaSignaturePopupText` classes did not end in `Command`, so Sublime never
+  registered them and `run_command("ca_hover" / "ca_signature_popup")` was a
+  silent no-op. Renamed to `CaHoverCommand` / `CaSignaturePopupCommand`
+  (call sites unchanged). A new `tests/test_command_integrity.py` asserts
+  that every internal `run_command("ca_...")` string has a matching
+  `*Command` class — exactly the blind spot that let this ship.
+- The lexer merged `]]` / `[[` into single operator tokens, so nested
+  subscripts (`cnt[a[i]]`) produced two false "Unclosed bracket" errors, the
+  array-bounds check was skipped entirely, and attribute handling broke.
+  Multi-character bracket tokens are gone.
+- `std::ranges::` / `std::views::` completion fell back to the whole library
+  and inserted wrong code: the receiver parser returned an empty name for
+  nested qualified scopes. Now resolved, including `std::__gnu_pbds::`.
+- `stringstream ss; ss.` offered no members in either engine even though the
+  member table existed; stream types are now recognized declaration kinds.
+- The bare `std::` popup was truncated at 200 entries, which hid exactly the
+  new `__gnu_pbds` skeletons; the cap is now 256 (the library has 204).
+- The legacy engine (`enable_fast_engine: false`) did not infer method return
+  types for `auto` (`auto value = m.at("k")` stayed `auto`); it now shares
+  the fast engine's inference rules.
+- `diagnostic_filters` normalized a bare `W` into warning name `w` and passed
+  `-Wno-w` to the compiler; single-letter inputs are now rejected, as the
+  module documentation always promised.
+
+### Fixed — diagnostics and formatting
+
+- clangd diagnostics only rendered for the non-standard `textDocument.uri`
+  notification form. Real clangd sends the LSP-spec top-level `params.uri`
+  (verified against a live clangd), so clangd diagnostics never rendered at
+  all, and `diagnostic_filters` / context translation never applied on that
+  path. Both forms render now.
+- Compiler driver and linker errors (`g++: error:`, `cc1plus:`, `collect2:`,
+  `ld: ...`) were dropped by the diagnostic regex, so a mistyped
+  `compiler_extra_args` failed silently. They are parsed now, and output that
+  matches no rule surfaces as a fallback diagnostic instead of nothing.
+- Compilers running under a Chinese locale emit `错误：`/`警告：`, which also
+  produced zero diagnostics; compile commands now force `LC_ALL=C`/`LANG=C`.
+- gcc ≥ 10 curly quotes in `In function 'main'` context lines never matched;
+  quotes are normalized before context extraction.
+- The built-in formatter rewrote string literal contents (TAB expansion and
+  the protection mask were applied to string/comment segments, and the mask
+  desynchronized on deeply indented lines). Segments are length-synced and
+  preserved verbatim now.
+- Unclosed string/char literals at EOF (no trailing newline) went unreported,
+  and `\`-continuations inside strings shifted all later line numbers.
+- `REP(i, 1, n) {` macro-call lines were misread as function definitions and
+  hijacked F12; three-level nested template arguments
+  (`vector<vector<vector<int>>>`) broke declaration parsing entirely.
+- FastEngine: editing a multi-line `#define` continuation corrupted the
+  incremental token stream until the next full rescan; `sizeof(a[10])` and
+  the legal one-past-end `&a[10]` were flagged as errors.
+- Array-bounds diagnostics existed in FastEngine but no code path ever
+  delivered them to the UI. They are now merged into the basic lint tier
+  (deduplicated against parser diagnostics), so `int a[10]; a[10] = 1;`
+  is flagged instantly as documented.
+
+### Fixed — templates (each verified by real `g++ -std=c++14` compiles)
+
+- `math/fft` referenced an undefined `PI` and failed to compile standalone.
+- `math/lucas` called ntt's `mod_pow`, which is hardcoded to 998244353 — any
+  other modulus silently returned wrong answers (verified numerically).
+  `lucas` and `math/berlekamp-massey` now carry their own `mod_pow(a, e, m)`.
+- `math/crt` used Fermat inverses (wrong for composite moduli, infinite loop
+  when the modulus repeated); it now uses the extended Euclidean algorithm.
+- `graph/dijkstra` used C++17 structured bindings under the project default
+  of `c++14` (fails with `-pedantic-errors` and on older judges).
+- `graph/dfs` / `graph/scc` recursed per node (stack overflow around 1e5
+  nodes) and left global arrays uninitialized; `graph/mst` could build a
+  linear-depth DSU chain; `ds/treap` wrote out of bounds past its capacity
+  (ASAN-confirmed). All rewritten or guarded.
+
+### Fixed — libclang engine
+
+- The periodic PCH sweep ran with `keep_sig=None` every 30 minutes and
+  deleted the PCH that was in use, forcing a cold rebuild each cycle; it now
+  sweeps with the engine's active signature and never touches in-flight
+  builds.
+- Each settings reload started another unkillable 30-minute sweep timer
+  chain; chains are now single-instance and generation-guarded.
+- A failed PCH build was retried on every 0.1 s debounce; builds now back
+  off. PCH build timeouts kill the child process instead of leaking it, and
+  using an engine after `close()` raises instead of handing a NULL index to
+  libclang.
+- Completion requests that timed out raced the reply and lost it; the
+  callback is registered before waiting now.
+- `_compiler_include_dirs()` could run a 15 s compiler subprocess on the UI
+  thread in the completion path; the completion path now uses the warm cache
+  only, with a background thread refreshing it.
+
+### Fixed — template management and snippets
+
+- Creating/renaming a user snippet with a path-like trigger (`../escape`)
+  silently sanitized the filename while writing the raw trigger into the XML
+  and deleting the original file; such triggers are rejected now.
+- A URL pack whose archive contains no `.sublime-snippet` files left an
+  empty directory that then showed up as an enabled pack; the directory is
+  only created once a snippet is actually copied.
+
+### Changed
+
+- Added `.python-version` (`3.8`) so current ST4 builds run the plugin on
+  Python 3.14 instead of the deprecated 3.3 host (removal scheduled for
+  2026); pre-4205 builds get real 3.8 and older ones stay on 3.3, which the
+  source remains compatible with. README host statements updated.
+- `Ctrl+Shift+C` (Copy Diagnostic) now ships in `Default.sublime-keymap` —
+  the binding previously existed only in `Example.sublime-keymap`, which
+  Sublime never loads automatically, despite the changelog calling it a
+  default.
+- README test counts, host notes, keybinding docs and the troubleshooting
+  table (including a new "all menu items greyed out → check
+  `ignored_packages`" row) were refreshed.
+
+### Tests and packaging
+
+- The suite grew to 213 tests, including the new command-integrity
+  regression test. A template compile smoke gate (extract snippet CDATA,
+  strip placeholders, `g++ -std=c++14 -fsyntax-only`, per-file and per-pack)
+  was used to verify this release.
+
 ## v2.2.1 — 2026-11-06
 
 Packaging hotfix. **Package Control could not install or upgrade CppAssistant**

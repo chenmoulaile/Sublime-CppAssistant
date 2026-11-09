@@ -31,7 +31,10 @@ def normalize_diagnostic_filter(value):
     elif s.startswith("W") and len(s) > 1 and s[1].islower():
         s = s[1:]
     s = s.strip().lower()
-    if not _CODE_RE.match(s):
+    # A warning name is at least a word: single letters (bare "W", "x", ...)
+    # are degenerate prefixes, not names, and must not reach the compiler
+    # as -Wno-w.
+    if len(s) < 2 or not _CODE_RE.match(s):
         return ""
     return s
 
