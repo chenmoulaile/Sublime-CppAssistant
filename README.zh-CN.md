@@ -18,14 +18,14 @@
 
 ---
 
-## 🆕 2.3.1 更新要点
+## 🆕 2.3.2 更新要点
 
 | 变化 | 为什么重要 |
 |------|-----------|
-| **菜单不再全部变灰** | 2.2.1 没有 `.python-version`，Sublime 把插件分到已禁用的 3.3 宿主，Python 代码从未加载 |
-| **默认改用纯本地引擎** | `completion_engine` = `builtin`：不启动 clangd 进程、不加载 libclang，内存占用与普通 Python 插件相当 |
-| **三种模式随时切换** | `builtin` / `auto` / `clangd`，菜单或命令面板一键切换，切换时立即停掉旧引擎并释放 libclang |
-| **不装 clangd 也有签名提示** | `builtin` 模式用 FastEngine 的同文件签名，显示 `arg 2/2: vector<int>& a` |
+| **补全恢复正常** | `sublime.KIND_ID_CONSTANT` 根本不存在，每次补全都会抛 `AttributeError`：弹窗不出，控制台被同一段 traceback 刷屏，输入也变卡 |
+| **标签更短、不再重复** | `vector<${1:int}>` 现在只显示 `vector`，同一个类型不会看起来有好几条 |
+| **详情更干净** | 显示 `push_back(x)` / `vector<int>`，而不是原始片段文本；去掉 `std::` 前缀 |
+| **一个语言开关** | `CppAssistant > Language` 同时设置菜单栏、补全弹窗和诊断语言 |
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -213,6 +213,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `CppAssistant: Show Diagnostics` | 诊断面板 |
 | `CppAssistant: Copy Diagnostic` | 复制当前诊断 |
 | `CppAssistant: Diagnostic Language - …` | 中文 / 英文 / 双语 |
+| `CppAssistant: Language - …` | 菜单栏 + 补全 + 诊断语言，一次设置 |
 | `CppAssistant: Diagnostic Engine - …` | compiler / clangd / libclang |
 | `CppAssistant: Completion Engine - …` | builtin（纯 Python）/ auto / clangd |
 | `CppAssistant: Toggle Inline Error Phantoms` | 开/关内联错误提示 |

@@ -1822,9 +1822,11 @@ QUOTE_NORMALIZE = ((u"\u2018", "'"), (u"\u2019", "'"), (u"\u201c", '"'), (u"\u20
 def _entry(comp, ann, kind, want_std=False, trigger=None):
     if trigger is None:
         trigger = comp.split("(")[0]
-        if trigger.count("<") > trigger.count(">"):
-            # function<${1:void(int)}> 这类：按 "(" 切会切在模板实参里，
-            # 退回取最前面的标识符，弹窗标签才不会被截断。
+        # 模板/占位符不能进弹窗标签：`vector<${1:int}>` 以前整串当 trigger，
+        # 列表里显示成 `vector<${1:int}>` 又长又难匹配，还导致同一个
+        # vector 看起来"有好几个"。这里统一只取最前面的限定名。
+        if ("<" in trigger or "$" in trigger) and \
+                not trigger.startswith("operator"):
             m = _re.match(r"^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", comp)
             if m:
                 trigger = m.group(0)
@@ -2269,3 +2271,17 @@ def en_detail(trigger, container=None):
     if v:
         return v
     return DETAIL_EN.get(trigger)
+
+
+# 回填英文注解：en_detail 定义在文件末尾，而条目在前面构建，只能在这里补。
+# 没有这一步，英文模式下补全右侧会一直显示中文说明（反之亦然）。
+for _item in STD_ITEMS_ALL:
+    if "annotation_en" not in _item:
+        _item["annotation_en"] = en_detail(_item["insert"]) or u""
+for _ctx, _items in MEMBERS_DB_FAST.items():
+    for _item in _items:
+        if "annotation_en" not in _item:
+            _item["annotation_en"] = en_detail(_item["insert"], _ctx) or u""
+for _item in GENERIC_MEMBERS_FAST:
+    if "annotation_en" not in _item:
+        _item["annotation_en"] = en_detail(_item["insert"]) or u""

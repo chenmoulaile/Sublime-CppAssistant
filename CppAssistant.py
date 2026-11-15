@@ -286,7 +286,8 @@ _INHIBIT_WORD = getattr(sublime, "INHIBIT_WORD_COMPLETIONS", 0)
 
 
 def _kind_default():
-    return sublime.KIND_AMBIGUOUS
+    return getattr(sublime, "KIND_AMBIGUOUS",
+                   (_kind_id("KIND_ID_AMBIGUOUS"), "?", u""))
 
 
 # 类型标签按 display_language 取用：en 英文 / zh 中文 / both 双语
@@ -316,17 +317,30 @@ def _kind_label(code):
     return pair[0]
 
 
+def _kind_id(name):
+    """安全获取 Sublime 的 kind 常量。
+
+    这些常量随 build 变化，且 ``KIND_ID_CONSTANT`` 从来不在公开 API 里。
+    直接引用它会让**每一次**补全都抛 AttributeError：弹窗没了，日志还被
+    同一段 traceback 刷屏，看起来就是"补全变慢/用不了"。缺常量时回退到
+    AMBIGUOUS，绝不让一个图标毁掉整条补全链路。
+    """
+    return getattr(sublime, name,
+                   getattr(sublime, "KIND_ID_AMBIGUOUS", 0))
+
+
 _KIND_MAP = {
-    "f": lambda: (sublime.KIND_ID_FUNCTION, "f", _kind_label("f")),
-    "m": lambda: (sublime.KIND_ID_FUNCTION, "m", _kind_label("m")),
-    "v": lambda: (sublime.KIND_ID_VARIABLE, "v", _kind_label("v")),
-    "c": lambda: (sublime.KIND_ID_CONSTANT, "c", _kind_label("c")),
-    "t": lambda: (sublime.KIND_ID_TYPE, "T", _kind_label("t")),
-    "k": lambda: (sublime.KIND_ID_KEYWORD, "k", _kind_label("k")),
-    "u": lambda: (sublime.KIND_ID_FUNCTION, "u", _kind_label("u")),
-    "s": lambda: (sublime.KIND_ID_SNIPPET, "S", _kind_label("s")),
+    "f": lambda: (_kind_id("KIND_ID_FUNCTION"), "f", _kind_label("f")),
+    "m": lambda: (_kind_id("KIND_ID_FUNCTION"), "m", _kind_label("m")),
+    "v": lambda: (_kind_id("KIND_ID_VARIABLE"), "v", _kind_label("v")),
+    # 常量没有独立的 kind id：用变量图标，标签仍是 constant。
+    "c": lambda: (_kind_id("KIND_ID_VARIABLE"), "c", _kind_label("c")),
+    "t": lambda: (_kind_id("KIND_ID_TYPE"), "T", _kind_label("t")),
+    "k": lambda: (_kind_id("KIND_ID_KEYWORD"), "k", _kind_label("k")),
+    "u": lambda: (_kind_id("KIND_ID_FUNCTION"), "u", _kind_label("u")),
+    "s": lambda: (_kind_id("KIND_ID_SNIPPET"), "S", _kind_label("s")),
     # 宏不是函数：用变量图标 + macro 标签，避免补全列表里宏和函数混淆。
-    "d": lambda: (sublime.KIND_ID_VARIABLE, "d", _kind_label("d")),
+    "d": lambda: (_kind_id("KIND_ID_VARIABLE"), "d", _kind_label("d")),
 }
 
 
@@ -349,14 +363,29 @@ def _annotation(d):
     return zh
 
 
+_PLACEHOLDER_RE = re.compile(r"\$\{\d+:([^}]*)\}|\$\{\d+\}|\$\d+")
+
+
+def _clean_signature(text):
+    """把 snippet 文本整理成给人看的签名。
+
+    ``vector<${1:int}>`` → ``vector<int>``，``push_back(${1:x})`` →
+    ``push_back(x)``；再去掉弹窗里没有信息量的 ``std::`` 前缀、压掉多余
+    空白。详情行因此更短，不会和补全项本身重复。
+    """
+    s = _PLACEHOLDER_RE.sub(lambda m: m.group(1) or u"", text or u"")
+    s = s.replace(u"std::", u"")
+    return re.sub(r"\s+", u" ", s).strip()
+
+
 def _detail(d):
     """补全详情面板文本，按当前显示语言选择。
 
     内置片段/用户符号同时带中英详情；clangd 和标准库条目本来就是
-    英文，没有 detail_en 时直接原样返回。
+    英文，没有 detail_en 时清理 insert 作为中性签名返回。
     """
     if "detail_en" not in d:
-        return d.get("detail") or u""
+        return _clean_signature(d.get("detail") or d.get("insert") or u"")
     en = d.get("detail_en") or u""
     zh = d.get("detail") or u""
     lang = _display_language()
@@ -370,7 +399,11 @@ def _detail(d):
 
 
 def _make_item(d):
-    kind = _KIND_MAP.get(d.get("kind"), _kind_default)()
+    try:
+        kind = _KIND_MAP.get(d.get("kind"), _kind_default)()
+    except Exception:
+        # 任何 kind 计算失败都不该让整批补全消失。
+        kind = (_kind_id("KIND_ID_AMBIGUOUS"), "?", u"")
     insert = d["insert"]
     is_snippet = (bool(d.get("snippet")) or ("\n" in insert)
                   or ("$" in insert))
@@ -2663,6 +2696,33 @@ class CaSetDisplayLanguageCommand(sublime_plugin.ApplicationCommand):
         menu_lang = "zh" if lang == "zh" else "en"
         _set_setting("menu_language", menu_lang)
         _sync_menu_language(menu_lang)
+
+    def is_checked(self, lang=None):
+        return _display_language() == lang
+
+
+class CaSetLanguageCommand(sublime_plugin.ApplicationCommand):
+    """One switch for every language surface.
+
+    Sets the menu bar, the completion popup (details, type labels, origin)
+    and diagnostics/error messages at once. Previously menu_language and
+    display_language had to be changed separately, which is why a Chinese
+    user could still see English completion hints.
+    """
+
+    def run(self, lang):
+        if lang not in ("en", "zh", "both"):
+            sublime.status_message(
+                "[CppAssistant] invalid language: %s" % lang)
+            return
+        _set_setting("display_language", lang)
+        menu_lang = "zh" if lang == "zh" else "en"
+        _set_setting("menu_language", menu_lang)
+        _sync_menu_language(menu_lang)
+        _refresh_cpp_views()
+        label = {"en": "English", "zh": u"简体中文",
+                 "both": "English / 中文"}.get(lang, lang)
+        sublime.status_message("[CppAssistant] language: %s" % label)
 
     def is_checked(self, lang=None):
         return _display_language() == lang

@@ -207,8 +207,10 @@ class EngineTests(unittest.TestCase):
     def test_completion_details_are_bilingual(self):
         results = ca_engine.analyze("std::vec", 8)
         by_trigger = dict((r["trigger"], r) for r in results)
-        entry = by_trigger["vector<${1:int}>"]
+        # 模板参数不再进入触发器（弹窗标签只显示 vector）。
+        entry = by_trigger["vector"]
         self.assertEqual(entry["detail_en"], entry["detail"])
+        self.assertNotIn("$", entry["trigger"])
 
     def test_snippet_completion_has_english_detail(self):
         # Test that keyword completions have English detail

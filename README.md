@@ -21,14 +21,14 @@ drives clangd for you.
 
 ---
 
-## 🆕 What's new in 2.3.1
+## 🆕 What's new in 2.3.2
 
 | Change | Why it matters |
 |--------|----------------|
-| **Menus no longer grey out on current ST4 builds** | 2.2.1 had no `.python-version`, so Sublime put it on the disabled 3.3 host and never loaded the Python side |
-| **Pure-local engine is now the default** | `completion_engine` = `builtin` starts no clangd process and loads no libclang, so memory stays small |
-| **Three modes, switchable instantly** | `builtin` / `auto` / `clangd` from the menu or command palette; the old boolean still works if you set it explicitly |
-| **Signature help without clangd** | `builtin` shows FastEngine's same-file signature and argument index (`arg 2/2: vector<int>& a`) |
+| **Completions work again on current ST4** | `sublime.KIND_ID_CONSTANT` never existed, so every completion raised `AttributeError`: no popup, and the console flooded with the same traceback |
+| **Shorter, duplicate-free labels** | `vector<${1:int}>` is now just `vector`, so one type no longer looks like several entries |
+| **Cleaner details** | `push_back(x)` / `vector<int>` instead of raw snippet text; the `std::` prefix is dropped |
+| **One language switch** | `CppAssistant > Language` sets the menu bar, the completion popup and diagnostics at once |
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 
@@ -235,6 +235,7 @@ drop it into `Packages/` (or `Installed Packages/`), and restart Sublime Text.
 | `CppAssistant: Show Diagnostics` | Diagnostics panel |
 | `CppAssistant: Copy Diagnostic` | Copy the current diagnostic |
 | `CppAssistant: Diagnostic Language - …` | English / Chinese / both |
+| `CppAssistant: Language - …` | Menu bar + completion + diagnostics at once |
 | `CppAssistant: Diagnostic Engine - …` | compiler / clangd / libclang |
 | `CppAssistant: Completion Engine - …` | builtin (pure Python) / auto / clangd |
 | `CppAssistant: Toggle Inline Error Phantoms` | Inline messages on/off |

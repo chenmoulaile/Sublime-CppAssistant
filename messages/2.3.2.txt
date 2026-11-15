@@ -1,0 +1,15 @@
+CppAssistant 2.3.2
+
+- Fixed every-completion crash: sublime.KIND_ID_CONSTANT does not exist in the
+  API, so on_query_completions raised AttributeError for every candidate and
+  the popup never appeared (also why typing felt slower). Kind ids are now
+  looked up safely with a fallback.
+- Completion labels are shorter: template placeholders no longer leak into the
+  trigger (vector<${1:int}> -> vector), so duplicates disappear.
+- Details are cleaned up: push_back(x) / vector<int> instead of raw snippet
+  text, std:: prefix removed.
+- Less fuzzy noise: typing "vec" no longer offers "views::common".
+- New: CppAssistant > Language sets menu bar, completion popup and diagnostics
+  language in one click (简体中文 / English / English + Chinese).
+
+See CHANGELOG.md for details.

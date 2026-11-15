@@ -3,6 +3,49 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.2 — 2026-11-15
+
+### Fixed
+
+- **Every completion raised `AttributeError: sublime.KIND_ID_CONSTANT`.**
+  That constant has never existed in the Sublime API, so `_make_item()`
+  failed for every candidate: the popup never appeared and the console
+  filled with the same traceback — which is also why typing felt much
+  slower. All kind ids now go through a guarded lookup with an AMBIGUOUS
+  fallback, and `_make_item()` has its own safety net so one bad icon can
+  never kill a whole completion batch.
+
+### Changed
+
+- **Template placeholders no longer leak into popup labels.**
+  `vector<${1:int}>` used to be the trigger, so the list showed raw snippet
+  text and the same type looked like several entries. Triggers are now just
+  the qualified name (`vector`), which also removes those duplicates.
+- **Shorter detail lines.** `_clean_signature()` resolves `${1:x}` → `x` and
+  strips the `std::` prefix, so the details pane shows `vector<int>` /
+  `push_back(x)` instead of the raw snippet text.
+- **Less fuzzy noise.** When a real prefix match exists, pure subsequence
+  matches are dropped (typing `vec` no longer offers `views::common`),
+  while substring matches still work (`back` → `push_back` in member lists).
+- **Bilingual annotations are complete.** English annotations are backfilled
+  from `en_detail()` for every STL/PBDS entry, so English mode no longer
+  shows Chinese descriptions (and the Chinese mode covers everything,
+  including `scanf`, `vector` members and algorithms).
+
+### Added
+
+- **One language switch for everything**: `CppAssistant > Language`
+  (简体中文 / English / English + Chinese) sets the menu bar, the completion
+  popup and diagnostics at once. The same three entries exist in the command
+  palette. The old separate "Diagnostic language" and "Toggle Menu Language"
+  menu entries are replaced by this single switch.
+
+### Tests
+
+- 234 tests (+10). New `tests/test_completion_display.py` reproduces the
+  missing `KIND_ID_CONSTANT`, checks trigger hygiene (no `$`/`<`), the
+  placeholder cleanup, the language command and bilingual annotations.
+
 ## v2.3.1 — 2026-11-15
 
 Fixes "the plugin installed but does nothing" on current Sublime Text builds,

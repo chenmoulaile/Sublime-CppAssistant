@@ -27,37 +27,32 @@
 							},
 							{ "caption": "-" },
 							{
-								"caption": "Diagnostic language",
+								"caption": "Language",
 								"id": "cppassistant-language",
 								"children":
 								[
 									{
-										"caption": "Chinese",
+										"caption": "简体中文",
 										"id": "cppassistant-language-zh",
-										"command": "ca_set_display_language",
+										"command": "ca_set_language",
 										"args": { "lang": "zh" },
 										"checkbox": true
 									},
 									{
 										"caption": "English",
 										"id": "cppassistant-language-en",
-										"command": "ca_set_display_language",
+										"command": "ca_set_language",
 										"args": { "lang": "en" },
 										"checkbox": true
 									},
 									{
 										"caption": "English + Chinese",
 										"id": "cppassistant-language-both",
-										"command": "ca_set_display_language",
+										"command": "ca_set_language",
 										"args": { "lang": "both" },
 										"checkbox": true
 									}
 								]
-							},
-							{
-								"caption": "Toggle Menu Language",
-								"id": "cppassistant-toggle-menu-language",
-								"command": "ca_toggle_menu_language"
 							},
 							{ "caption": "-" },
 							{

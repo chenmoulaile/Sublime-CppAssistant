@@ -2903,6 +2903,11 @@ class FastEngine(object):
             out.append(d)
         out.sort(key=lambda d: (d["_score"], len(d["trigger"]),
                                 d["trigger"]))
+        if prefix and any(d["_score"] <= 2 for d in out):
+            # 已经有真正的前缀命中时，丢掉纯子序列噪音（输入 vec 时
+            # 弹出 views::common / views::counted 这类条目）。子串匹配
+            # 保留：back 仍然能找到 push_back。
+            out = [d for d in out if d["_score"] <= 5]
         if len(out) > 200:
             out = out[:200]
         for d in out:

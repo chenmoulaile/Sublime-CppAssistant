@@ -181,11 +181,13 @@
     //   "zh"   Chinese only /   "zh"   仅中文
     //   "both" English with Chinese appended /   "both" 英文附加中文
     // Takes effect immediately: existing diagnostics are re-rendered in the / 修改即时生效：现有诊断按新语言重渲染，无需重跑编译器或 clangd。
-    // new language without rerunning the compiler or clangd.
+    // new language without rerunning the compiler or clangd. One switch for
+    // menu + completion + diagnostics: CppAssistant > Language.
+    // 菜单 + 补全 + 诊断的统一入口：CppAssistant > Language。
     "display_language": "en",
-    // Menu language: "en" (English) or "zh" (Chinese). Auto-synced when you / 菜单语言："en" 或 "zh"。切换诊断语言时自动同步；
-    // switch the diagnostic language; translates only CppAssistant's own / 只翻译 CppAssistant 自己的菜单项，Sublime 内置菜单保持原样。
-    // menu items. Sublime's built-in menus stay untouched.
+    // Menu language: "en" (English) or "zh" (Chinese). Keep it in sync with / 菜单语言："en" 或 "zh"。与 display_language 保持一致；
+    // display_language; the Language menu sets both at once. Translates only / Language 菜单会一次设置两者。只翻译 CppAssistant 自己的菜单项，
+    // CppAssistant's own menu items; Sublime's built-in menus stay untouched. / Sublime 内置菜单保持原样。
     "menu_language": "en",
     // C++ standard (used both for the -std= flag in syntax checking and for / C++ 标准（同时用于语法检查的 -std= 标志和 clangd 的 fallbackFlags）。
     // clangd's fallbackFlags). The CSP-S / NOIP contest series uses C++14, / CSP-S/NOIP 赛制用 C++14，默认 c++14；提升以获得 C++17/20/23
