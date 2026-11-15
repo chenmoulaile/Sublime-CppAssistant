@@ -1,0 +1,15 @@
+CppAssistant 2.3.3
+
+- One menu instead of two: the duplicate top-level CppAssistant menu is gone,
+  everything lives under Preferences > Package Settings > CppAssistant, and
+  its captions follow the Language switch (including 简体中文).
+- No more duplicate completions: the same trigger is kept once across
+  built-in types, user snippets and template packs (vector used to appear
+  three times).
+- Empty prefix no longer dumps the whole STL list after `int n = `; only
+  same-file symbols show. Member access (v. / p-> / std::) still shows full
+  lists.
+- Members of a typedef'd container work again:
+  `typedef std::vector<int> VI; VI a; a.` lists push_back/size/...
+
+See CHANGELOG.md for details.

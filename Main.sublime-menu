@@ -3,19 +3,132 @@
 		"caption": "Preferences",
 		"mnemonic": "n",
 		"id": "preferences",
-		"children":
-		[
+		"children": [
 			{
 				"caption": "Package Settings",
 				"mnemonic": "P",
 				"id": "package-settings",
-				"children":
-				[
+				"children": [
 					{
 						"caption": "CppAssistant",
 						"id": "cppassistant-settings",
-						"children":
-						[
+						"children": [
+							{
+								"caption": "Code Actions",
+								"id": "cppassistant-code-actions",
+								"command": "ca_code_actions"
+							},
+							{
+								"caption": "Rename Symbol",
+								"id": "cppassistant-rename",
+								"command": "ca_rename"
+							},
+							{
+								"caption": "Find References",
+								"id": "cppassistant-find-references",
+								"command": "ca_find_references"
+							},
+							{
+								"caption": "Call Hierarchy",
+								"id": "cppassistant-call-hierarchy",
+								"command": "ca_call_hierarchy"
+							},
+							{
+								"caption": "Type Hierarchy",
+								"id": "cppassistant-type-hierarchy",
+								"command": "ca_type_hierarchy"
+							},
+							{
+								"caption": "-"
+							},
+							{
+								"caption": "Format Selection",
+								"id": "cppassistant-format-selection",
+								"command": "ca_format_selection"
+							},
+							{
+								"caption": "Format Document",
+								"id": "cppassistant-format-document",
+								"command": "ca_format_document"
+							},
+							{
+								"caption": "Go to Definition",
+								"id": "cppassistant-goto-definition",
+								"command": "ca_goto_definition"
+							},
+							{
+								"caption": "Show Diagnostics",
+								"id": "cppassistant-show-diagnostics",
+								"command": "ca_show_diagnostics"
+							},
+							{
+								"caption": "Copy Diagnostic",
+								"id": "cppassistant-copy-diagnostic",
+								"command": "ca_copy_diagnostic"
+							},
+							{
+								"caption": "Fix Full-width Punctuation",
+								"id": "cppassistant-fix-fullwidth",
+								"command": "ca_fix_fullwidth_punctuation"
+							},
+							{
+								"caption": "-"
+							},
+							{
+								"caption": "Templates",
+								"id": "cppassistant-templates",
+								"children": [
+									{
+										"caption": "Browse Templates",
+										"id": "cppassistant-browse-templates",
+										"command": "ca_browse_templates"
+									},
+									{
+										"caption": "Install Template Pack",
+										"id": "cppassistant-install-template-pack",
+										"command": "ca_install_template_pack"
+									},
+									{
+										"caption": "Manage Templates",
+										"id": "cppassistant-manage-templates",
+										"command": "ca_manage_templates"
+									},
+									{
+										"caption": "-"
+									},
+									{
+										"caption": "Create User Snippet",
+										"id": "cppassistant-create-user-snippet",
+										"command": "ca_create_user_snippet"
+									},
+									{
+										"caption": "Manage User Snippets",
+										"id": "cppassistant-manage-user-snippets",
+										"command": "ca_manage_user_snippets"
+									},
+									{
+										"caption": "Edit User Snippets",
+										"id": "cppassistant-edit-user-snippets",
+										"command": "ca_edit_user_snippets"
+									},
+									{
+										"caption": "Import Snippets",
+										"id": "cppassistant-import-snippets",
+										"command": "ca_import_snippets"
+									}
+								]
+							},
+							{
+								"caption": "-"
+							},
+							{
+								"caption": "Validate Settings",
+								"id": "cppassistant-validate-settings",
+								"command": "ca_validate_settings"
+							},
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Settings",
 								"id": "cppassistant-settings-file",
@@ -25,87 +138,108 @@
 									"default": "{\n\t$0\n}\n"
 								}
 							},
-							{ "caption": "-" },
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Language",
 								"id": "cppassistant-language",
-								"children":
-								[
+								"children": [
 									{
 										"caption": "简体中文",
 										"id": "cppassistant-language-zh",
 										"command": "ca_set_language",
-										"args": { "lang": "zh" },
+										"args": {
+											"lang": "zh"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "English",
 										"id": "cppassistant-language-en",
 										"command": "ca_set_language",
-										"args": { "lang": "en" },
+										"args": {
+											"lang": "en"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "English + Chinese",
 										"id": "cppassistant-language-both",
 										"command": "ca_set_language",
-										"args": { "lang": "both" },
+										"args": {
+											"lang": "both"
+										},
 										"checkbox": true
 									}
 								]
 							},
-							{ "caption": "-" },
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Completion engine",
 								"id": "cppassistant-completion-engine",
-								"children":
-								[
+								"children": [
 									{
 										"caption": "Built-in only (pure Python, no clangd)",
 										"id": "cppassistant-completion-engine-builtin",
 										"command": "ca_set_completion_engine",
-										"args": { "engine": "builtin" },
+										"args": {
+											"engine": "builtin"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "Auto (clangd when available)",
 										"id": "cppassistant-completion-engine-auto",
 										"command": "ca_set_completion_engine",
-										"args": { "engine": "auto" },
+										"args": {
+											"engine": "auto"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "clangd engine (semantic completions)",
 										"id": "cppassistant-completion-engine-clangd",
 										"command": "ca_set_completion_engine",
-										"args": { "engine": "clangd" },
+										"args": {
+											"engine": "clangd"
+										},
 										"checkbox": true
 									}
 								]
 							},
-							{ "caption": "-" },
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Completion mode",
 								"id": "cppassistant-completion-mode",
-								"children":
-								[
+								"children": [
 									{
 										"caption": "LSP-clangd style (fuzzy matching)",
 										"id": "cppassistant-completion-mode-clangd",
 										"command": "ca_set_completion_mode",
-										"args": { "mode": "clangd" },
+										"args": {
+											"mode": "clangd"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "Strict prefix (basic)",
 										"id": "cppassistant-completion-mode-basic",
 										"command": "ca_set_completion_mode",
-										"args": { "mode": "basic" },
+										"args": {
+											"mode": "basic"
+										},
 										"checkbox": true
 									}
 								]
 							},
-							{ "caption": "-" },
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Show inline error phantoms",
 								"id": "cppassistant-toggle-phantoms",
@@ -117,36 +251,45 @@
 								"id": "cppassistant-engine-status",
 								"command": "ca_show_engine_status"
 							},
-							{ "caption": "-" },
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Diagnostic engine",
 								"id": "cppassistant-lint-engine",
-								"children":
-								[
+								"children": [
 									{
 										"caption": "clangd diagnostics (LSP-style)",
 										"id": "cppassistant-lint-engine-clangd",
 										"command": "ca_set_lint_engine",
-										"args": { "engine": "clangd" },
+										"args": {
+											"engine": "clangd"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "Compiler check (g++/clang++)",
 										"id": "cppassistant-lint-engine-compiler",
 										"command": "ca_set_lint_engine",
-										"args": { "engine": "compiler" },
+										"args": {
+											"engine": "compiler"
+										},
 										"checkbox": true
 									},
 									{
 										"caption": "libclang semantic engine (PCH)",
 										"id": "cppassistant-lint-engine-libclang",
 										"command": "ca_set_lint_engine",
-										"args": { "engine": "libclang" },
+										"args": {
+											"engine": "libclang"
+										},
 										"checkbox": true
 									}
 								]
 							},
-							{ "caption": "-" },
+							{
+								"caption": "-"
+							},
 							{
 								"caption": "Key Bindings – User",
 								"id": "cppassistant-keybindings-user",
@@ -160,66 +303,6 @@
 						]
 					}
 				]
-			}
-		]
-	},
-	{
-		"caption": "CppAssistant",
-		"mnemonic": "C",
-		"id": "cppassistant",
-		"children":
-		[
-			{ "caption": "Code Actions", "id": "cppassistant-code-actions", "command": "ca_code_actions" },
-			{ "caption": "Rename Symbol", "id": "cppassistant-rename", "command": "ca_rename" },
-			{ "caption": "Find References", "id": "cppassistant-find-references", "command": "ca_find_references" },
-			{ "caption": "Call Hierarchy", "id": "cppassistant-call-hierarchy", "command": "ca_call_hierarchy" },
-			{ "caption": "Type Hierarchy", "id": "cppassistant-type-hierarchy", "command": "ca_type_hierarchy" },
-			{ "caption": "-" },
-			{ "caption": "Format Selection", "id": "cppassistant-format-selection", "command": "ca_format_selection" },
-			{ "caption": "Format Document", "id": "cppassistant-format-document", "command": "ca_format_document" },
-			{ "caption": "Go to Definition", "id": "cppassistant-goto-definition", "command": "ca_goto_definition" },
-			{ "caption": "Show Diagnostics", "id": "cppassistant-show-diagnostics", "command": "ca_show_diagnostics" },
-			{ "caption": "Copy Diagnostic", "id": "cppassistant-copy-diagnostic", "command": "ca_copy_diagnostic" },
-			{ "caption": "Fix Full-width Punctuation", "id": "cppassistant-fix-fullwidth", "command": "ca_fix_fullwidth_punctuation" },
-			{ "caption": "-" },
-			{
-				"caption": "Templates",
-				"id": "cppassistant-templates",
-				"children": [
-					{ "caption": "Browse Templates", "id": "cppassistant-browse-templates", "command": "ca_browse_templates" },
-					{ "caption": "Install Template Pack", "id": "cppassistant-install-template-pack", "command": "ca_install_template_pack" },
-					{ "caption": "Manage Templates", "id": "cppassistant-manage-templates", "command": "ca_manage_templates" },
-					{ "caption": "-" },
-					{ "caption": "Create User Snippet", "id": "cppassistant-create-user-snippet", "command": "ca_create_user_snippet" },
-					{ "caption": "Manage User Snippets", "id": "cppassistant-manage-user-snippets", "command": "ca_manage_user_snippets" },
-					{ "caption": "Edit User Snippets", "id": "cppassistant-edit-user-snippets", "command": "ca_edit_user_snippets" },
-					{ "caption": "Import Snippets", "id": "cppassistant-import-snippets", "command": "ca_import_snippets" }
-				]
-			},
-			{ "caption": "-" },
-			{
-				"caption": "Validate Settings",
-				"id": "cppassistant-validate-settings",
-				"command": "ca_validate_settings"
-			},
-			{
-				"caption": "Settings",
-				"id": "cppassistant-menu-settings",
-				"command": "edit_settings",
-				"args": {
-					"base_file": "${packages}/CppAssistant/CppAssistant.sublime-settings",
-					"default": "{\n\t$0\n}\n"
-				}
-			},
-			{
-				"caption": "Key Bindings",
-				"id": "cppassistant-menu-keybindings",
-				"command": "edit_settings",
-				"args": {
-					"base_file": "${packages}/CppAssistant/Example.sublime-keymap",
-					"user_file": "${packages}/User/Default (${platform}).sublime-keymap",
-					"default": "[\n\t$0\n]\n"
-				}
 			}
 		]
 	}

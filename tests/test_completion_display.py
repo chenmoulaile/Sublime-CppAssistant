@@ -217,6 +217,31 @@ class CompletionDisplayTests(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertTrue(hits[0]["insert"].startswith("vector<"))
 
+    def test_dedupe_keeps_one_entry_per_trigger(self):
+        items = [
+            {"trigger": "vector", "insert": "std::vector",
+             "annotation": u"用户片段", "snippet": True},
+            {"trigger": "vector", "insert": "std::vector<${1:int}>",
+             "annotation": u"动态数组", "kind": "t"},
+            {"trigger": "vector", "insert": "std::vector",
+             "annotation": "Graph template", "snippet": True},
+        ]
+        out = self.module._dedupe_by_trigger(items)
+        self.assertEqual(len(out), 1)
+        # 内置类型（带模板参数）优先于同名片段
+        self.assertEqual(out[0]["insert"], "std::vector<${1:int}>")
+
+    def test_dedupe_prefers_user_snippet_over_pack(self):
+        items = [
+            {"trigger": "ahead", "insert": "pack", "annotation": "Graph template",
+             "snippet": True},
+            {"trigger": "ahead", "insert": "user", "annotation": u"用户片段",
+             "snippet": True},
+        ]
+        out = self.module._dedupe_by_trigger(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["insert"], "user")
+
     # -- language ----------------------------------------------------------
     def test_language_command_sets_menu_and_diagnostics(self):
         command = self.module.CaSetLanguageCommand()
@@ -253,6 +278,45 @@ class CompletionDisplayTests(unittest.TestCase):
         command.run("fr")
         self.assertEqual(self.settings.get("display_language"),
                          DEFAULT_SETTINGS["display_language"])
+
+
+class FastEngineContextTests(unittest.TestCase):
+    """Context rules that used to surface as visible bugs."""
+
+    def test_typedef_vector_members(self):
+        from cppassistant import ca_fast
+        src = ("typedef std::vector<int> VI;\n"
+               "int main() {\n    VI a;\n    a.\n}\n")
+        off = src.index("a.\n") + 2
+        triggers = [d["trigger"] for d in ca_fast.complete(src, off,
+                                                           prefix="")]
+        self.assertIn("push_back", triggers)
+        self.assertIn("size", triggers)
+
+    def test_using_alias_vector_members(self):
+        from cppassistant import ca_fast
+        src = ("using VI = std::vector<int>;\n"
+               "int main() {\n    VI a;\n    a.pu\n}\n")
+        off = src.index("a.pu") + 4
+        triggers = [d["trigger"] for d in ca_fast.complete(src, off,
+                                                           prefix="pu")]
+        self.assertEqual(triggers, ["push_back"])
+
+    def test_empty_prefix_does_not_dump_the_stl(self):
+        from cppassistant import ca_fast
+        src = "int main() {\n    int n = \n    return 0;\n}\n"
+        off = src.index("int n = ") + len("int n = ")
+        items = ca_fast.complete(src, off, prefix="")
+        triggers = [d["trigger"] for d in items]
+        self.assertIn("n", triggers)
+        self.assertLess(len(items), 20)
+
+    def test_member_access_keeps_full_list(self):
+        from cppassistant import ca_fast
+        src = "int main() {\n    std::vector<int> v;\n    v.\n}\n"
+        off = src.index("v.\n") + 2
+        items = ca_fast.complete(src, off, prefix="")
+        self.assertGreater(len(items), 10)
 
 
 if __name__ == "__main__":

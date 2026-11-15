@@ -21,14 +21,14 @@ drives clangd for you.
 
 ---
 
-## 🆕 What's new in 2.3.2
+## 🆕 What's new in 2.3.3
 
 | Change | Why it matters |
 |--------|----------------|
-| **Completions work again on current ST4** | `sublime.KIND_ID_CONSTANT` never existed, so every completion raised `AttributeError`: no popup, and the console flooded with the same traceback |
-| **Shorter, duplicate-free labels** | `vector<${1:int}>` is now just `vector`, so one type no longer looks like several entries |
-| **Cleaner details** | `push_back(x)` / `vector<int>` instead of raw snippet text; the `std::` prefix is dropped |
-| **One language switch** | `CppAssistant > Language` sets the menu bar, the completion popup and diagnostics at once |
+| **One menu instead of two** | The duplicate top-level `CppAssistant` menu is gone; everything lives under `Preferences > Package Settings > CppAssistant` and follows the Language switch |
+| **No duplicate completions** | The same trigger is kept once across built-in types, user snippets and template packs (`vector` no longer appears three times) |
+| **No STL dump on empty prefix** | `int n = ` no longer opens a 200-entry list; member access (`v.`, `p->`, `std::`) still shows full lists |
+| **Typedef'd containers work** | `typedef std::vector<int> VI; VI a; a.` lists `push_back`, `size`, … again |
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 

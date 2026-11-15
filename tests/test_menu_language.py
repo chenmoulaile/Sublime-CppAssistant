@@ -85,7 +85,7 @@ class MenuOverlayTests(unittest.TestCase):
         items = list(_walk(menu))
         ids = [item["id"] for item in items if item.get("id")]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertIn("cppassistant", ids)
+        self.assertIn("cppassistant-settings", ids)
         captions = set(item["caption"] for item in items
                        if item.get("caption") and item["caption"] != "-"
                        and str(item.get("id", "")).startswith("cppassistant"))

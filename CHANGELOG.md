@@ -3,6 +3,36 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.3 — 2026-11-15
+
+### Fixed
+
+- **Duplicate top-level menu removed.** `Main.sublime-menu` had two top-level
+  nodes: the standard `Preferences > Package Settings > CppAssistant` and a
+  standalone `CppAssistant` menu that duplicated Preferences and showed up as
+  a second menu bar item. All entries now live in the standard Package
+  Settings entry, and their captions follow the Language switch.
+- **Duplicate completions from multiple sources.** The same `vector` could
+  appear three times (built-in type, user snippet, template pack), and two
+  user snippets with the same trigger both appeared. The final list is now
+  deduplicated by trigger with a fixed priority: built-in type/function >
+  user snippet > template pack.
+- **Empty-prefix completion dumped the whole STL.** After `int n = ` the popup
+  listed ~200 STL/keyword entries. With an empty prefix and no member access,
+  only same-file symbols are returned now; `v.`, `p->` and `std::` still show
+  their full lists.
+- **Members of a typedef'd container disappeared.** `typedef std::vector<int>
+  VI; VI a; a.` produced no members because alias-following only handled
+  user-defined types. Typedef/using aliases are now resolved to the real
+  container (and `_container_type_args` normalises the token-joined
+  `std :: vector < int >`), so `a.` lists `push_back`, `size`, `begin` and the
+  rest, with the actual template argument substituted.
+
+### Tests
+
+- 240 tests (+6): menu merge, cross-source dedupe, typedef/using member
+  completion, and empty-prefix behaviour.
+
 ## v2.3.2 — 2026-11-15
 
 ### Fixed

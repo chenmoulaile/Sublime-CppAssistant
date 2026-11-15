@@ -18,14 +18,14 @@
 
 ---
 
-## 🆕 2.3.2 更新要点
+## 🆕 2.3.3 更新要点
 
 | 变化 | 为什么重要 |
 |------|-----------|
-| **补全恢复正常** | `sublime.KIND_ID_CONSTANT` 根本不存在，每次补全都会抛 `AttributeError`：弹窗不出，控制台被同一段 traceback 刷屏，输入也变卡 |
-| **标签更短、不再重复** | `vector<${1:int}>` 现在只显示 `vector`，同一个类型不会看起来有好几条 |
-| **详情更干净** | 显示 `push_back(x)` / `vector<int>`，而不是原始片段文本；去掉 `std::` 前缀 |
-| **一个语言开关** | `CppAssistant > Language` 同时设置菜单栏、补全弹窗和诊断语言 |
+| **只保留一个菜单** | 删掉了重复的顶层 CppAssistant 菜单，全部收进 `Preferences > Package Settings > CppAssistant`，并跟随语言切换 |
+| **补全不再重复** | 同一 trigger 在内置类型、用户片段、模板包之间只保留一条（`vector` 不再出现三次） |
+| **空前缀不再倾倒 STL** | `int n = ` 后不会弹出 200 条；`v.` / `p->` / `std::` 仍然显示完整列表 |
+| **typedef 容器能补全了** | `typedef std::vector<int> VI; VI a; a.` 重新列出 `push_back`、`size` 等 |
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 

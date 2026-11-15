@@ -2181,18 +2181,62 @@ def _split_type_args(text):
 
 
 def _container_type_args(type_text):
-    """``map<string, int>`` -> ``("map", ["string", "int"])``。"""
+    """``map<string, int>`` -> ``("map", ["string", "int"])``。
+
+    声明的类型是 token 拼接出来的（``std :: vector < int >``），这里先把
+    ``:: < > ,`` 两侧的空白压掉，否则 ``vector `` 带尾空格，查不到成员表。
+    """
     s = str(type_text or "").strip()
     for word in ("const", "volatile", "typename"):
         s = re.sub(r"\b" + word + r"\b", " ", s)
     s = s.replace("&", " ").replace("*", " ").strip()
+    s = re.sub(r"\s*::\s*", "::", s)
+    s = re.sub(r"\s*<\s*", "<", s)
+    s = re.sub(r"\s*>\s*", ">", s)
+    s = re.sub(r"\s*,\s*", ", ", s)
     if s.startswith("std::"):
         s = s[5:]
     if "<" not in s or not s.endswith(">"):
         return s.split("::")[-1], []
     head = s[:s.index("<")].strip()
     args = _split_type_args(s[s.index("<") + 1:-1])
-    return head.split("::")[-1], args
+    return head.split("::")[-1].strip(), args
+
+
+_STD_MEMBER_DB = None
+
+
+def _std_member_db():
+    global _STD_MEMBER_DB
+    if _STD_MEMBER_DB is None:
+        try:
+            from . import ca_stdlib_data as data
+            _STD_MEMBER_DB = data.MEMBERS_DB_FAST
+        except Exception:
+            _STD_MEMBER_DB = {}
+    return _STD_MEMBER_DB
+
+
+def _std_member_items(base, args, prefix):
+    """STL 容器成员（含 typedef 别名指向的容器），来自内置数据表。"""
+    members = _std_member_db().get(base)
+    if not members:
+        return []
+    low = (prefix or "").lower()
+    out = []
+    for entry in members:
+        trig = entry.get("trigger") or ""
+        if low and not trig.lower().startswith(low):
+            continue
+        item = dict(entry)
+        insert = item.get("insert") or trig
+        if args:
+            insert = re.sub(r"\bT\b", args[0], insert)
+        item["insert"] = insert
+        item.setdefault("detail", item.get("annotation") or "")
+        item.setdefault("detail_en", item.get("annotation_en") or "")
+        out.append(item)
+    return out
 
 
 def _method_result_type(receiver_type, method):
@@ -2496,6 +2540,13 @@ class FastEngine(object):
             prefix = computed
 
         accessor, receiver = self._accessor(text, prefix_start)
+        if not prefix and accessor not in ("dot", "arrow", "scope"):
+            # 空前缀不是用户在建词：`int n = ` 之后自动弹出的两百条
+            # 全量 STL 列表纯属噪音。只保留同文件可见符号（局部变量、
+            # 参数、本文件的函数/类型），这些在表达式里真的能用。
+            return self._finish_items(
+                self._visible_items(a, offset, prefix, clangd_style),
+                prefix, clangd_style)
         cache_key_c = (a.version, a.text_len, offset, prefix, accessor,
                        receiver, bool(clangd_style))
         cached = a.completion_cache.get(cache_key_c)
@@ -2628,6 +2679,7 @@ class FastEngine(object):
         target = None
         type_name = ""
         template_args = {}
+        resolved = ""
         if receiver == "this":
             scope = a.scope_at(offset)
             while scope is not None and scope.kind != "type":
@@ -2639,22 +2691,28 @@ class FastEngine(object):
                     sym.kind in ("namespace", "type", "enum"):
                 target = sym.target_scope
             if sym is not None and target is None:
-                if sym.kind == "alias":
-                    type_name = _strip_type(sym.type)
-                    template_args = _extract_template_args(sym.type)
-                else:
-                    type_name = _strip_type(sym.type)
-                    template_args = _extract_template_args(sym.type)
+                raw_type = sym.type or ""
+                type_name = _strip_type(raw_type)
+                template_args = _extract_template_args(raw_type)
+                # typedef / using 别名：VI -> std::vector<int>。不跟随
+                # 这一步，`typedef vector<int> VI; VI a; a.` 就没有成员。
+                alias = self._lookup(a, type_name, offset) if type_name \
+                    else None
+                if alias is not None and alias.kind == "alias":
+                    raw_type = alias.type or raw_type
+                    type_name = _strip_type(raw_type)
+                    template_args = _extract_template_args(raw_type)
+                resolved = raw_type
             elif sym is None:
                 type_name = receiver
+                resolved = receiver
             if target is None and type_name:
                 target = a.type_scopes.get(type_name)
-                if target is None:
-                    # Follow one level of alias.
-                    alias = self._lookup(a, type_name, offset)
-                    if alias is not None and alias.kind == "alias":
-                        target = a.type_scopes.get(_strip_type(alias.type))
         if target is None:
+            # 标准容器（以及指向它的 typedef/using）走内置成员表。
+            base, args = _container_type_args(resolved or type_name)
+            if base and _std_member_db().get(base):
+                return _std_member_items(base, args, prefix)
             return []
         seen = set()
         items = []

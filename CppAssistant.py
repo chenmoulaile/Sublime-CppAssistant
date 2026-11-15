@@ -987,8 +987,10 @@ def _snippet_items_for_prefix(prefix):
 def _tier_sort_static(results, prefix):
     """内置数据库兜底：用户片段最前 → C++14 及以下档 → C++17/20/23 档。
 
-    analyze() 本身也会返回内置片段，这里必须先按 (trigger, insert)
-    去重，否则每个内置片段会在弹窗里出现两次。
+    ``analyze()`` 本身也会返回内置片段，这里必须先按 (trigger, insert)
+    去重，否则每个内置片段会在弹窗里出现两次。最后再按 trigger 做一次
+    跨来源取舍：同一个 ``vector`` 可能同时来自内置类型、用户片段和模板
+    包，用户只需要一条。
     """
     out = _snippet_items_for_prefix(prefix)
     seen = set((d.get("trigger"), d.get("insert")) for d in out)
@@ -1006,6 +1008,42 @@ def _tier_sort_static(results, prefix):
             early.append(d)
     out.extend(early)
     out.extend(later)
+    return _dedupe_by_trigger(out)
+
+
+def _dedupe_rank(d):
+    """同一 trigger 冲突时的优先级（越小越优先）。
+
+    内置类型/函数（带真实签名和模板参数）比同名片段更有用；
+    用户片段比模板包片段更贴近个人习惯。
+    """
+    if not d.get("snippet"):
+        return 0
+    text = u" ".join((d.get("annotation") or "",
+                      d.get("annotation_en") or "",
+                      d.get("detail") or ""))
+    if u"用户" in text or "user" in text.lower():
+        return 1
+    return 2
+
+
+def _dedupe_by_trigger(items):
+    """同一 trigger 只保留最高优先级的一条，顺序不变。"""
+    out = []
+    best = {}
+    for d in items:
+        trigger = d.get("trigger")
+        if not trigger:
+            out.append(d)
+            continue
+        key = trigger.lower()
+        if key not in best:
+            best[key] = len(out)
+            out.append(d)
+            continue
+        current = out[best[key]]
+        if _dedupe_rank(d) < _dedupe_rank(current):
+            out[best[key]] = d
     return out
 
 
@@ -1265,6 +1303,9 @@ class CaEventListener(sublime_plugin.EventListener):
             # LSP-clangd 风格下压制 Sublime 内置单词补全（两种引擎都压：
             # 否则用户代码里的标识符如 revertDSU 会混进语义补全列表）
             flags |= _INHIBIT_WORD
+        # 跨来源再收一次：clangd 结果也会带上用户片段/模板包，同一
+        # trigger 只留一条（内置类型优先，其次用户片段）。
+        dicts = _dedupe_by_trigger(dicts)
         items = [_make_item(d) for d in dicts]
         return sublime.CompletionList(items, flags)
 
