@@ -66,17 +66,24 @@
 								"children":
 								[
 									{
+										"caption": "Built-in only (pure Python, no clangd)",
+										"id": "cppassistant-completion-engine-builtin",
+										"command": "ca_set_completion_engine",
+										"args": { "engine": "builtin" },
+										"checkbox": true
+									},
+									{
+										"caption": "Auto (clangd when available)",
+										"id": "cppassistant-completion-engine-auto",
+										"command": "ca_set_completion_engine",
+										"args": { "engine": "auto" },
+										"checkbox": true
+									},
+									{
 										"caption": "clangd engine (semantic completions)",
 										"id": "cppassistant-completion-engine-clangd",
 										"command": "ca_set_completion_engine",
 										"args": { "engine": "clangd" },
-										"checkbox": true
-									},
-									{
-										"caption": "Built-in database (no clangd needed)",
-										"id": "cppassistant-completion-engine-builtin",
-										"command": "ca_set_completion_engine",
-										"args": { "engine": "builtin" },
 										"checkbox": true
 									}
 								]

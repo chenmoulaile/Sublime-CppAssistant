@@ -59,6 +59,8 @@ TRANSLATIONS_ZH = {
     "Toggle Menu Language": u"切换菜单语言",
     "Completion engine": u"补全引擎",
     "clangd engine (semantic completions)": u"clangd 引擎（语义补全）",
+    "Auto (clangd when available)": u"自动（有 clangd 就用）",
+    "Built-in only (pure Python, no clangd)": u"仅内置引擎（纯 Python，不启动 clangd）",
     "Built-in database (no clangd needed)": u"内置数据库（无需 clangd）",
     "Completion mode": u"补全模式",
     "LSP-clangd style (fuzzy matching)": u"LSP-clangd 风格（模糊匹配）",

@@ -27,7 +27,8 @@ def _load_sublime_settings(name):
 class ResourceTests(unittest.TestCase):
     def test_settings_parse_and_have_expected_keys(self):
         data = _load_sublime_settings("CppAssistant.sublime-settings")
-        for key in ("enable_completions", "enable_clangd_engine",
+        for key in ("enable_completions", "completion_engine",
+                    "builtin_uses_libclang",
                     "enable_fast_engine", "enable_libclang_engine",
                     "libclang_path", "libclang_args", "libclang_pch",
                     "libclang_completion", "libclang_goto",
@@ -35,6 +36,11 @@ class ResourceTests(unittest.TestCase):
                     "cxx_standard", "include_paths", "clang_format_style"):
             self.assertIn(key, data)
         self.assertIn(data["lint_engine"], ("compiler", "clangd", "libclang"))
+        # Pure-local by default: no clangd subprocess unless the user opts in.
+        self.assertEqual(data["completion_engine"], "builtin")
+        self.assertIs(data["builtin_uses_libclang"], False)
+        # The legacy boolean must be gone so it cannot shadow the new key.
+        self.assertNotIn("enable_clangd_engine", data)
 
     def test_commands_parse_and_have_unique_captions(self):
         data = json.loads(_read("CppAssistant.sublime-commands"))

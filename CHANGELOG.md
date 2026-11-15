@@ -3,6 +3,54 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.1 — 2026-11-15
+
+Fixes "the plugin installed but does nothing" on current Sublime Text builds,
+and makes the default completion engine pure Python.
+
+### Fixed
+
+- **Menus greyed out / no commands registered on ST builds that disabled the
+  3.3 plugin host.** 2.2.1 shipped without a `.python-version` file, so
+  Sublime placed it on the deprecated Python 3.3 host. On builds such as
+  4215 that host is disabled (`plugin host 3.3 is disabled` in the console),
+  so the Python side never loaded while the static menu entries still
+  appeared — every `ca_*` command looked disabled. The package now ships
+  `.python-version` (`3.8`), and a test asserts it is present.
+
+### Changed
+
+- **Pure-local engine is the default.** `completion_engine` replaces the
+  old `enable_clangd_engine` boolean and accepts three values:
+  - `builtin` (default) — no clangd process, no libclang. Completion comes
+    from FastEngine (same-file locals, parameters, members, enums,
+    namespaces), the bundled STL/PBDS database and user snippets. Memory
+    stays at normal Python-plugin level, which matters on laptops and when
+    several C++ projects are open.
+  - `auto` — use clangd when it is on `PATH`, fall back to `builtin`
+    silently when it is missing (no status-bar nagging).
+  - `clangd` — previous behaviour: always use the semantic engine and
+    explain in the status bar when it cannot be found.
+  Switching is immediate: the old client is stopped and libclang is
+  released when moving to `builtin`. The menu and the command palette
+  expose all three modes.
+- The legacy boolean is still honoured when `completion_engine` is absent,
+  so existing configurations keep their explicit choice.
+- `builtin` also skips libclang for diagnostics and F12 unless
+  `builtin_uses_libclang` is enabled, so "pure local" really is pure
+  Python.
+- Signature hints now work without clangd: `builtin` uses FastEngine's
+  same-file signature and shows `arg 2/2: vector<int>& a`, matching the
+  clangd popup layout.
+- F12, diagnostics, formatting and `#include` insertion keep their local
+  fallbacks in `builtin` mode.
+
+### Tests
+
+- 224 unit tests (+13). New `tests/test_engine_modes.py` covers the three
+  modes, legacy-key compatibility, libclang gating, the switch command, and
+  pure-local completion/signature behaviour.
+
 ## v2.3.0 — 2026-11-09
 
 A verification-driven bugfix release: every fix below was independently

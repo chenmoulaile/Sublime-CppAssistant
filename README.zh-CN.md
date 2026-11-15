@@ -9,26 +9,23 @@
 [![License](https://img.shields.io/github/license/chenmoulaile/Sublime-CppAssistant.svg)](LICENSE)
 [![Sublime Text](https://img.shields.io/badge/Sublime%20Text-4-blue.svg)](https://www.sublimetext.com/)
 
-> **Sublime Text 4 的 C++ 辅助插件**：内嵌真实 clangd 引擎，clangd 不可用时自动退回
-> 零依赖的纯 Python 结构引擎与内置 STL 数据库。**专为竞赛编程（OI / CSP-S / ICPC）调优。**
+> **Sublime Text 4 的 C++ 辅助插件**：默认纯 Python 补全，可选真实 clangd 引擎。
+> **专为竞赛编程（OI / CSP-S / ICPC）调优。**
 
-安装即可用：有 clangd 就是编译器级语义，没有 clangd 也不会哑火——增量词法分析器加
-容错解析器撑起同文件补全、跳转和即时检查。不用配索引、不用起后台服务、不用折腾配置文件。
+安装即可用，不起后台服务：补全来自增量词法分析器、容错解析器与内置 STL/CP 数据库。
+需要编译器级语义时，把 `completion_engine` 切到 `auto` 或 `clangd`，内置 LSP 客户端
+会在后台驱动 clangd。
 
 ---
 
-## 🆕 2.3.0 更新要点
+## 🆕 2.3.1 更新要点
 
 | 变化 | 为什么重要 |
 |------|-----------|
-| **悬停文档与签名帮助真正可用了** | 命令类名不符合 Sublime 的 `*Command` 命名规则，两个默认开启的功能此前从未生效 |
-| **不再有假的"括号未闭合"报错** | `cnt[a[i]]` 中的 `]]` 此前被合并成一个 token；嵌套下标现在解析正确，数组越界检查也能看到它们 |
-| **数组越界警告进入编辑器** | `int a[10]; a[10] = 1;` 立刻标红——检查逻辑早就存在，只是从未接到 UI |
-| **格式化不再改写你的字符串** | TAB 展开与保护掩码不再作用于字符串字面量和注释 |
-| **真实 clangd 的诊断能渲染了** | 此前忽略了 LSP 规范的顶层 `params.uri` 通知形态，clangd 诊断从未显示 |
-| **跑在新的插件宿主上** | 通过 `.python-version` 锁定宿主：新版 ST4 上运行 Python 3.14，而不是 2026 年就要移除的 3.3 宿主 |
-| **Ctrl+Shift+C 开箱即用** | 复制诊断的键位放进 `Default.sublime-keymap`，不再躺在 Sublime 不会自动加载的 Example 文件里 |
-| **模板经过真实编译验证** | fft/lucas/crt/berlekamp-massey 可独立编译且结果正确；dijkstra/dfs/scc/mst/treap 在 `-std=c++14` 与深递归下安全 |
+| **菜单不再全部变灰** | 2.2.1 没有 `.python-version`，Sublime 把插件分到已禁用的 3.3 宿主，Python 代码从未加载 |
+| **默认改用纯本地引擎** | `completion_engine` = `builtin`：不启动 clangd 进程、不加载 libclang，内存占用与普通 Python 插件相当 |
+| **三种模式随时切换** | `builtin` / `auto` / `clangd`，菜单或命令面板一键切换，切换时立即停掉旧引擎并释放 libclang |
+| **不装 clangd 也有签名提示** | `builtin` 模式用 FastEngine 的同文件签名，显示 `arg 2/2: vector<int>& a` |
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -57,8 +54,9 @@
 
 ### 🎯 补全
 
-- **clangd 语义补全** — 编译器级签名、重载、容器成员、局部变量、宏；preamble
-  就绪后异步结果自动替换兜底弹窗。
+- **clangd 语义补全（可选）** — 编译器级签名、重载、容器成员、局部变量、宏；
+  仅在 `completion_engine` 为 `auto` / `clangd` 时启用，preamble 就绪后异步结果
+  自动替换兜底弹窗。
 - **FastEngine 兜底** — 零依赖增量词法分析器 + 容错解析器：同文件符号、作用域、
   结构体/类/枚举成员、数组越界、模板推导，全部纯 Python。
 - **可选 libclang 引擎** — ctypes + PCH 加速，只在翻译单元已预热时参与，绝不阻塞输入。
@@ -216,6 +214,7 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | `CppAssistant: Copy Diagnostic` | 复制当前诊断 |
 | `CppAssistant: Diagnostic Language - …` | 中文 / 英文 / 双语 |
 | `CppAssistant: Diagnostic Engine - …` | compiler / clangd / libclang |
+| `CppAssistant: Completion Engine - …` | builtin（纯 Python）/ auto / clangd |
 | `CppAssistant: Toggle Inline Error Phantoms` | 开/关内联错误提示 |
 | `CppAssistant: Completion Engine Status` | 当前由哪个引擎回答、为什么 |
 
@@ -264,9 +263,10 @@ git clone https://github.com/chenmoulaile/Sublime-CppAssistant CppAssistant
 | 设置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `enable_completions` | `true` | 补全总开关 |
-| `enable_clangd_engine` | `true` | 使用 clangd；`false` = 内置数据库 |
+| `completion_engine` | `"builtin"` | `builtin` = 纯 Python，不启动 clangd、不加载 libclang；`auto` = 有 clangd 就用；`clangd` = 强制语义引擎 |
+| `builtin_uses_libclang` | `false` | builtin 模式下是否允许使用已预热的 libclang |
 | `enable_fast_engine` | `true` | FastEngine 提供同文件符号、即时检查、F12 |
-| `enable_libclang_engine` | `true` | 自动发现并使用 libclang |
+| `enable_libclang_engine` | `true` | libclang 总开关（builtin 模式下默认仍不加载） |
 | `libclang_path` | `""` | libclang 路径；空 = 自动发现 |
 | `libclang_pch` | `true` | 构建并复用 `bits/stdc++.h` PCH |
 | `libclang_completion` | `true` | 热缓存时合并 libclang 补全 |
@@ -405,7 +405,7 @@ CI 会跑 flake8、mypy、Python 3.9 / 3.10 / 3.12 / 3.14 的单元测试、libc
 
 | 问题 | 解决方式 |
 |------|----------|
-| **命令全部灰掉 / 菜单点不动** | 检查 `Preferences.sublime-settings` 的 `ignored_packages`：若列了 `CppAssistant`（或 `CppAssistantLocalization`），Sublime 会完全跳过插件加载。删掉对应条目等重载（或重启）即可；包无法把自己从忽略列表里移除，只能在用户设置里改 |
+| **命令全部灰掉 / 菜单点不动** | 两种原因。(1) `Preferences.sublime-settings` 的 `ignored_packages` 里列了 `CppAssistant`：删掉条目后重启；包无法把自己从忽略列表移除。(2) 还停在 2.2.1 或更早：那些包没有 `.python-version`，新版 ST4 会把插件分到已禁用的 Python 3.3 宿主，Python 代码从未加载。升级到 **2.3.1+**（`Package Control: Upgrade Package`），或把最新 Release 的 `CppAssistant.sublime-package` 放进 `Installed Packages/` |
 | **找不到 clangd** | 安装 clangd（`pacman -S mingw-w64-x86_64-clang`、`apt install clangd`、`brew install llvm`）或设置 `clangd_binary` |
 | **F12 没反应** | 检查 `Example.sublime-keymap` 里的按键，或直接用命令面板 |
 | **回车只是换行** | Sublime 默认行为。用户键位里加 `{ "keys": ["enter"], "command": "insert", "args": {"characters": "\n"}, "context": [{ "key": "auto_complete_visible" }] }` |

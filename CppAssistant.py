@@ -419,10 +419,58 @@ _clangd_state_lock = threading.RLock()
 # 内置数据库条目按版本分档：C++14 及以下排前面，C++17/20/23 排后面
 _LATER_STD_RE = re.compile(r"C\+\+(1[7-9]|2[0-9])")
 
+# 补全引擎三态：
+#   builtin 纯 Python（默认）—— 不启动 clangd 进程、不加载 libclang，
+#           内存占用与普通 Python 插件相当；补全来自 FastEngine + 内置
+#           STL 数据库 + 用户片段。
+#   auto    有 clangd 就用，找不到时静默回退 builtin。
+#   clangd  强制语义引擎，找不到时状态栏说明原因。
+_ENGINE_MODES = ("builtin", "auto", "clangd")
+
+
+def _completion_engine():
+    """当前补全引擎。
+
+    ``completion_engine`` 优先；缺失时兼容 2.3.x 及更早的布尔开关
+    ``enable_clangd_engine``，老用户的显式选择不会被静默改掉。
+    两者都没有时默认 ``builtin``：纯 Python，不开子进程。
+    """
+    raw = _s("completion_engine", "")
+    if isinstance(raw, str):
+        mode = raw.strip().lower()
+        if mode in _ENGINE_MODES:
+            return mode
+    try:
+        settings = _settings()
+        if settings.has("enable_clangd_engine"):
+            return "clangd" if settings.get("enable_clangd_engine") \
+                else "builtin"
+    except Exception:
+        pass
+    return "builtin"
+
+
+def _clangd_enabled():
+    """auto / clangd 模式下才允许启动 clangd。"""
+    return _completion_engine() in ("auto", "clangd")
+
+
+def _libclang_allowed():
+    """是否允许加载 libclang。
+
+    builtin 默认连 libclang 也不碰：只有显式设置 ``builtin_uses_libclang``
+    才在纯本地模式下叠加语义补全/诊断，否则"纯本地"就真的是纯 Python。
+    """
+    if not _s("enable_libclang_engine", True):
+        return False
+    if not _clangd_enabled() and not _s("builtin_uses_libclang", False):
+        return False
+    return True
+
 
 def _clangd_settings_sig():
     return "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s" % (
-        _s("enable_clangd_engine", True),
+        _completion_engine(),
         _s("cxx_standard", "c++14"),
         _s("clangd_binary", "") or "",
         repr(_s("clangd_args", []) or []),
@@ -770,7 +818,7 @@ def _get_clangd_client(view):
     - 启动失败 5 秒冷却，避免每次补全都重复拉起失败进程。
     """
     st = _clangd_state
-    if not _s("enable_clangd_engine", True):
+    if not _clangd_enabled():
         return None
     sig = _clangd_settings_sig()
     if st["sig"] != sig:
@@ -794,10 +842,15 @@ def _get_clangd_client(view):
     if not binary:
         st["no_server"] = True
         st["no_server_since"] = now
-        sublime.status_message(
-            u"[CppAssistant] clangd not found (not in PATH), "
-            u"completion uses the builtin database. "
-            u"Set clangd_binary to point at the executable.")
+        if _completion_engine() == "clangd":
+            sublime.status_message(
+                u"[CppAssistant] clangd not found (not in PATH), "
+                u"completion uses the builtin database. "
+                u"Set clangd_binary to point at the executable.")
+        else:
+            # auto 模式：找不到就安静回退，不必每次弹状态栏
+            print("[CppAssistant] clangd not found; completion stays on "
+                  "the builtin engine.")
         return None
     root = _clangd_root_for(view)
     std = _s("cxx_standard", "c++14")
@@ -853,7 +906,7 @@ def _warm_clangd_document(view):
     就按正确参数建立 preamble），再推送全文。
     """
     try:
-        if not _s("enable_clangd_engine", True) or not _is_cpp(view):
+        if not _clangd_enabled() or not _is_cpp(view):
             return
         fname = view.file_name()
         if not fname:
@@ -1108,7 +1161,7 @@ class CaEventListener(sublime_plugin.EventListener):
         if off > len(text):
             # 光标在 400KB 之后：只有 clangd 能安全处理（它需要全文）。
             # 内置分析仍限制在 400KB 以内。
-            if not _s("enable_clangd_engine", True) or \
+            if not _clangd_enabled() or \
                     size > _CLANGD_MAX_CHARS:
                 return None
             text = view.substr(sublime.Region(0, size))
@@ -1116,7 +1169,7 @@ class CaEventListener(sublime_plugin.EventListener):
         clangd_style = bool(_s("enable_clangd_style_completion", True))
         flags = _INHIBIT_SNIPPET  # 片段由本插件统一供给（旧版 ST 无此常量为 0）
         dicts = None
-        if _s("enable_clangd_engine", True):
+        if _clangd_enabled():
             dicts = self._clangd_items(view, text, off, prefix)
         if dicts is None:
             # 内置兜底（clangd 未启用/未找到/本次超时）：
@@ -1147,7 +1200,7 @@ class CaEventListener(sublime_plugin.EventListener):
                     return None
             # libclang 语义补全：只在后台已加载引擎且 TU 已缓存时使用，
             # 绝不在 UI 线程冷启动/冷解析（PCH 预热后通常 <20ms）。
-            if (size <= 400000 and _s("enable_libclang_engine", True)
+            if (size <= 400000 and _libclang_allowed()
                     and _s("libclang_completion", True)):
                 eng = _semantic_engine_if_ready()
                 if eng is not None and not eng.is_busy():
@@ -1266,7 +1319,7 @@ class CaEventListener(sublime_plugin.EventListener):
     def on_activated_async(self, view):
         # 切换标签页时补一次文档同步：clangd 需要当前文本才能给
         # 准确的补全/诊断，尤其是文件在外部被修改后。
-        if _is_cpp(view) and _s("enable_clangd_engine", True):
+        if _is_cpp(view) and _clangd_enabled():
             sublime.set_timeout(
                 lambda: _warm_clangd_document(view), 50)
         _schedule_status_hint(view)
@@ -1334,7 +1387,7 @@ class CaEventListener(sublime_plugin.EventListener):
 
     def on_post_save_async(self, view):
         self._maybe_lint(view)
-        if _is_cpp(view) and _s("enable_clangd_engine", True):
+        if _is_cpp(view) and _clangd_enabled():
             sublime.set_timeout(
                 lambda: _warm_clangd_document(view), 0)
 
@@ -1359,7 +1412,7 @@ class CaEventListener(sublime_plugin.EventListener):
         try:
             if not _is_cpp(view):
                 return
-            if not _s("enable_clangd_engine", True) or \
+            if not _clangd_enabled() or \
                     not _s("enable_signature_help", True):
                 return
             vid = view.id()
@@ -1580,6 +1633,23 @@ def _warm_pch_async():
     th.start()
 
 
+def _announce_engine_mode():
+    """一次性说明当前补全引擎，避免"为什么没有语义补全"的困惑。"""
+    try:
+        mode = _completion_engine()
+        if mode == "builtin":
+            print("[CppAssistant] completion engine: builtin (pure Python, "
+                  "no clangd process). Switch in Preferences > Package "
+                  "Settings > CppAssistant > Completion engine.")
+        elif mode == "auto":
+            print("[CppAssistant] completion engine: auto "
+                  "(clangd when available)")
+        else:
+            print("[CppAssistant] completion engine: clangd")
+    except Exception as e:
+        _log_error("announce engine mode", e)
+
+
 def plugin_loaded():
     # 后台预热 PCH 和编译器 include 路径。设置全部按需从 API 读取，
     # 缓存按设置签名自愈，因此不需要 add_on_change 监听。
@@ -1594,6 +1664,9 @@ def plugin_loaded():
     sublime.set_timeout(_sync_menu_language, 300)
     # 非法设置值会被 Sublime 静默忽略，加载后立刻提示一次。
     sublime.set_timeout(_report_settings_problems, 900)
+    # 当前补全引擎写一行到 console：纯本地模式下列表里看不到 clangd，
+    # 需要让用户知道怎么切回去。
+    sublime.set_timeout(_announce_engine_mode, 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -1675,7 +1748,7 @@ def _semantic_engine():
     A failed discovery is retried at most every 30 seconds so completion and
     F12 do not repeatedly pay for filesystem probing.
     """
-    if not _s("enable_libclang_engine", True):
+    if not _libclang_allowed():
         _semantic_state.update(ready=False, engine=None)
         return None
     path = str(_s("libclang_path", "") or "")
@@ -1699,7 +1772,7 @@ def _semantic_engine():
 
 def _semantic_engine_if_ready():
     """UI-thread-safe accessor: never loads libclang itself."""
-    if not _s("enable_libclang_engine", True):
+    if not _libclang_allowed():
         return None
     st = _semantic_state
     if not st["ready"] or st["engine"] is None:
@@ -1710,6 +1783,22 @@ def _semantic_engine_if_ready():
     if st["sig"] != (path, pch, tuple(args)):
         return None
     return st["engine"]
+
+
+def _release_libclang():
+    """Unload libclang so the pure-local mode frees its memory.
+
+    Switching to ``builtin`` should actually shrink the process, not just
+    stop using an already-loaded native library.
+    """
+    st = _semantic_state
+    eng = st.get("engine")
+    st.update(ready=False, engine=None, sig=None, checked=0.0)
+    if eng is not None:
+        try:
+            eng.close()
+        except Exception as e:
+            _log_error("libclang close", e)
 
 
 def _display_language():
@@ -2063,7 +2152,7 @@ def run_lint(view):
     if compiler is not None or str(_s("lint_engine", "compiler")) == "libclang":
         view.set_status("ca_diag", _STATUS_LINTING[_display_language()])
     if str(_s("lint_engine", "compiler")) == "libclang" and \
-            _s("enable_libclang_engine", True):
+            _libclang_allowed():
         th = threading.Thread(target=_lint_work_libclang,
                               args=(vid, src, workdir, fname, gen, ckey))
     else:
@@ -2339,7 +2428,7 @@ def run_hover(view, point):
     try:
         if not view.is_valid() or not _is_cpp(view):
             return
-        if not _s("enable_clangd_engine", True) or \
+        if not _clangd_enabled() or \
                 not _s("enable_hover", True):
             return
         fname = view.file_name()
@@ -2407,6 +2496,36 @@ def run_hover(view, point):
         _log_error("hover", e)
 
 
+def _show_local_signature(view, point, text, change_count):
+    """builtin 模式下的签名提示：只查同文件，纯 Python，无子进程。
+
+    FastEngine 的 ``call_info`` 已经能给出完整签名、当前实参下标和形参
+    声明，直接复用它，纯本地模式的签名体验与 clangd 基本一致。
+    """
+    try:
+        info = ca_fast.call_info(text, point,
+                                 cache_key=view.buffer_id(),
+                                 version=change_count)
+        if not info:
+            if _clangd_state.pop("sig_active", None):
+                try:
+                    if view.is_popup_visible():
+                        view.hide_popup()
+                except Exception:
+                    pass
+            return
+        signature = info.signature or (u"%s(...)" % info.name)
+        doc = None
+        if info.param:
+            doc = u"arg %d/%d: %s" % (
+                info.arg_index + 1, info.arg_count, info.param)
+        view.run_command("ca_signature_popup",
+                         {"got": {"lines": [(signature, True)],
+                                  "doc": doc}})
+    except Exception as e:
+        _log_error("local signature help", e)
+
+
 def run_signature_help(view):
     """检测光标是否在函数调用括号内；是则请求签名提示并弹窗。
 
@@ -2417,18 +2536,17 @@ def run_signature_help(view):
     try:
         if not view.is_valid() or not _is_cpp(view):
             return
-        if not _s("enable_clangd_engine", True) or \
-                not _s("enable_signature_help", True):
+        if not _s("enable_signature_help", True):
             return
         # 补全弹窗开着时不打扰
         if hasattr(view, "is_auto_complete_visible") and \
                 view.is_auto_complete_visible():
             return
         client = _clangd_state["client"]
-        if client is None or not client.is_ready():
-            return
+        use_clangd = _clangd_enabled() and client is not None \
+            and client.is_ready()
         fname = view.file_name()
-        if not fname:
+        if use_clangd and not fname:
             return
         try:
             pt = view.sel()[0].begin()
@@ -2473,6 +2591,10 @@ def run_signature_help(view):
             return
         text = view.substr(sublime.Region(0, size))
         cc = view.change_count()
+        if not use_clangd:
+            # builtin（或 auto 且 clangd 未就绪）：本地签名提示。
+            _show_local_signature(view, pt, text, cc)
+            return
         inflight = (fname, cc, pt)
         if _clangd_state.get("sig_inflight") == inflight:
             return
@@ -2584,24 +2706,31 @@ class CaSetCompletionModeCommand(sublime_plugin.ApplicationCommand):
 class CaSetCompletionEngineCommand(sublime_plugin.ApplicationCommand):
     """Switch the completion engine.
 
-    clangd  = 内嵌 LSP 客户端驱动真实 clangd（语义补全）；
-    builtin = 内置 STL 数据库兜底（零依赖）。
+    builtin = 纯 Python（FastEngine + 内置 STL 数据库，不开子进程）；
+    auto    = 有 clangd 就用，找不到时静默回退 builtin；
+    clangd  = 内嵌 LSP 客户端驱动真实 clangd（语义补全）。
     """
 
     def run(self, engine):
-        if engine not in ("clangd", "builtin"):
+        if engine not in _ENGINE_MODES:
             sublime.status_message(
                 "[CppAssistant] invalid completion engine: %s" % engine)
             return
-        if not _set_setting("enable_clangd_engine", engine == "clangd"):
+        if not _set_setting("completion_engine", engine):
             return
         # 客户端和它的补全缓存都属于上一个引擎，一起退役；
-        # 切回 clangd 时由首次补全懒启动。
+        # 切回 clangd/auto 时由首次补全懒启动。
         _stop_clangd_client()
-        sublime.status_message("[CppAssistant] completion engine: %s" % engine)
+        if engine == "builtin":
+            # 纯本地模式连 libclang 也释放，内存才真的降下来。
+            _release_libclang()
+        label = {"builtin": "builtin (pure Python, no clangd)",
+                 "auto": "auto (clangd when available)",
+                 "clangd": "clangd"}.get(engine, engine)
+        sublime.status_message("[CppAssistant] completion engine: %s" % label)
 
     def is_checked(self, engine=None):
-        return bool(_s("enable_clangd_engine", True)) == (engine == "clangd")
+        return _completion_engine() == engine
 
 
 class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
@@ -2609,7 +2738,7 @@ class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
 
     compiler = 后台调用 g++/clang++ 完整检查；
     clangd   = 直接用 clangd 推送的 publishDiagnostics（要求
-               enable_clangd_engine 开启）；
+               completion_engine 为 auto 或 clangd）；
     libclang = 通过 ctypes 调用 libclang C API（可选，PCH 加速）。
     """
 
@@ -2752,8 +2881,9 @@ class CaShowEngineStatusCommand(sublime_plugin.TextCommand):
             except Exception:
                 lines.append(u"clangd client: status unavailable")
         lines.append(u"no_server flag: %s" % st.get("no_server"))
-        lines.append(u"enable_clangd_engine: %s" %
-                     _s("enable_clangd_engine", True))
+        lines.append(u"completion_engine: %s" % _completion_engine())
+        lines.append(u"libclang in builtin mode: %s" %
+                     _s("builtin_uses_libclang", False))
         lines.append(u"clangd_style: %s" %
                      _s("enable_clangd_style_completion", True))
         lines.append(u"enable_fast_engine: %s" %
@@ -3048,7 +3178,7 @@ class CaFormatSelectionCommand(sublime_plugin.TextCommand):
         fname = view.file_name()
         # 设置读取留在 UI 线程，工作线程只碰纯数据与客户端
         client = (_clangd_state["client"]
-                  if _s("enable_clangd_engine", True) else None)
+                  if _clangd_enabled() else None)
 
         if sync:
             result = self._compute(fname, src, start_pt, end_pt,
@@ -3220,7 +3350,7 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
         candidates_raw = []
         # libclang 精准定义（跨文件/标准库）：只在后台已加载且 TU 已缓存时
         # 使用，避免 F12 在 UI 线程冷解析。PCH 预热后通常 <5ms。
-        if fname and _s("enable_libclang_engine", True) and \
+        if fname and _libclang_allowed() and \
                 _s("libclang_goto", True):
             eng = _semantic_engine_if_ready()
             if eng is not None and not eng.is_busy():
@@ -3378,7 +3508,7 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
 
 def _clangd_client_for(view, status_key):
     """取得已就绪的 clangd 客户端；不可用时在状态栏说明原因。"""
-    if not _s("enable_clangd_engine", True):
+    if not _clangd_enabled():
         view.set_status(status_key, u"clangd engine is disabled")
         return None
     if not view.file_name():

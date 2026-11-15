@@ -4,20 +4,29 @@
     // and adds the `std::` prefix when needed. / 并在需要时自动添加 `std::` 前缀
     // Reference point (LSP-clangd): a built-in cache keeps responses < 5ms. / 参考 LSP-clangd：内置缓存使响应 < 5ms
     "enable_completions": true,
-    // Completion engine: / 补全引擎：
-    //   true  (default, recommended) Real clangd engine: a minimal built-in /   true（默认，推荐）真实 clangd 引擎：内置最小 LSP 客户端直接驱动 clangd 语言服务器
-    //         LSP client drives the clangd language server directly (ported /         （移植自 LSP-clangd），提供编译器级语义补全：
-    //         from LSP-clangd) for compiler-grade semantic completions: /         函数签名、重载、容器成员、局部变量均准确。用户片段排前，
-    //         function signatures, overloads, container members and local /         其余结果遵循当前 C++ 标准。找不到 clangd 时自动回退内置数据库，
-    //         variables are all accurate. User snippets sort first, and the /         零配置即用。
-    //         other results respect the active C++ standard. When clangd is /   false 内置数据库模式：纯 Python 静态回退。
-    //         not found it falls back to the built-in database, so it works /         用户片段排前；C++14 及以下条目优先于 C++17/20/23（针对 CSP-S/NOIP 调优）。
-    //         with zero configuration. / 修改即时生效（引擎自动重启）。
-    //   false Built-in database mode: a pure-Python static fallback. /
-    //         User snippets sort first; C++14-and-older entries rank ahead
-    //         of the C++17/20/23 ones (tuned for CSP-S / NOIP).
-    // Takes effect immediately (the engine restarts automatically).
-    "enable_clangd_engine": true,
+    // Completion engine: / 补全引擎（三选一）：
+    //   builtin (default) Pure Python: FastEngine + built-in STL database /
+    //           builtin（默认）纯 Python：FastEngine + 内置 STL 数据库 + 用户片段。
+    //           + user snippets. No clangd process is started and libclang is /
+    //           不启动 clangd 进程、不加载 libclang，内存占用与普通 Python 插件相当。
+    //           not loaded, so memory stays small. Same-file locals, members,
+    //           enum values and #include insertion all still work.
+    //   auto    Start clangd when it is on PATH; fall back to builtin /
+    //           有 clangd 就用，找不到时静默回退 builtin（不弹状态栏）。
+    //           silently when it is missing.
+    //   clangd  Always use clangd; the status bar explains when it cannot /
+    //           强制语义引擎，找不到时状态栏说明原因。
+    //           be found.
+    // Missing key = builtin. The legacy boolean `enable_clangd_engine` is
+    // still honoured when this key is absent, so old configs keep working. /
+    // 缺失本项时默认 builtin；旧布尔开关在未写本项时仍然生效。
+    // Applies immediately: the clangd client is stopped when you switch away.
+    // Switch: menu CppAssistant > Settings > Completion engine.
+    "completion_engine": "builtin",
+    // Allow libclang (semantic completion / F12 / diagnostics) in builtin
+    // mode. Off by default so "builtin" means pure Python and small memory. /
+    // builtin 模式下是否仍加载 libclang。默认关闭，"纯本地"就是真的纯 Python。
+    "builtin_uses_libclang": false,
     // FastEngine (zero-dependency structural engine): a pure-Python, / FastEngine（零依赖结构化引擎）：纯 Python、
     // incremental lexer + tolerant parser used whenever clangd is disabled, / 增量词法分析器 + 容错解析器，在 clangd 禁用/缺失/未就绪时使用。
     // missing, or has not answered yet. It adds same-file locals, parameters, / 提供同文件局部变量、参数、结构体/类成员、枚举值、命名空间，
@@ -25,8 +34,9 @@
     // database, and powers same-file F12 jumps plus richer instant checks / （未闭合原始字符串、畸形 #include、不平衡 #if）。
     // (unterminated raw strings, malformed #include, unbalanced #if). /   true（默认）使用 FastEngine 作为内置回退层。
     //   true  (default) use FastEngine as the built-in fallback layer. /   false 使用旧版正则数据库路径。
-    //   false use the legacy regex-only database path. / clangd 仍为可用时的语义引擎。
-    // clangd remains the semantic engine when it is available.
+    //   false use the legacy regex-only database path. /   false 使用旧版正则数据库路径。
+    // It is the primary engine in builtin mode and the fallback in auto/clangd.
+    // builtin 模式下它是主引擎，auto/clangd 模式下是兜底层。
     "enable_fast_engine": true,
     // Optional libclang semantic engine (phase two): talks to the installed / 可选 libclang 语义引擎（第二阶段）：通过 ctypes 调用已安装的
     // libclang shared library through ctypes, with no Python package needed. / libclang 共享库，无需 Python 包。

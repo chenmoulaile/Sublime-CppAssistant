@@ -1,0 +1,16 @@
+CppAssistant 2.3.1
+
+- Fixes "installed but nothing works": 2.2.1 shipped without .python-version,
+  so current Sublime Text builds put it on the disabled Python 3.3 plugin
+  host and never loaded the Python code - every menu entry looked grayed out.
+  The package now pins Python 3.8.
+- New default: completion_engine = "builtin" (pure Python). No clangd process
+  is started and libclang is not loaded, so memory stays at normal plugin
+  level. Same-file locals, members, the STL/PBDS database and your snippets
+  all still complete.
+- Switch instantly from the menu (Settings > Completion engine): builtin /
+  auto / clangd. "auto" uses clangd when it is on PATH and falls back
+  silently when it is not.
+- Signature hints now work without clangd.
+
+See CHANGELOG.md for details.

@@ -9,29 +9,26 @@
 [![License](https://img.shields.io/github/license/chenmoulaile/Sublime-CppAssistant.svg)](LICENSE)
 [![Sublime Text](https://img.shields.io/badge/Sublime%20Text-4-blue.svg)](https://www.sublimetext.com/)
 
-> **C++ assistance for Sublime Text 4**, built around a real `clangd` engine with
-> a zero-configuration, zero-dependency fallback. **Tuned for competitive
-> programming (OI / ICPC / CSP-S).**
+> **C++ assistance for Sublime Text 4** — pure-Python completion by default,
+> with an optional real `clangd` engine. **Tuned for competitive programming
+> (OI / ICPC / CSP-S).**
 
-CppAssistant starts working the moment you install it: clangd gives
-compiler-grade answers when it is available, and an incremental pure-Python
-engine plus a curated STL/CP database take over when it is not. Nothing to
-configure, nothing to index, no background daemon you have to babysit.
+CppAssistant works the moment you install it, with no background daemon:
+completion comes from an incremental pure-Python engine plus a curated
+STL/CP database. If you want compiler-grade semantics, switch
+`completion_engine` to `auto` or `clangd`; the built-in LSP client then
+drives clangd for you.
 
 ---
 
-## 🆕 What's new in 2.3.0
+## 🆕 What's new in 2.3.1
 
 | Change | Why it matters |
 |--------|----------------|
-| **Hover docs & signature help actually work** | The command classes did not follow Sublime's `*Command` naming rule, so both default-on features silently never ran |
-| **No more false "unclosed bracket" errors** | `cnt[a[i]]` used to tokenize `]]` as one token; nested subscripts now parse correctly and array-bounds checks see them |
-| **Array-bounds warnings reach the editor** | `int a[10]; a[10] = 1;` is flagged instantly — the check existed but was never wired to the UI |
-| **The formatter never rewrites your strings** | TAB expansion and the protection mask no longer touch string literals and comments |
-| **clangd diagnostics render with real clangd** | The LSP-spec top-level `params.uri` notification form was ignored, so clangd diagnostics never appeared |
-| **Runs on the modern plugin host** | `.python-version` pins the host: Python 3.14 on current ST4 builds instead of the 3.3 host scheduled for removal in 2026 |
-| **Ctrl+Shift+C ships enabled** | Copy Diagnostic now ships in `Default.sublime-keymap`, not in an Example file Sublime never loads |
-| **Templates verified by real compiles** | fft/lucas/crt/berlekamp-massey compile standalone with correct results; dijkstra/dfs/scc/mst/treap are `-std=c++14`- and stack-safe |
+| **Menus no longer grey out on current ST4 builds** | 2.2.1 had no `.python-version`, so Sublime put it on the disabled 3.3 host and never loaded the Python side |
+| **Pure-local engine is now the default** | `completion_engine` = `builtin` starts no clangd process and loads no libclang, so memory stays small |
+| **Three modes, switchable instantly** | `builtin` / `auto` / `clangd` from the menu or command palette; the old boolean still works if you set it explicitly |
+| **Signature help without clangd** | `builtin` shows FastEngine's same-file signature and argument index (`arg 2/2: vector<int>& a`) |
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 
@@ -60,9 +57,10 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ### 🎯 Completion
 
-- **clangd semantic completion** — compiler-grade signatures, overloads,
-  container members, locals, macros; async results replace the fallback popup
-  as soon as the preamble is ready.
+- **clangd semantic completion (optional)** — compiler-grade signatures,
+  overloads, container members, locals, macros. Active only when
+  `completion_engine` is `auto` or `clangd`; async results replace the
+  fallback popup as soon as the preamble is ready.
 - **FastEngine fallback** — a zero-dependency incremental lexer and tolerant
   parser: same-file symbols, scopes, struct/class/enum members, array bounds,
   template deduction, all in pure Python.
@@ -238,6 +236,7 @@ drop it into `Packages/` (or `Installed Packages/`), and restart Sublime Text.
 | `CppAssistant: Copy Diagnostic` | Copy the current diagnostic |
 | `CppAssistant: Diagnostic Language - …` | English / Chinese / both |
 | `CppAssistant: Diagnostic Engine - …` | compiler / clangd / libclang |
+| `CppAssistant: Completion Engine - …` | builtin (pure Python) / auto / clangd |
 | `CppAssistant: Toggle Inline Error Phantoms` | Inline messages on/off |
 | `CppAssistant: Completion Engine Status` | Which engine answered, and why |
 
@@ -290,9 +289,10 @@ values Sublime would otherwise ignore.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enable_completions` | `true` | Completion master switch |
-| `enable_clangd_engine` | `true` | Use clangd; `false` = built-in database |
+| `completion_engine` | `"builtin"` | `builtin` = pure Python, no clangd, no libclang; `auto` = clangd when on `PATH`; `clangd` = always, with status-bar diagnostics |
+| `builtin_uses_libclang` | `false` | Let `builtin` mode use libclang when it is already warm |
 | `enable_fast_engine` | `true` | FastEngine for same-file symbols |
-| `enable_libclang_engine` | `true` | Auto-discover libclang |
+| `enable_libclang_engine` | `true` | Allow libclang at all (master switch) |
 | `libclang_path` | `""` | libclang path; empty = auto-discover |
 | `libclang_pch` | `true` | Build `bits/stdc++.h` PCH |
 | `libclang_completion` | `true` | Merge libclang completion when warm |
@@ -436,7 +436,7 @@ libclang tests, and builds the `.sublime-package` on every tag.
 
 | Issue | Solution |
 |-------|----------|
-| **All commands grayed out / menus dead** | Check `Preferences.sublime-settings` → `ignored_packages`: if `CppAssistant` (or `CppAssistantLocalization`) is listed there, Sublime skips loading the plugin entirely. Remove the entries and wait for the reload (or restart). A package cannot un-ignore itself, so this can only be fixed from the user settings |
+| **All commands grayed out / menus dead** | Two causes. (1) `CppAssistant` is listed in `ignored_packages` in `Preferences.sublime-settings` — remove it and restart; a package cannot un-ignore itself. (2) You are still on 2.2.1 or older: those packages shipped no `.python-version`, so current ST4 builds put them on the disabled Python 3.3 host and never load the Python side. Upgrade to **2.3.1+** (`Package Control: Upgrade Package`), or drop `CppAssistant.sublime-package` from the latest release into `Installed Packages/` |
 | **clangd not found** | Install clangd (`pacman -S mingw-w64-x86_64-clang`, `apt install clangd`, `brew install llvm`) or set `clangd_binary` |
 | **F12 does nothing** | Check the key binding in `Example.sublime-keymap`, or run the command from the palette |
 | **Enter inserts a newline** | Sublime default. Add `{ "keys": ["enter"], "command": "insert", "args": {"characters": "\n"}, "context": [{ "key": "auto_complete_visible" }] }` to your user keymap |
