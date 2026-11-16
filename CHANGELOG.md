@@ -3,6 +3,47 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.4 — 2026-11-16
+
+### Fixed
+
+- **User snippets were listed twice.** Sublime Text 4.2 only exposes
+  `INHIBIT_WORD_COMPLETIONS`; `INHIBIT_SNIPPET_COMPLETIONS` does not exist, so
+  the native snippet source cannot be suppressed. The plugin was adding its own
+  copy of every `.sublime-snippet` on top of Sublime's list — which is why
+  `ahead` / `aorihash` appeared twice and the inserted text looked wrong (two
+  different snippet engines handling the same file). The plugin no longer
+  provides user snippets at all: they are only read for *Browse Templates*,
+  never copied or rewritten, and Sublime owns their completion entry and
+  insertion format. Template-pack snippets work the same way — Sublime indexes
+  them natively.
+- **`vector` still appeared several times.** With the plugin's own snippet
+  copies gone, only the built-in type remains; `_dedupe_by_trigger()` still
+  guards STL vs snippet collisions inside a single list.
+- **Global completion was too fuzzy.** Typing `ve` also offered `move`,
+  `reverse`, `override` through substring matching. When a real prefix match
+  exists and the cursor is not in a member access, only prefix matches are
+  kept now. Member lists still allow substring matches (`back` →
+  `push_back`).
+- **Transient compiler error while typing a member.** `a.pu` used to flash
+  `has no member named 'pu'`. Compiler checks are skipped while the current
+  line ends in `.` / `->` or an unfinished member; saving still lints, so real
+  errors are not missed.
+
+### Changed
+
+- **Menu grouped by task.** The 31 flat entries became `Navigate` / `Edit` /
+  `Diagnostics` / `Templates` submenus plus the settings block, all translated
+  by the Language switch.
+- **Cheaper completions.** The snippet path called
+  `sublime.find_resources("*.sublime-snippet")` (all packages) on completion
+  requests; removing the plugin's snippet copies removes that scan from the
+  keystroke path.
+
+### Tests
+
+- 240 tests pass; the menu ids/captions and completion behaviour are unchanged.
+
 ## v2.3.3 — 2026-11-15
 
 ### Fixed

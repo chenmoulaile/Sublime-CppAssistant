@@ -14,65 +14,77 @@
 						"id": "cppassistant-settings",
 						"children": [
 							{
-								"caption": "Code Actions",
-								"id": "cppassistant-code-actions",
-								"command": "ca_code_actions"
+								"caption": "Navigate",
+								"id": "cppassistant-menu-navigate",
+								"children": [
+									{
+										"caption": "Code Actions",
+										"id": "cppassistant-code-actions",
+										"command": "ca_code_actions"
+									},
+									{
+										"caption": "Rename Symbol",
+										"id": "cppassistant-rename",
+										"command": "ca_rename"
+									},
+									{
+										"caption": "Find References",
+										"id": "cppassistant-find-references",
+										"command": "ca_find_references"
+									},
+									{
+										"caption": "Call Hierarchy",
+										"id": "cppassistant-call-hierarchy",
+										"command": "ca_call_hierarchy"
+									},
+									{
+										"caption": "Type Hierarchy",
+										"id": "cppassistant-type-hierarchy",
+										"command": "ca_type_hierarchy"
+									},
+									{
+										"caption": "Go to Definition",
+										"id": "cppassistant-goto-definition",
+										"command": "ca_goto_definition"
+									}
+								]
 							},
 							{
-								"caption": "Rename Symbol",
-								"id": "cppassistant-rename",
-								"command": "ca_rename"
+								"caption": "Edit",
+								"id": "cppassistant-menu-edit",
+								"children": [
+									{
+										"caption": "Format Selection",
+										"id": "cppassistant-format-selection",
+										"command": "ca_format_selection"
+									},
+									{
+										"caption": "Format Document",
+										"id": "cppassistant-format-document",
+										"command": "ca_format_document"
+									},
+									{
+										"caption": "Fix Full-width Punctuation",
+										"id": "cppassistant-fix-fullwidth",
+										"command": "ca_fix_fullwidth_punctuation"
+									}
+								]
 							},
 							{
-								"caption": "Find References",
-								"id": "cppassistant-find-references",
-								"command": "ca_find_references"
-							},
-							{
-								"caption": "Call Hierarchy",
-								"id": "cppassistant-call-hierarchy",
-								"command": "ca_call_hierarchy"
-							},
-							{
-								"caption": "Type Hierarchy",
-								"id": "cppassistant-type-hierarchy",
-								"command": "ca_type_hierarchy"
-							},
-							{
-								"caption": "-"
-							},
-							{
-								"caption": "Format Selection",
-								"id": "cppassistant-format-selection",
-								"command": "ca_format_selection"
-							},
-							{
-								"caption": "Format Document",
-								"id": "cppassistant-format-document",
-								"command": "ca_format_document"
-							},
-							{
-								"caption": "Go to Definition",
-								"id": "cppassistant-goto-definition",
-								"command": "ca_goto_definition"
-							},
-							{
-								"caption": "Show Diagnostics",
-								"id": "cppassistant-show-diagnostics",
-								"command": "ca_show_diagnostics"
-							},
-							{
-								"caption": "Copy Diagnostic",
-								"id": "cppassistant-copy-diagnostic",
-								"command": "ca_copy_diagnostic"
-							},
-							{
-								"caption": "Fix Full-width Punctuation",
-								"id": "cppassistant-fix-fullwidth",
-								"command": "ca_fix_fullwidth_punctuation"
-							},
-							{
-								"caption": "-"
+								"caption": "Diagnostics",
+								"id": "cppassistant-menu-diagnostics",
+								"children": [
+									{
+										"caption": "Show Diagnostics",
+										"id": "cppassistant-show-diagnostics",
+										"command": "ca_show_diagnostics"
+									},
+									{
+										"caption": "Copy Diagnostic",
+										"id": "cppassistant-copy-diagnostic",
+										"command": "ca_copy_diagnostic"
+									}
+								]
 							},
 							{
 								"caption": "Templates",
@@ -211,9 +223,6 @@
 								]
 							},
 							{
-								"caption": "-"
-							},
-							{
 								"caption": "Completion mode",
 								"id": "cppassistant-completion-mode",
 								"children": [
@@ -238,9 +247,6 @@
 								]
 							},
 							{
-								"caption": "-"
-							},
-							{
 								"caption": "Show inline error phantoms",
 								"id": "cppassistant-toggle-phantoms",
 								"command": "ca_toggle_phantoms",
@@ -250,9 +256,6 @@
 								"caption": "Completion engine status",
 								"id": "cppassistant-engine-status",
 								"command": "ca_show_engine_status"
-							},
-							{
-								"caption": "-"
 							},
 							{
 								"caption": "Diagnostic engine",

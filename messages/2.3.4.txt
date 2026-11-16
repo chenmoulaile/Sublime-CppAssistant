@@ -1,0 +1,16 @@
+CppAssistant 2.3.4
+
+- User snippets are no longer duplicated: the plugin stopped providing its own
+  copy. Sublime Text 4.2 has no INHIBIT_SNIPPET_COMPLETIONS flag, so the native
+  snippet list could not be suppressed and every .sublime-snippet appeared
+  twice. Your snippets are now read-only for Browse Templates, never copied,
+  and Sublime owns their insertion format.
+- vector now appears once (built-in type only; duplicates came from the two
+  snippet engines).
+- Typing "ve" no longer offers move/reverse/override - prefix matches win in
+  global completion. Member lists still match substrings (back -> push_back).
+- Typing a.pu no longer flashes "has no member named 'pu'": compiler checks
+  wait until the line is complete (saving still lints).
+- Menu grouped into Navigate / Edit / Diagnostics / Templates + settings.
+
+See CHANGELOG.md for details.

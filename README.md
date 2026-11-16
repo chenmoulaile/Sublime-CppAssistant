@@ -21,14 +21,15 @@ drives clangd for you.
 
 ---
 
-## 🆕 What's new in 2.3.3
+## 🆕 What's new in 2.3.4
 
 | Change | Why it matters |
 |--------|----------------|
-| **One menu instead of two** | The duplicate top-level `CppAssistant` menu is gone; everything lives under `Preferences > Package Settings > CppAssistant` and follows the Language switch |
-| **No duplicate completions** | The same trigger is kept once across built-in types, user snippets and template packs (`vector` no longer appears three times) |
-| **No STL dump on empty prefix** | `int n = ` no longer opens a 200-entry list; member access (`v.`, `p->`, `std::`) still shows full lists |
-| **Typedef'd containers work** | `typedef std::vector<int> VI; VI a; a.` lists `push_back`, `size`, … again |
+| **Your snippets are no longer duplicated** | ST 4.2 has no `INHIBIT_SNIPPET_COMPLETIONS`; the plugin stopped adding its own copy, so each `.sublime-snippet` appears once with Sublime's own insertion format |
+| **`vector` appears once** | The duplicates were two snippet engines plus the built-in type; only the real type is left |
+| **Prefix wins globally** | `ve` no longer offers `move` / `reverse` / `override`; member lists still match substrings (`back` → `push_back`) |
+| **No transient member errors** | Typing `a.pu` no longer flashes `has no member named 'pu'`; saving still lints |
+| **Task-grouped menu** | `Navigate` / `Edit` / `Diagnostics` / `Templates` + settings instead of 31 flat entries |
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 

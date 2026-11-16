@@ -2546,7 +2546,7 @@ class FastEngine(object):
             # 参数、本文件的函数/类型），这些在表达式里真的能用。
             return self._finish_items(
                 self._visible_items(a, offset, prefix, clangd_style),
-                prefix, clangd_style)
+                prefix, clangd_style, strict_prefix=True)
         cache_key_c = (a.version, a.text_len, offset, prefix, accessor,
                        receiver, bool(clangd_style))
         cached = a.completion_cache.get(cache_key_c)
@@ -2571,7 +2571,8 @@ class FastEngine(object):
                     seen.add(d.get("trigger"))
 
         items = self._apply_auto_types(a, items)
-        items = self._finish_items(items, prefix, clangd_style)
+        items = self._finish_items(items, prefix, clangd_style,
+                                   strict_prefix=not accessor)
         a.completion_cache[cache_key_c] = items
         if len(a.completion_cache) > 64:
             for k in list(a.completion_cache.keys())[:16]:
@@ -2944,7 +2945,7 @@ class FastEngine(object):
                 count += 1
         return index, count
 
-    def _finish_items(self, items, prefix, clangd_style):
+    def _finish_items(self, items, prefix, clangd_style, strict_prefix=False):
         max_score = 999 if clangd_style else 5
         seen = set()
         out = []
@@ -2962,10 +2963,14 @@ class FastEngine(object):
         out.sort(key=lambda d: (d["_score"], len(d["trigger"]),
                                 d["trigger"]))
         if prefix and any(d["_score"] <= 2 for d in out):
-            # 已经有真正的前缀命中时，丢掉纯子序列噪音（输入 vec 时
-            # 弹出 views::common / views::counted 这类条目）。子串匹配
-            # 保留：back 仍然能找到 push_back。
-            out = [d for d in out if d["_score"] <= 5]
+            if strict_prefix:
+                # 全局补全：已经有真正的前缀命中（ve → vector）时，
+                # 只保留前缀命中，move/reverse 这类子串结果不要。
+                out = [d for d in out if d["_score"] <= 2]
+            else:
+                # 成员访问：保留子串匹配（back → push_back），但去掉
+                # 纯子序列噪音。
+                out = [d for d in out if d["_score"] <= 5]
         if len(out) > 200:
             out = out[:200]
         for d in out:

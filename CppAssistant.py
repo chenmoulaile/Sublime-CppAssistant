@@ -279,8 +279,9 @@ def _schedule_status_hint(view):
 # ---------------------------------------------------------------------------
 
 # 补全压制旗标兼容：INHIBIT_SNIPPET_COMPLETIONS 仅较新 ST4 版本提供，
-# 旧版（如 4213 stable）没有该常量，直接引用会让 on_query_completions
-# 抛 AttributeError 导致补全整体失效（曾经的真实故障）。统一走 getattr。
+# ST 4.2 只提供 INHIBIT_WORD_COMPLETIONS；INHIBIT_SNIPPET_COMPLETIONS
+# 并不存在（getattr 兜底为 0）。正因如此，插件不再自己提供用户片段，
+# 否则必然和 Sublime 原生索引的 .sublime-snippet 重复两份。
 _INHIBIT_SNIPPET = getattr(sublime, "INHIBIT_SNIPPET_COMPLETIONS", 0)
 _INHIBIT_WORD = getattr(sublime, "INHIBIT_WORD_COMPLETIONS", 0)
 
@@ -963,17 +964,22 @@ def _warm_clangd_document(view):
 
 
 def _snippet_items_for_prefix(prefix):
-    """用户自己的 .sublime-snippet + 内置片段，按触发器前缀过滤。
+    """只提供插件内置的关键字片段，用户片段完全交给 Sublime 自己。
 
-    这两组永远排在弹窗最前面（用户肌肉记忆优先）。
+    Sublime 会索引所有包（``Packages/User`` 和模板包）里的
+    ``.sublime-snippet`` 并在补全时合并进来，而且 ST 4.2 没有
+    ``INHIBIT_SNIPPET_COMPLETIONS`` 这个 flag 可以关掉它。我们再塞一份
+    就必然出现两条一模一样的 ``ahead``；插入格式也只有 Sublime 自己
+    处理才正确（``$1`` / ``${1:x}`` 的位置与缩进）。
+
+    所以：用户片段只读不写、不复制、不在补全里重复提供；模板包里的
+    snippet 同样由 Sublime 提供；这里只保留没有对应文件的 Python 内置
+    片段（``for`` / ``if`` 之类），它们不会被 Sublime 索引。
     """
     if not prefix:
         return []
     low = prefix.lower()
     out = []
-    for d in ca_user_snippets.get_cpp_snippets():
-        if d["trigger"].lower().startswith(low):
-            out.append(d)
     for trig, body, desc, kd in SNIPPETS:
         if trig.lower().startswith(low):
             en = en_detail(trig) or u""
@@ -1523,6 +1529,11 @@ class CaEventListener(sublime_plugin.EventListener):
         # lint_engine=clangd 时诊断由 publishDiagnostics 推送（LSP 式），
         # 不启动编译器进程；compiler 模式走编译器检查（防抖）
         if str(_s("lint_engine", "compiler")) == "clangd":
+            return
+        # 正在敲 `a.pu` 时编译器必然报 "has no member named 'pu'"，
+        # 这行红字只会打断输入；等本行改完整再检查。保存时（debounce=
+        # False）仍然检查，避免漏掉真实错误。
+        if debounce and _is_incomplete_member(view):
             return
         t = _lint_timers.pop(vid, None)
         if t is not None:
@@ -2181,6 +2192,21 @@ def run_basic_check(view):
     th = threading.Thread(target=worker)
     th.daemon = True
     th.start()
+
+
+def _is_incomplete_member(view):
+    """光标所在行是否正卡在未完成的成员访问上（``a.pu`` / ``p->``）。
+
+    这种半成品交给编译器必然得到 "has no member named 'pu'" 之类的红字，
+    对用户只是噪音；等这一行不再是未完成成员再检查即可。
+    """
+    try:
+        pt = view.sel()[0].begin()
+        line = view.substr(sublime.Region(view.line(pt).begin(), pt))
+    except Exception:
+        return False
+    return bool(re.search(r"(?:\.|->)\s*[A-Za-z_]\w*$", line)) or \
+        bool(re.search(r"(?:\.|->)\s*$", line))
 
 
 def run_lint(view):

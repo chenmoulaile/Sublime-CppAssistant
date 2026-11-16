@@ -18,14 +18,15 @@
 
 ---
 
-## 🆕 2.3.3 更新要点
+## 🆕 2.3.4 更新要点
 
 | 变化 | 为什么重要 |
 |------|-----------|
-| **只保留一个菜单** | 删掉了重复的顶层 CppAssistant 菜单，全部收进 `Preferences > Package Settings > CppAssistant`，并跟随语言切换 |
-| **补全不再重复** | 同一 trigger 在内置类型、用户片段、模板包之间只保留一条（`vector` 不再出现三次） |
-| **空前缀不再倾倒 STL** | `int n = ` 后不会弹出 200 条；`v.` / `p->` / `std::` 仍然显示完整列表 |
-| **typedef 容器能补全了** | `typedef std::vector<int> VI; VI a; a.` 重新列出 `push_back`、`size` 等 |
+| **你自己的片段不再重复** | ST 4.2 没有 `INHIBIT_SNIPPET_COMPLETIONS`；插件不再自己提供一份，每个 `.sublime-snippet` 只出现一次，插入格式由 Sublime 自己处理 |
+| **`vector` 只出现一次** | 之前重复来自两套片段引擎加内置类型，现在只留真实类型 |
+| **全局补全前缀优先** | 输入 `ve` 不再出现 `move` / `reverse` / `override`；成员列表仍支持子串（`back` → `push_back`） |
+| **输入成员时不再闪错误** | 敲 `a.pu` 不再弹 `has no member named 'pu'`；保存时仍会检查 |
+| **菜单按功能分组** | `导航` / `编辑` / `诊断` / `模板` + 设置，不再平铺 31 项 |
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
