@@ -21,15 +21,13 @@ drives clangd for you.
 
 ---
 
-## 🆕 What's new in 2.3.4
+## 🆕 What's new in 2.3.5
 
 | Change | Why it matters |
 |--------|----------------|
-| **Your snippets are no longer duplicated** | ST 4.2 has no `INHIBIT_SNIPPET_COMPLETIONS`; the plugin stopped adding its own copy, so each `.sublime-snippet` appears once with Sublime's own insertion format |
-| **`vector` appears once** | The duplicates were two snippet engines plus the built-in type; only the real type is left |
-| **Prefix wins globally** | `ve` no longer offers `move` / `reverse` / `override`; member lists still match substrings (`back` → `push_back`) |
-| **No transient member errors** | Typing `a.pu` no longer flashes `has no member named 'pu'`; saving still lints |
-| **Task-grouped menu** | `Navigate` / `Edit` / `Diagnostics` / `Templates` + settings instead of 31 flat entries |
+| **Lint no longer spawns g++ per keystroke** | Instant check debounce 20 → 150 ms, compiler 100 → 350 ms; results stay cached per text hash |
+| **No compile for half-typed members** | `a.pu` stops flashing `has no member named 'pu'` |
+| **`Parse Error ... Unexpected character` fixed** | Multi-line completion details were handed to Sublime's JSON/HTML details renderer; they are single-line now |
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 

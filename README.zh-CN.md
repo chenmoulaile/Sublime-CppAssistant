@@ -18,15 +18,13 @@
 
 ---
 
-## 🆕 2.3.4 更新要点
+## 🆕 2.3.5 更新要点
 
 | 变化 | 为什么重要 |
 |------|-----------|
-| **你自己的片段不再重复** | ST 4.2 没有 `INHIBIT_SNIPPET_COMPLETIONS`；插件不再自己提供一份，每个 `.sublime-snippet` 只出现一次，插入格式由 Sublime 自己处理 |
-| **`vector` 只出现一次** | 之前重复来自两套片段引擎加内置类型，现在只留真实类型 |
-| **全局补全前缀优先** | 输入 `ve` 不再出现 `move` / `reverse` / `override`；成员列表仍支持子串（`back` → `push_back`） |
-| **输入成员时不再闪错误** | 敲 `a.pu` 不再弹 `has no member named 'pu'`；保存时仍会检查 |
-| **菜单按功能分组** | `导航` / `编辑` / `诊断` / `模板` + 设置，不再平铺 31 项 |
+| **错误检查不再每次按键都起 g++** | 即时检查防抖 20 → 150ms，编译器检查 100 → 350ms；结果仍按文本哈希缓存 |
+| **成员没敲完时不跑编译器** | `a.pu` 不再闪 `has no member named 'pu'` |
+| **修掉 `Parse Error ... Unexpected character`** | 多行补全详情被交给 Sublime 的 JSON/HTML 渲染器；现在强制单行 |
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 

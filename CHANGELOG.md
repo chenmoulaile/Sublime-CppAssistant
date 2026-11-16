@@ -3,6 +3,34 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.5 — 2026-11-16
+
+### Performance
+
+- **The two lint timers were firing far too often.** The instant basic check
+  used a 20 ms debounce and the full compiler check 100 ms, so holding a key
+  started a fresh g++ process (and a full-file parse) many times per second.
+  They are 150 ms and 350 ms now; results are still cached per text hash, and
+  saving still lints immediately.
+- **No compiler run while a member is half-typed** (`a.pu`), which used to
+  produce a red "has no member named 'pu'" line and burn a compile.
+
+### Fixed
+
+- **Console `Parse Error ... Unexpected character`.** The plugin passed
+  multi-line completion `details` to Sublime; its details renderer tries to
+  parse that string as JSON/HTML, so a snippet body inside the field produced
+  a parse error on every completion. Details are now flattened to a single
+  line (and capped at 200 chars).
+- Every bundled and user `.sublime-snippet`, plus the JSON resources
+  (`compile_commands.json`, `templates/index.json`, session files), was
+  verified to be well-formed — the parse error came from the completion
+  details path, not from a corrupt file on disk.
+
+### Tests
+
+- 240 tests pass.
+
 ## v2.3.4 — 2026-11-16
 
 ### Fixed

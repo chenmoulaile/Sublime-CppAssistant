@@ -1,0 +1,14 @@
+CppAssistant 2.3.5
+
+- Lint is much lighter: the instant check debounce went 20ms -> 150ms and the
+  full compiler check 100ms -> 350ms, so holding a key no longer starts a g++
+  process several times per second. Results are still cached per text hash and
+  saving still lints immediately.
+- Typing a half-finished member (a.pu) no longer runs the compiler, so the red
+  "has no member named 'pu'" line is gone.
+- Fixed the console "Parse Error ... Unexpected character": multi-line
+  completion details were handed to Sublime, whose details renderer parses
+  them as JSON/HTML. Details are now single-line and capped at 200 chars.
+  All snippet/JSON resources on disk were verified well-formed.
+
+See CHANGELOG.md for details.

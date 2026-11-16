@@ -411,6 +411,11 @@ def _make_item(d):
     fmt = (sublime.COMPLETION_FORMAT_SNIPPET if is_snippet
            else sublime.COMPLETION_FORMAT_TEXT)
     details = _detail(d)
+    if details and u"\n" in details:
+        # details 只放单行：Sublime 会把这一段交给它的 JSON/HTML 解析器，
+        # 多行 snippet 文本会让控制台刷 "Parse Error ... Unexpected
+        # character"。取第一行并限长。
+        details = details.splitlines()[0][:200]
     ann = _annotation(d)
     return sublime.CompletionItem(
         trigger=d["trigger"],
@@ -1520,7 +1525,7 @@ class CaEventListener(sublime_plugin.EventListener):
             if bt is not None:
                 bt.cancel()
             btmr = threading.Timer(
-                0.02, lambda: sublime.set_timeout(
+                0.15, lambda: sublime.set_timeout(
                     lambda: run_basic_check(view), 0))
             btmr.daemon = True
             btmr.start()
@@ -1538,7 +1543,7 @@ class CaEventListener(sublime_plugin.EventListener):
         t = _lint_timers.pop(vid, None)
         if t is not None:
             t.cancel()
-        delay = float(_s("lint_debounce", 0.1)) if debounce else 0.0
+        delay = float(_s("lint_debounce", 0.35)) if debounce else 0.0
         if delay <= 0:
             sublime.set_timeout(lambda: run_lint(view), 50)
         else:
