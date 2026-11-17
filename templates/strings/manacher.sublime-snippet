@@ -1,13 +1,18 @@
 <snippet>
     <content><![CDATA[string manacher(const string &s) {
-    string t = "^#";
-    for (char c : s) { t += c; t += '#'; }
-    t += '$';
-    int n = t.size(), c = 0, r = 0, best = 0, center = 0;
-    vector<int> p(n);
+    // Integer symbols: input bytes are 0..255, sentinels are negative, so they
+    // can never collide with any byte (unlike caret/dollar/hash markers).
+    const int LEFT = -1, SEP = -2, RIGHT = -3;
+    vector<int> t;
+    t.reserve(2 * s.size() + 3);
+    t.push_back(LEFT); t.push_back(SEP);
+    for (unsigned char c : s) { t.push_back((int)c); t.push_back(SEP); }
+    t.push_back(RIGHT);
+    int n = (int)t.size(), c = 0, r = 0, best = 0, center = 0;
+    vector<int> p(n, 0);
     for (int i = 1; i < n - 1; ++i) {
         p[i] = (r > i) ? min(r - i, p[2 * c - i]) : 1;
-        while (t[i + p[i]] == t[i - p[i]]) ++p[i];
+        while (i - p[i] >= 0 && i + p[i] < n && t[i + p[i]] == t[i - p[i]]) ++p[i];
         if (i + p[i] > r) { c = i; r = i + p[i]; }
         if (p[i] > best) { best = p[i]; center = i; }
     }

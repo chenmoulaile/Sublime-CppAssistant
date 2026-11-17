@@ -361,6 +361,11 @@ def _skip_quoted(text, quote_start, line, col, quote):
                 cl = 0
                 i += 2
                 continue
+            if i + 2 < n and text[i + 1] == "\r" and text[i + 2] == "\n":
+                ln += 1
+                cl = 0
+                i += 3
+                continue
             i += 2
             cl += 2
             continue
@@ -2645,7 +2650,9 @@ class FastEngine(object):
         j = end
         while j >= 0 and text[j] in " \t":
             j -= 1
-        if j >= 0 and text[j] == "]":
+        # 回溯紧邻的下标链：arr[0][1].f -> arr。单个 ']' 只跳一层，
+        # 这里反复配对 '['/']' 直到最左侧的基名。
+        while j >= 0 and text[j] == "]":
             depth = 1
             k = j - 1
             while k >= 0 and depth > 0:
@@ -2655,6 +2662,8 @@ class FastEngine(object):
                     depth -= 1
                 k -= 1
             j = k
+            while j >= 0 and text[j] in " \t":
+                j -= 1
         stop = j + 1
         while j >= 0 and (text[j].isalnum() or text[j] in "_:"):
             j -= 1
@@ -2667,6 +2676,9 @@ class FastEngine(object):
         while scope is not None:
             for sym in scope.symbols:
                 if sym.name in seen or not sym.name:
+                    continue
+                # 前向声明：光标之后才出现的名字此时还不可用。
+                if sym.name_offset >= offset:
                     continue
                 seen.add(sym.name)
                 items.append(self._candidate(sym, offset))
@@ -2697,10 +2709,18 @@ class FastEngine(object):
                 template_args = _extract_template_args(raw_type)
                 # typedef / using 别名：VI -> std::vector<int>。不跟随
                 # 这一步，`typedef vector<int> VI; VI a; a.` 就没有成员。
-                alias = self._lookup(a, type_name, offset) if type_name \
-                    else None
-                if alias is not None and alias.kind == "alias":
-                    raw_type = alias.type or raw_type
+                # 别名可以多级嵌套（B -> A -> vector<int>），循环跟随，
+                # visited 防止自引用/环导致死循环。
+                visited_alias = set()
+                while type_name and type_name not in visited_alias:
+                    visited_alias.add(type_name)
+                    alias = self._lookup(a, type_name, offset)
+                    if alias is None or alias.kind != "alias":
+                        break
+                    next_raw = alias.type or ""
+                    if not next_raw or next_raw == raw_type:
+                        break
+                    raw_type = next_raw
                     type_name = _strip_type(raw_type)
                     template_args = _extract_template_args(raw_type)
                 resolved = raw_type
@@ -2741,14 +2761,19 @@ class FastEngine(object):
         while scope is not None:
             hits = scope.by_name.get(name)
             if hits:
-                for sym in hits:
+                visible = [s for s in hits if s.name_offset < offset]
+                for sym in visible:
                     if sym.kind in ("variable", "parameter",
                                     "member variable"):
                         return sym
-                return hits[0]
+                if visible:
+                    return visible[0]
             scope = scope.parent
         hits = a.by_name.get(name)
-        return hits[0] if hits else None
+        if hits:
+            visible = [s for s in hits if s.name_offset < offset]
+            return visible[0] if visible else None
+        return None
 
     def _candidate(self, sym, offset, template_args=None):
         name = sym.name
@@ -2927,10 +2952,12 @@ class FastEngine(object):
     def _arg_position(self, a, text, open_index, offset):
         """返回 (第几个实参, 已出现的实参总数)。"""
         depth = 0
+        angle = 0
         index = 0
         count = 1
-        for i in range(open_index + 1, len(a.tokens)):
-            tok = a.tokens[i]
+        toks = a.tokens
+        for i in range(open_index + 1, len(toks)):
+            tok = toks[i]
             if tok.start >= offset:
                 break
             if tok.kind != "op":
@@ -2940,10 +2967,102 @@ class FastEngine(object):
                 depth += 1
             elif s in (")", "]", "}"):
                 depth -= 1
-            elif s == "," and depth == 0:
+            elif s == "<":
+                # 只把紧跟标识符、且能找到真正配对 '>' 的 '<' 当作模板
+                # 参数列表起点；`x < y, z > w` 这类比较运算不能吞逗号
+                # （XC-new-5）。
+                if (i > 0 and toks[i - 1].kind == "id"
+                        and self._template_close_index(toks, i + 1,
+                                                       offset, text) >= 0):
+                    angle += 1
+            elif s == ">":
+                if angle > 0:
+                    angle -= 1
+            elif s == ">>":
+                # 嵌套模板末尾的 >> 视为两个右尖括号；纯移位不处理。
+                if angle >= 2:
+                    angle -= 2
+                elif angle == 1:
+                    angle -= 1
+            elif s == "," and depth == 0 and angle == 0:
                 index += 1
                 count += 1
         return index, count
+
+    def _template_close_index(self, toks, start, offset, text):
+        """返回与 '<' 真正配对的右尖括号 token 下标，找不到返回 -1。
+
+        用显式深度匹配 `<`/`>`（嵌套模板末尾的 `>>` 算两个）。配对的 '>'
+        后面若还能起始一个表达式（标识符/数字/字符串，或 `- + ! ~ * & ( [`
+        等一元运算符），说明它其实是比较运算的右操作数，不算模板闭合；
+        只有后跟终止/分隔 token（`, ) } > ; {` 等）才是模板实参列表收尾
+        （XC-new-5 / XC-new-8）。
+        """
+        depth = 1
+        paren = 0
+        for j in range(start, len(toks)):
+            tok = toks[j]
+            if tok.start >= offset:
+                return -1
+            if tok.kind != "op":
+                continue
+            s = text[tok.start:tok.end]
+            if s in ("(", "[", "{"):
+                paren += 1
+            elif s in (")", "]", "}"):
+                if paren == 0:
+                    return -1  # 已越过当前调用的右括号
+                paren -= 1
+            elif s == "<":
+                depth += 1
+            elif s in (">", ">>"):
+                depth -= 1 if s == ">" else 2
+                if depth <= 0:
+                    nxt = toks[j + 1] if j + 1 < len(toks) else None
+                    if nxt is not None and nxt.start < offset:
+                        if nxt.kind in ("id", "num", "str", "chr", "kw"):
+                            return -1
+                        if nxt.kind == "op" and text[nxt.start:nxt.end] in (
+                                "(", "-", "+", "!", "~", "*", "&", "[",
+                                "++", "--"):
+                            # '>' 后紧跟 '(' 有两种可能：
+                            #   a) 显式模板实参 + 调用：foo<T,U>(...)
+                            #   b) 比较运算右操作数是括号表达式：x < y, z > (w)
+                            # 用 '<' 后第一个 token 是否像模板实参来区分：
+                            # 类型关键字 / 已知类型 / 大写开头的模板参数名
+                            # （A、T、Key…）/ 含 :: 的限定名都判为模板（a）。
+                            # 否则（小写普通标识符如 y）判为比较（b，XC-new-10）。
+                            if text[nxt.start:nxt.end] == "(" and \
+                                    self._arg_looks_like_template(toks, start,
+                                                                  text):
+                                return j
+                            return -1
+                    return j
+        return -1
+
+    def _arg_looks_like_template(self, toks, start, text):
+        """`start` 是 '<' 之后第一个 token 的下标；判断它是否像模板实参。
+
+        用于区分 `foo<T,U>(...)`（模板调用）与 `x < y, z > (w)`（比较）。
+        模板实参通常是类型：基本类型关键字、已知类型名、大写开头的模板
+        参数名（A/T/Key…）或 `std::`-风格的限定名。普通小写变量名则是
+        比较运算的右操作数（XC-new-10）。
+        """
+        if start >= len(toks):
+            return False
+        tok = toks[start]
+        word = text[tok.start:tok.end]
+        if not word:
+            return False
+        if word in TYPE_KEYWORDS or word in KNOWN_TYPES:
+            return True
+        # 限定名 std::string / ns::T 等
+        if "::" in text[tok.start:min(tok.end + 4, len(text))]:
+            return True
+        # 大写开头的标识符：模板参数名或用户类型的惯例写法
+        if tok.kind == "id" and (word[0].isupper() or word[0] == "_"):
+            return True
+        return False
 
     def _finish_items(self, items, prefix, clangd_style, strict_prefix=False):
         max_score = 999 if clangd_style else 5

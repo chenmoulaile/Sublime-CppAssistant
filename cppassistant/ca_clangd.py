@@ -1097,18 +1097,19 @@ class ClangdClient(object):
         # entry 是 _send_request 给出的直接引用：响应可能在写帧后立刻被
         # 读线程处理（entry 随之离开 _pending），事后 get(rid) 会拿到
         # None 而把已到达的响应丢掉。
+        # 回调必须在建 entry / 写帧之前就位：写帧释放 GIL 的窗口里读线程
+        # 可能已 dispatch 响应，事后补挂 cb 时 _dispatch 早已看到 cb=None
+        # 而走同步路径，on_arrival 永不触发、结果丢失（半修复）。
         entry = self._send_request("textDocument/completion", {
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": col},
             "context": {"triggerKind": 1},
-        }, cb=None)
+        }, cb=self._wrap_arrival(on_arrival) if on_arrival else None)
         rid = entry["id"]
-        # 先挂回调再 wait：原实现 wait 判定超时之后才挂回调，判定与挂
-        # 回调之间到达的响应没有回调可走，结果丢失且 entry 永远滞留
-        # _pending。回调挂上后响应由读线程独占送达（读线程会把 entry
-        # 标记为 async 并弹出），同步路径不再重复消费。
-        if on_arrival is not None:
-            entry["cb"] = self._wrap_arrival(on_arrival)
+        # cb 随 entry 一同创建：读线程 dispatch 看到 async=True 后独占
+        # 送达回调（_wrap_arrival 收 result 再 parse，与 cb(msg["result"])
+        # 一致），同步等待者醒来后也因 async=True 让路返回 None，不会
+        # 重复消费或漏送结果。
         if timeout and timeout > 0:
             got = entry["event"].wait(timeout)
             if got:

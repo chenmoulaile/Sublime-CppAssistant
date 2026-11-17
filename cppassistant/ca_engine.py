@@ -608,7 +608,18 @@ def build_env(text):
         "elems": {},
         "var_types": {},
         "param_types": {},
+        # 变量声明处的名字偏移，用于补全时剔除"光标之后才声明"的符号
+        # （C++ 同作用域名字在使用点之后声明则此处不可见）。
+        "var_positions": {},
     }
+    var_pos = env["var_positions"]
+
+    def note_var_pos(name, pos):
+        # XC-new-4b: 同一名字可能同时是函数参数和更晚的同名局部变量，
+        # 取最早声明位置，避免可见参数被内层局部变量遮蔽。
+        if name not in var_pos or pos < var_pos[name]:
+            var_pos[name] = pos
+
     vars_ = env["vars"]
     elems = env["elems"]
     iters = env["iters"]
@@ -620,6 +631,7 @@ def build_env(text):
         if name in _CTRL_WORDS:
             continue
         vars_[name] = (kind, targs)
+        note_var_pos(name, name_start)
         type_text = _collapse_ws(text[kind_start:name_start])
         if type_text:
             var_types[name] = type_text
@@ -630,6 +642,7 @@ def build_env(text):
             continue
         type_text = _collapse_ws(m.group("type"))
         vars_[name] = (type_text, "")
+        note_var_pos(name, m.start("name"))
         if type_text:
             var_types[name] = type_text
 
@@ -642,6 +655,11 @@ def build_env(text):
             param_name, param_type = parsed
             if param_name not in param_types:
                 param_types[param_name] = param_type
+            # 参数在函数签名处的位置早于函数体内同名局部变量（XC-new-4b）
+            rel = params.find(part)
+            if rel != -1 and part.find(param_name) >= 0:
+                note_var_pos(param_name, open_idx + 1 + rel
+                             + part.find(param_name))
 
     for m in _RANGEFOR_RE.finditer(text):
         elem, cont = m.group(1), m.group(2)
@@ -1111,7 +1129,13 @@ def analyze(text, offset, cache_key=None, cache_version=None,
         for kw in KEYWORDS:
             raw_items.append((3, kw, kw, u"关键字", "k", False, u"keyword",
                               kw, kw))
+        var_positions = env.get("var_positions", {})
         for name, it in items.items():
+            # 同作用域内光标之后才声明的局部变量此时不可见；剔除，
+            # 避免与 FastEngine 的声明顺序过滤保持一致（XC-new-4）。
+            if it["kind"] == "v" and name in var_positions and \
+                    var_positions[name] >= offset:
+                continue
             priority = 0 if it["kind"] == "v" else 1
             raw_items.append((priority, name, name, it["annotation"],
                               it["kind"], False, it["annotation_en"],
@@ -1745,9 +1769,14 @@ def basic_checks(code):
                     # 诊断的行号整体偏移（XS10）。
                     line += 1
                     col = 0
+                    i += 2
+                elif i + 2 < n and code[i + 1] == "\r" and code[i + 2] == "\n":
+                    line += 1
+                    col = 0
+                    i += 3
                 else:
                     col += 2
-                i += 2
+                    i += 2
                 continue
             if c == '"':
                 ctx.str = False
@@ -1758,9 +1787,14 @@ def basic_checks(code):
                 if i + 1 < n and code[i + 1] == "\n":
                     line += 1
                     col = 0
+                    i += 2
+                elif i + 2 < n and code[i + 1] == "\r" and code[i + 2] == "\n":
+                    line += 1
+                    col = 0
+                    i += 3
                 else:
                     col += 2
-                i += 2
+                    i += 2
                 continue
             if c == "'":
                 ctx.chr = False
@@ -1885,8 +1919,15 @@ _SHIFT_L_RE = re.compile(r'(?<!<)(?<=[\w)\]\x22\x27])\s*<<\s*(?=[\w\x22\x27(])')
 _SHIFT_R_RE = re.compile(r'(?<!<)(?<!>)(?<=[\w)\]\x22\x27])\s*>>\s*(?![=>])(?=\s*[\w\x22\x27(])')
 _GT_TEMPL_RE = re.compile(r"(?<!-)>(?![=>])(?=[A-Za-z_])")
 _MOD_RE = re.compile(r"(?<=[\w)\]\x27])\s*%\s*(?=[\w(])")
+# e/E 保护科学计数法（既有行为）。十六进制浮点的 p± 改由 _replay 把
+# 整个字面量标记为 prot 区间来统一保护，覆盖任意位十六进制尾数，
+# 同时不误伤 cap/help/tmp 这类 p 结尾标识符（XC-new-9）。
 _ADD_RE = re.compile(r"(?<![eE])(?<=[\w)\]\x27])\s*\+\s*(?![+=])(?=[\w(])")
 _SUB_RE = re.compile(r"(?<![eE])(?<=[\w)\]\x27])\s*-\s*(?![-=>])(?=[\w(])")
+
+# 完整十六进制浮点字面量：0xABp+2 / 0x1.8p-3 / 0xFFP+1 等（XC-new-9）。
+_HEX_FLOAT_RE = re.compile(
+    r"(?<![\w.])0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)[pP][+-][0-9]+")
 
 # 行内替换规则 (regex, replacement)，按序应用
 _LINE_RULES = None
@@ -2059,21 +2100,22 @@ def _format_one_line(raw_line, st, depth, indent_width):
     if not stripped:
         return "", depth, True
 
+    # XC-new-7: 只统计真正的代码区间。续行字符串未闭合时整行没有
+    # code_spans，字面量里的孤立括号不会被误计；闭合后的代码照常统计。
     opens = closes = 0
-    for idx, ch in enumerate(raw_line):
-        if not prot_mask[idx]:
-            if ch == "{":
-                opens += 1
-            elif ch == "}":
-                closes += 1
+    for a, b in code_spans:
+        seg = raw_line[a:b]
+        opens += seg.count("{")
+        closes += seg.count("}")
 
     if (pre.block or pre.raw) and not any(
             raw_line[a:b].strip() for a, b in code_spans):
         return raw_line.rstrip(), max(depth, 0), False
 
     if enter_sstr or enter_chr:
-        # 反斜杠续行的字符串/字符：行首空白属于字面量内容，整行原样
-        # 保留（仅去尾部空白），括号深度仍按 code 区间推进（XS9）。
+        # 反斜杠续行的字符串/字符：整行原样保留（行首空白属字面量）。
+        # 本行若已闭合且后面有真实代码，code_spans 会带上那段代码，
+        # 深度照常推进；未闭合时 opens/closes 为 0，深度不变（XC-new-7）。
         return raw_line.rstrip(), max(depth + opens - closes, 0), False
 
     if _PREPROC_RE.match(raw_line):
@@ -2307,6 +2349,16 @@ def _replay(line_text, state):
                 code_spans.append((start, i))
             state.chr = True
             i += 1
+            start = i
+            continue
+        # XC-new-9: 十六进制浮点字面量整体作为 prot 区间，内部的 p±
+        # 不会被行内规则当成二元加减法加空格；尾数任意长度都覆盖。
+        hm = _HEX_FLOAT_RE.match(line_text, i)
+        if hm:
+            if start < i:
+                code_spans.append((start, i))
+            prot_spans.append((hm.start(), hm.end()))
+            i = hm.end()
             start = i
             continue
         i += 1

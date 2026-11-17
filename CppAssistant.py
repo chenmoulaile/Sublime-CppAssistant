@@ -446,10 +446,11 @@ _clangd_state = {
     # (file, change_count, point, word) -> hover 文本；避免同一符号
     # 反复走一次 clangd 往返。
     "hover_cache": {},
-    # 正在进行中的 hover / signature 请求键，防止鼠标抖动或
-    # on_modified 重入时重复发请求。
-    "hover_inflight": None,
-    "sig_inflight": None,
+    # 正在进行中的 hover / signature 请求键集合，防止鼠标抖动或
+    # on_modified 重入时重复发请求。用 set 而非单槽：多视图并发时，
+    # 一个请求返回空结果不会清掉另一个视图的在途标记（XC-new-2）。
+    "hover_inflight": set(),
+    "sig_inflight": set(),
     # 补全来源统计（诊断用）：clangd 结果次数 / 内置兜底次数 / libclang
     "stats": {"clangd": 0, "builtin": 0, "libclang": 0},
 }
@@ -710,8 +711,8 @@ def _stop_clangd_client():
     _clangd_state["sig"] = None
     _clangd_state["ready_announced"] = False
     _clangd_state["refreshed"] = None
-    _clangd_state["hover_inflight"] = None
-    _clangd_state["sig_inflight"] = None
+    _clangd_state["hover_inflight"] = set()
+    _clangd_state["sig_inflight"] = set()
     # 缓存的补全/悬停结果属于即将退役的服务端，必须一起丢弃
     with _clangd_state_lock:
         _clangd_state["async_cache"].clear()
@@ -1148,8 +1149,15 @@ def _apply_pending_includes(view, hdrs):
     try:
         if not hdrs:
             return
-        view.run_command("ca_insert_pending_includes",
-                         {"includes": [str(h) for h in hdrs]})
+        # 本函数由 on_text_changed_async 调用，运行在 Sublime 的 worker
+        # 线程；view.run_command 必须在 UI 线程执行。本插件其它从后台
+        # 线程发起 run_command 的位置都用 set_timeout 切回，这里此前
+        # 遗漏，导致异常被吞、补全后 #include 静默插不上。XC-new-1
+        includes = [str(h) for h in hdrs]
+        sublime.set_timeout(
+            lambda: view.run_command("ca_insert_pending_includes",
+                                     {"includes": includes})
+            if view.is_valid() else None, 0)
     except Exception as e:
         _log_error("include insertion apply", e)
 
@@ -1249,7 +1257,11 @@ class CaEventListener(sublime_plugin.EventListener):
             text = view.substr(sublime.Region(0, size))
         # 补全匹配风格：true=LSP-clangd 风格（默认）；false=严格前缀基础模式
         clangd_style = bool(_s("enable_clangd_style_completion", True))
-        flags = _INHIBIT_SNIPPET  # 片段由本插件统一供给（旧版 ST 无此常量为 0）
+        # 用户片段/模板片段自 v2.3.4 起交给 Sublime 原生索引提供（见
+        # _snippet_items_for_prefix）。若在此设置 INHIBIT_SNIPPET_COMPLETIONS，
+        # 在定义了该 flag 的较新 ST 版本上会把原生片段一并压制，用户片段
+        # 反而消失。这里只保留可选的单词补全压制（下方 clangd_style 分支）。
+        flags = 0
         dicts = None
         if _clangd_enabled():
             dicts = self._clangd_items(view, text, off, prefix)
@@ -1532,9 +1544,19 @@ class CaEventListener(sublime_plugin.EventListener):
             _basic_timers[vid] = btmr
         # 第二级：完整检查。
         # lint_engine=clangd 时诊断由 publishDiagnostics 推送（LSP 式），
-        # 不启动编译器进程；compiler 模式走编译器检查（防抖）
+        # 不启动编译器进程；compiler 模式走编译器检查（防抖）。
+        # 兜底：若 clangd 客户端没就绪（例如用户手改设置文件选了 clangd，
+        # 没走切换命令的自动前置补足），不能既跳过编译器又没有 clangd
+        # 诊断——那样会静默丢掉所有完整检查（XC-new-3）。此时回退到
+        # 编译器检查，保证始终有一路诊断在工作。
+        # 注意：这里不主动启动 clangd——本函数在 Sublime 异步线程运行，
+        # 启动客户端是 UI 线程的职责（on_activated_async/on_post_save_async
+        # 已有 _warm_clangd_document）。在这里启动会引入跨线程竞态与异常
+        # 穿透，反而可能跳过编译器兜底（XC-new-5）。
         if str(_s("lint_engine", "compiler")) == "clangd":
-            return
+            client = _clangd_state.get("client")
+            if _clangd_enabled() and client is not None and client.is_ready():
+                return
         # 正在敲 `a.pu` 时编译器必然报 "has no member named 'pu'"，
         # 这行红字只会打断输入；等本行改完整再检查。保存时（debounce=
         # False）仍然检查，避免漏掉真实错误。
@@ -2561,21 +2583,20 @@ def run_hover(view, point):
         if cached:
             view.run_command("ca_hover", {"point": point, "body": cached})
             return
-        if st.get("hover_inflight") == cache_key:
+        if cache_key in st["hover_inflight"]:
             return
-        st["hover_inflight"] = cache_key
+        st["hover_inflight"].add(cache_key)
 
         def work():
             try:
                 got = _clangd_fetch(fname, "hover", text, point)
                 if not got:
-                    st["hover_inflight"] = None
+                    st["hover_inflight"].discard(cache_key)
                     return
 
                 def show():
                     try:
-                        if st.get("hover_inflight") == cache_key:
-                            st["hover_inflight"] = None
+                        st["hover_inflight"].discard(cache_key)
                         if not view.is_valid() or \
                                 _clangd_state.get("hover_seq") != seq:
                             return
@@ -2591,7 +2612,7 @@ def run_hover(view, point):
 
                 sublime.set_timeout(show, 0)
             except Exception as e:
-                st["hover_inflight"] = None
+                st["hover_inflight"].discard(cache_key)
                 _log_error("hover", e)
 
         th = threading.Thread(target=work)
@@ -2701,9 +2722,9 @@ def run_signature_help(view):
             _show_local_signature(view, pt, text, cc)
             return
         inflight = (fname, cc, pt)
-        if _clangd_state.get("sig_inflight") == inflight:
+        if inflight in _clangd_state["sig_inflight"]:
             return
-        _clangd_state["sig_inflight"] = inflight
+        _clangd_state["sig_inflight"].add(inflight)
         seq = _clangd_state["sig_seq"] = \
             _clangd_state.get("sig_seq", 0) + 1
 
@@ -2711,14 +2732,13 @@ def run_signature_help(view):
             try:
                 got = _clangd_fetch(fname, "signature", text, pt)
                 if not got:
-                    _clangd_state["sig_inflight"] = None
+                    _clangd_state["sig_inflight"].discard(inflight)
                     return
 
                 def show():
                     try:
                         st = _clangd_state
-                        if st.get("sig_inflight") == inflight:
-                            st["sig_inflight"] = None
+                        st["sig_inflight"].discard(inflight)
                         if not view.is_valid() or \
                                 st.get("sig_seq") != seq:
                             return
@@ -2734,7 +2754,7 @@ def run_signature_help(view):
 
                 sublime.set_timeout(show, 0)
             except Exception as e:
-                _clangd_state["sig_inflight"] = None
+                _clangd_state["sig_inflight"].discard(inflight)
                 _log_error("signature help", e)
 
         th = threading.Thread(target=work)
@@ -2879,8 +2899,24 @@ class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
             sublime.status_message(
                 "[CppAssistant] invalid lint engine: %s" % engine)
             return
-        if not _set_setting("lint_engine", engine):
-            return
+
+        # 诊断引擎有前置条件：clangd 诊断依赖 clangd 客户端运行，而客户端
+        # 只在 completion_engine 为 auto/clangd 时启动；libclang 诊断同样
+        # 被 _libclang_allowed() 在 builtin 模式下拦下。默认补全引擎是
+        # builtin，若只改 lint_engine 就会出现"选了 clangd/libclang 却
+        # 完全没有诊断"的静默失效（XC-new-3）。这里自动补足前置条件，
+        # 并明确告知用户，避免悄悄失效。
+        note = ""
+        if engine == "clangd" and not _clangd_enabled():
+            _set_setting("completion_engine", "auto")
+            _stop_clangd_client()  # 让首次补全按新 sig 懒启动 clangd
+            note = " (completion engine -> auto)"
+        elif engine == "libclang" and not _libclang_allowed():
+            # 打开 builtin 下的 libclang 叠加开关，语义引擎才会真正加载。
+            _set_setting("builtin_uses_libclang", True)
+            note = " (builtin_uses_libclang -> true)"
+
+        _set_setting("lint_engine", engine)
         # clangd 模式等它推下一轮；其余模式立刻补一次检查
         _refresh_cpp_views(rerun_lint=(engine in ("compiler", "libclang")))
         if engine == "clangd":
@@ -2893,7 +2929,8 @@ class CaSetLintEngineCommand(sublime_plugin.ApplicationCommand):
             th = threading.Thread(target=_semantic_engine)
             th.daemon = True
             th.start()
-        sublime.status_message("[CppAssistant] lint engine: %s" % engine)
+        sublime.status_message(
+            "[CppAssistant] lint engine: %s%s" % (engine, note))
 
     def is_checked(self, engine=None):
         return str(_s("lint_engine", "compiler")) == engine
@@ -3575,6 +3612,16 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
 
         def jump(idx):
             vid, path, line, col, label, preview, src, _ = candidates[idx]
+            # 0. 本文件内的定义（src=="local"）：直接在当前视图定位。
+            #    未保存的缓冲区 fname=None、path 为空，走下面的 open_file
+            #    分支会失效（光标不动却报"jumped to"）；这里用当前 view
+            #    处理，已保存文件同样受益（无需重新打开文件）。
+            if src == "local" and view.is_valid():
+                pt = view.text_point(max(0, line - 1), max(0, col))
+                view.sel().clear()
+                view.sel().add(sublime.Region(pt, pt))
+                view.show_at_center(pt)
+                return
             # 1. 其它已打开视图
             if vid is not None and vid != cur_vid:
                 tv = _view_by_id(vid)
@@ -4925,9 +4972,17 @@ class CaManageUserSnippetsCommand(sublime_plugin.WindowCommand):
             name = _safe_snippet_name(trigger) + ".sublime-snippet"
             directory = os.path.dirname(entry["path"])
             target = os.path.join(directory, name)
+            # Windows 文件系统大小写不敏感：把 `us` 重命名成 `US` 时，
+            # os.path.exists(target) 为真且指向的其实是同一个物理文件，
+            # 而 abspath 字符串比较区分大小写会误判为"另一个文件"。
+            # 用 normcase 比较规范化后的绝对路径来识别"同一个文件"。
+            # 同一物理文件（含仅大小写不同）走原地覆盖，绝不删除。
+            src_path = os.path.abspath(entry["path"])
+            dst_path = os.path.abspath(target)
+            same_file = \
+                os.path.normcase(src_path) == os.path.normcase(dst_path)
             overwrite = False
-            if os.path.exists(target) and os.path.abspath(target) != \
-                    os.path.abspath(entry["path"]):
+            if os.path.exists(target) and not same_file:
                 if not sublime.ok_cancel_dialog(
                         "Snippet '%s' already exists. Overwrite?" % trigger):
                     return
@@ -4938,7 +4993,9 @@ class CaManageUserSnippetsCommand(sublime_plugin.WindowCommand):
                 ca_template_packs.write_snippet(
                     target, trigger, entry["content"], entry["desc"],
                     entry.get("scope") or "source.c++, source.c")
-                if os.path.abspath(target) != os.path.abspath(entry["path"]):
+                # 仅当确实换了文件才删旧文件；同一物理文件（大小写重命名）
+                # 已被上面的 write_snippet 原地覆盖，再删会把内容抹掉。
+                if not same_file:
                     os.remove(entry["path"])
                 _snippet_cache_reload()
                 sublime.status_message("Snippet renamed: %s -> %s"

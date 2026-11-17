@@ -8,5 +8,5 @@
 $0]]></content>
     <tabTrigger>polygon</tabTrigger>
     <scope>source.c++, source.c</scope>
-    <description>Polygon signed area</description>
+    <description>Polygon signed area. Depends on Point/eps/PI from the 'point' template - expand point first.</description>
 </snippet>

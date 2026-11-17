@@ -355,6 +355,26 @@ class CallInfoTests(unittest.TestCase):
         self.assertEqual(info.name, "go")
         self.assertEqual(info.arg_index, 1)
 
+    def test_template_args_with_call_parens_do_not_shift_arguments(self):
+        # 显式模板实参 + 调用括号：make_pair<int,int>(...) 的实参逗号不能
+        # 被当成外层 f(...) 的实参分隔符（XC-new-10 回归）。
+        src = (u"void f(int a, int b, int c, int d) {}\n"
+               u"int main() { f(make_pair<int,int>(1,2), Q); }\n")
+        offset = src.index(u"Q)")
+        info = self.engine.call_info(src, offset)
+        self.assertEqual(info.name, "f")
+        self.assertEqual(info.arg_index, 1)
+        self.assertEqual(info.param, "int b")
+
+    def test_comparison_commas_are_not_swallowed(self):
+        # 实参里的比较运算 x < y, z > (w) 的逗号要保持为外层实参分隔符。
+        src = (u"void f(int a, int b, int c, int d) {}\n"
+               u"int main() { f(x < y, z > (w), Q); }\n")
+        offset = src.index(u"Q)")
+        info = self.engine.call_info(src, offset)
+        self.assertEqual(info.arg_index, 2)
+        self.assertEqual(info.param, "int c")
+
 
 class DefinitionTests(unittest.TestCase):
     def setUp(self):

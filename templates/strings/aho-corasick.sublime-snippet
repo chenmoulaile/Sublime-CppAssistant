@@ -12,8 +12,12 @@
     void insert(const string &s) {
         int u = 0;
         for (char ch : s) {
-            int c = ch - 'a';
-            if (nxt[u][c] < 0) nxt[u][c] = add_node();
+            unsigned c = (unsigned)((int)(unsigned char)ch - 'a');
+            if (c >= (unsigned)SIGMA) continue; // skip non-lowercase letters
+            if (nxt[u][c] < 0) {
+                int v = add_node(); // add first: push_back may reallocate nxt
+                nxt[u][c] = v;
+            }
             u = nxt[u][c];
         }
         ++out[u];
@@ -37,7 +41,11 @@
     long long count(const string &s) {
         long long ans = 0;
         int u = 0;
-        for (char ch : s) { u = nxt[u][ch - 'a']; ans += out[u]; }
+        for (char ch : s) {
+            unsigned c = (unsigned)((int)(unsigned char)ch - 'a');
+            if (c >= (unsigned)SIGMA) continue; // skip non-lowercase letters
+            u = nxt[u][c]; ans += out[u];
+        }
         return ans;
     }
 };

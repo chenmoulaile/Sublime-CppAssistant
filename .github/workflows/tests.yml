@@ -70,6 +70,22 @@ jobs:
           CA_TEST_LIBCLANG_PCH: 1
         run: python -m unittest tests.test_semantic_engine -v
 
+  windows-smoke:
+    # Windows-only guard for path / case / encoding regressions (e.g. the
+    # 2.2.1 packaging incident and the Windows case-rename file deletion bug).
+    # Standalone on purpose: it does not block the package job.  Compile-based
+    # tests skip themselves when g++ is unavailable, so this job stays green
+    # on runners without a C++ toolchain.
+    name: Windows Smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests on Windows
+        run: python -m unittest discover -s tests
+
   package:
     name: Build Package
     runs-on: ubuntu-24.04

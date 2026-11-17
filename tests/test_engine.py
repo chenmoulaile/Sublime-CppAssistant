@@ -335,6 +335,21 @@ class EngineTests(unittest.TestCase):
         self.assertIn(u"int  a=1;", out)
         self.assertIn(u"    int b = 2;", out)
 
+    def test_format_keeps_hex_float_literals_intact(self):
+        # 十六进制浮点里的 p± 不能当二元加减加空格，否则字面量被拆坏；
+        # 任意长度尾数（含 0x. 形式）都要覆盖（XC-new-9 回归）。
+        for lit in ("0x1p+2", "0xABp+2", "0x.8p+3", "0X.Ap+1",
+                    "0x1.8p-3", "0xFFp+1", "0x1.p+2"):
+            out = ca_engine.format_code(u"double x = %s;\n" % lit)
+            self.assertIn(lit, out, lit)
+
+    def test_format_still_spaces_normal_plus_minus(self):
+        # 收窄十六进制保护后，普通标识符的 + / - 仍要正常加空格。
+        self.assertEqual(ca_engine.format_code(u"int z=cap+2;\n"),
+                         u"int z = cap + 2;\n")
+        self.assertEqual(ca_engine.format_code(u"int z=a-b;\n"),
+                         u"int z = a - b;\n")
+
 
 class MemberSignatureTests(unittest.TestCase):
     def _detail(self, src, trigger):

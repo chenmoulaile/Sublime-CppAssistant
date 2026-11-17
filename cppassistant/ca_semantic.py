@@ -971,7 +971,11 @@ class SemanticEngine(object):
         entry = self._cache.get(key)
         fname, contents, unsaved = self._unsaved(filename, text)
         if options is None:
-            options = (CXTranslationUnit_KeepGoing |
+            # DetailedPreprocessingRecord(0x01) 让 libclang 生成宏 cursor，
+            # 否则 F12 跳转拿不到 #define 目标；不动 PCH 逻辑（自研
+            # -include-pch 已覆盖 PrecompiledPreamble 的用途）。
+            options = (CXTranslationUnit_DetailedPreprocessingRecord |
+                       CXTranslationUnit_KeepGoing |
                        CXTranslationUnit_CacheCompletionResults |
                        CXTranslationUnit_IncludeBriefCommentsInCodeCompletion |
                        CXTranslationUnit_CreatePreambleOnFirstParse)
