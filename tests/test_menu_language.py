@@ -21,6 +21,12 @@ def _read_menu():
         return json.load(f)
 
 
+def _read_commands():
+    with open(os.path.join(ROOT, "CppAssistant.sublime-commands"), "r",
+              encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _walk(items):
     for item in items:
         if isinstance(item, dict):
@@ -92,6 +98,37 @@ class MenuOverlayTests(unittest.TestCase):
         missing = captions - set(menu_lang.TRANSLATIONS_ZH)
         self.assertEqual(missing, set())
 
+    def test_command_captions_are_all_translated(self):
+        """Every command-palette caption has a Chinese translation."""
+        commands = _read_commands()
+        captions = set(entry["caption"] for entry in commands)
+        missing = captions - set(menu_lang.COMMAND_TRANSLATIONS_ZH)
+        self.assertEqual(missing, set())
+
+    def test_build_commands_overlay_translates_and_keeps_merge_keys(self):
+        commands = _read_commands()
+        overlay = menu_lang.build_commands_overlay(commands, "zh")
+        self.assertEqual(len(overlay), len(commands))
+        for src, translated in zip(commands, overlay):
+            # Sublime merges by command + args, so both must be identical.
+            self.assertEqual(translated["command"], src["command"])
+            self.assertEqual(translated.get("args"), src.get("args"))
+            self.assertEqual(
+                translated["caption"],
+                menu_lang.COMMAND_TRANSLATIONS_ZH[src["caption"]])
+        # The "same command, different args" family stays distinct.
+        keys = [(o["command"], json.dumps(o.get("args"), sort_keys=True,
+                                          ensure_ascii=False))
+                for o in overlay]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_english_commands_overlay_is_empty(self):
+        commands = _read_commands()
+        overlay = menu_lang.build_commands_overlay(commands, "en")
+        self.assertEqual(
+            [o["caption"] for o in overlay],
+            [entry["caption"] for entry in commands])
+
     def test_apply_writes_overlay_and_removes_stale_file(self):
         tmp = tempfile.mkdtemp(prefix="ca_menu_")
         try:
@@ -110,11 +147,19 @@ class MenuOverlayTests(unittest.TestCase):
                       encoding="utf-8") as f:
                 overlay = json.load(f)
             self.assertTrue(overlay)
+            with open(os.path.join(root, menu_lang.COMMANDS_FILE), "r",
+                      encoding="utf-8") as f:
+                command_overlay = json.load(f)
+            self.assertTrue(command_overlay)
+            self.assertEqual(len(command_overlay), len(_read_commands()))
             self.assertFalse(os.path.exists(stale_menu))
 
             ok, err = menu_lang.apply_menu_language("en", tmp)
             self.assertTrue(ok, err)
             with open(os.path.join(root, menu_lang.MENU_FILE), "r",
+                      encoding="utf-8") as f:
+                self.assertEqual(json.load(f), [])
+            with open(os.path.join(root, menu_lang.COMMANDS_FILE), "r",
                       encoding="utf-8") as f:
                 self.assertEqual(json.load(f), [])
         finally:

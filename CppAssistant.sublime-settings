@@ -161,12 +161,14 @@
     // balance, full-width punctuation and unclosed strings/comments - / 未闭合字符串/注释——边输入边报告，无需等编译器。
     // reported while typing, with no need to wait for the compiler.
     "instant_basic_check": true,
-    // Seconds of idle typing before the full compiler check starts / 输入空闲多久后启动完整编译器检查（默认 0.35s）。
-    // (default 0.35s). Keep typing without pausing and no g++ process is / 连续打字时不暂停就不会起 g++ 进程，避免每 0.1s
+    // Seconds of idle typing before the full compiler check starts / 输入空闲多久后启动完整编译器检查（默认 0.5s）。
+    // (default 0.5s). Keep typing without pausing and no g++ process is / 连续打字时不暂停就不会起 g++ 进程，避免每 0.1s
     // started, so holding a key no longer spawns a compiler every 0.1s. / 拉起一次编译器（含 bits/stdc++.h 时单次约 1s）。
+    // The instant lexer check (instant_basic_check) runs at 60ms for quick / 即时词法检查（instant_basic_check）以 60ms 快速反馈，
+    // red-squiggle feedback; the slower compiler check then refines it. / 再用较慢的编译器检查补充深度诊断，两者配合更跟手。
     // Lower it for near-instant feedback at the cost of CPU; raise it / 调小反馈更快但更吃 CPU；调大更省电。
     // for fewer compiler runs. Results are cached per text hash either way. / 无论多少，结果都按文本哈希缓存。
-    "lint_debounce": 0.35,
+    "lint_debounce": 0.5,
     // Timeout (seconds) for a single compiler check; on timeout existing / 单次编译器检查超时（秒）；超时不清除现有标记。
     // markers are not cleared.
     "lint_timeout": 12,

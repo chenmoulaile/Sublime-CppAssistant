@@ -80,6 +80,7 @@ _CLANGD_MAX_CHARS = 1000000
 # 视图相关运行时状态 -------------------------------------------------------
 _lint_timers = {}      # view_id -> threading.Timer（编译器检查防抖）
 _basic_timers = {}     # view_id -> threading.Timer（即时基础检查微防抖）
+_clangd_sync_timers = {}  # view_id -> threading.Timer（clangd 诊断的 didChange 防抖）
 _phantom_sets = {}     # view_id -> PhantomSet
 _diag_store = {}       # view_id -> [str]
 _diag_items = {}       # view_id -> [diagnostic dict]（复制命令使用，保留结构化字段）
@@ -162,7 +163,8 @@ def plugin_unloaded():
         except Exception:
             pass
     _lint_procs.clear()
-    for timers in (_lint_timers, _basic_timers, _sig_timers, _status_timers):
+    for timers in (_lint_timers, _basic_timers, _sig_timers, _status_timers,
+                   _clangd_sync_timers):
         for t in list(timers.values()):
             try:
                 t.cancel()
@@ -243,9 +245,10 @@ def _update_status_hint(view):
                 signature = signature[:87] + u"..."
             parts.append(signature)
             if info.param:
-                parts.append(u"arg %d/%d: %s"
-                             % (info.arg_index + 1, info.arg_count,
-                                info.param))
+                parts.append(_msgf(u"arg %d/%d: %s",
+                                   u"参数 %d/%d：%s",
+                                   info.arg_index + 1, info.arg_count,
+                                   info.param))
         text = u" · ".join([p for p in parts if p])
         if text:
             view.set_status(_STATUS_KEY, text)
@@ -947,26 +950,27 @@ def _warm_clangd_document(view):
     """
     try:
         if not _clangd_enabled() or not _is_cpp(view):
-            return
+            return False
         fname = view.file_name()
         if not fname:
-            return
+            return False
         _cdb_update(fname, _s("cxx_standard", "c++14"))
         client = _get_clangd_client(view)
         if client is None or not client.is_ready():
-            return
+            return False
         # 不能截断后再发给 clangd：LSP 位置是按全文计算的，截断会让
         # 大文件里的补全/诊断位置整体错位。超大文件直接不启用 clangd。
         size = view.size()
         if size > _CLANGD_MAX_CHARS:
-            return
+            return False
         text = view.substr(sublime.Region(0, size))
         if client.has_document(fname):
-            client.change_document(fname, text)
-        else:
-            client.open_document(fname, text)
+            return client.change_document(fname, text)
+        client.open_document(fname, text)
+        return True
     except Exception as e:
         _log_error("clangd document warm-up", e)
+        return False
 
 
 def _snippet_items_for_prefix(prefix):
@@ -1537,7 +1541,7 @@ class CaEventListener(sublime_plugin.EventListener):
             if bt is not None:
                 bt.cancel()
             btmr = threading.Timer(
-                0.15, lambda: sublime.set_timeout(
+                0.06, lambda: sublime.set_timeout(
                     lambda: run_basic_check(view), 0))
             btmr.daemon = True
             btmr.start()
@@ -1556,6 +1560,32 @@ class CaEventListener(sublime_plugin.EventListener):
         if str(_s("lint_engine", "compiler")) == "clangd":
             client = _clangd_state.get("client")
             if _clangd_enabled() and client is not None and client.is_ready():
+                # 编辑后必须把新文本推给 clangd（textDocument/didChange），
+                # 否则它不会重新诊断，删掉的错误会一直挂着（XC-new-12）。
+                # 防抖：只在停止输入 ~180ms 后同步一次，避免每次按键都发全文。
+                # 同一个回调里先清掉基于旧文本的诊断，再推送新文本；clangd
+                # 的新 publishDiagnostics 到达后会重绘最新结果。
+                def sync_clangd():
+                    if not view.is_valid():
+                        return
+                    # 只有真的发了 didChange（文本相对上次同步有变化）才清
+                    # 旧诊断：净零编辑（输入后删回原样）时 change_document
+                    # 不发 didChange、也就不会有新的 publishDiagnostics，
+                    # 此时若清空会让诊断永久消失（复查中等项）。
+                    sent = _warm_clangd_document(view)
+                    if sent:
+                        st = _lint_state.setdefault(vid, {})
+                        if st.get("compiler"):
+                            st["compiler"] = []
+                            render_diagnostics(vid)
+                old_sync = _clangd_sync_timers.pop(vid, None)
+                if old_sync is not None:
+                    old_sync.cancel()
+                sync = threading.Timer(
+                    0.18, lambda: sublime.set_timeout(sync_clangd, 0))
+                sync.daemon = True
+                sync.start()
+                _clangd_sync_timers[vid] = sync
                 return
         # 正在敲 `a.pu` 时编译器必然报 "has no member named 'pu'"，
         # 这行红字只会打断输入；等本行改完整再检查。保存时（debounce=
@@ -1565,7 +1595,7 @@ class CaEventListener(sublime_plugin.EventListener):
         t = _lint_timers.pop(vid, None)
         if t is not None:
             t.cancel()
-        delay = float(_s("lint_debounce", 0.35)) if debounce else 0.0
+        delay = float(_s("lint_debounce", 0.5)) if debounce else 0.0
         if delay <= 0:
             sublime.set_timeout(lambda: run_lint(view), 50)
         else:
@@ -1579,7 +1609,7 @@ class CaEventListener(sublime_plugin.EventListener):
     def on_close(self, view):
         vid = view.id()
         for timers in (_lint_timers, _basic_timers, _sig_timers,
-                       _status_timers):
+                       _status_timers, _clangd_sync_timers):
             t = timers.pop(vid, None)
             if t is not None:
                 t.cancel()
@@ -1924,6 +1954,26 @@ def _display_language():
     return "en"
 
 
+def _msg(en, zh):
+    """按 display_language 选择一条用户可见文案。
+
+    用于此前大量硬编码英文的状态栏 / 提示消息，让它们也跟随语言设置。
+    """
+    lang = _display_language()
+    if lang == "en":
+        return en
+    if lang == "both":
+        if en and zh and en != zh:
+            return u"%s / %s" % (en, zh)
+        return en or zh
+    return zh or en
+
+
+def _msgf(en_tpl, zh_tpl, *args):
+    """带 % 格式化的 _msg：两边各写模板，共享同一组参数。"""
+    return _msg(en_tpl % args, zh_tpl % args)
+
+
 def _compile_with_cmd(cmd, src, workdir, view_id):
     """执行一次编译器调用，返回合并的 stdout/stderr 字节串或 None（超时/被取代）。"""
     # Windows: CREATE_NO_WINDOW (0x08000000) hides console window
@@ -2262,20 +2312,23 @@ def run_lint(view):
             _settings_sig(compiler))
     st = _lint_state.setdefault(vid, {})
     cached = _LINT_CACHE.get(vid)
-    if cached and cached[0] == ckey:
-        # 文本与设置都没变：直接复用上次结果，零延迟
-        st["compiler"] = cached[1]
-        render_diagnostics(vid)
-        return
+    # 无论是否命中缓存，都要先作废在途编译：否则"输入错误→删掉错误"回到
+    # 旧文本命中缓存后，之前那次针对错误文本的编译晚到，会因 gen 未变而
+    # 把陈旧错误重新写回（删掉的错误又冒出来的根因，XC-new-11）。
     gen = _lint_gen.get(vid, 0) + 1
     _lint_gen[vid] = gen
     old = _lint_procs.pop(vid, None)
     if old is not None:
-        # 立刻终止过期进程，保证最新输入无需排队等待旧检查
         try:
             old.kill()
         except Exception:
             pass
+    if cached and cached[0] == ckey:
+        # 文本与设置都没变：直接复用上次结果，零延迟
+        st["compiler"] = cached[1]
+        st["compiler_src_hash"] = ckey[0]
+        render_diagnostics(vid)
+        return
     if compiler is not None or str(_s("lint_engine", "compiler")) == "libclang":
         view.set_status("ca_diag", _STATUS_LINTING[_display_language()])
     if str(_s("lint_engine", "compiler")) == "libclang" and \
@@ -2372,13 +2425,17 @@ def render_diagnostics(view_id):
             continue
         if pt > max_pt:
             continue
-        end = pt
-        limit = min(max_pt, pt + 80)
-        while end < limit and view.substr(
-                sublime.Region(end, end + 1)).isalnum():
-            end += 1
-        if end == pt:
-            end = min(pt + 1, max_pt)
+        # 一次取该行片段再按标识符规则定位词尾，避免逐字符 substr
+        # （诊断密集时每条最多 80 次 substr，UI 线程开销明显）。
+        line_end = view.line(pt).b
+        limit = min(line_end, pt + 80)
+        tail = view.substr(sublime.Region(pt, limit))
+        # [^\W_] 等价于 str.isalnum() 的逐字符判断（Unicode 字母数字，
+        # 但不含下划线），与原逐字符 substr 行为完全一致。
+        m = re.match(r"[^\W_]+", tail)
+        end = pt + (m.end() if m else 1)
+        if end > max_pt:
+            end = max_pt
         region = sublime.Region(pt, end)
         is_err = d.get("sev_en") in ("error", "fatal error")
         if is_err:
@@ -2643,8 +2700,8 @@ def _show_local_signature(view, point, text, change_count):
         signature = info.signature or (u"%s(...)" % info.name)
         doc = None
         if info.param:
-            doc = u"arg %d/%d: %s" % (
-                info.arg_index + 1, info.arg_count, info.param)
+            doc = _msgf(u"arg %d/%d: %s", u"参数 %d/%d：%s",
+                        info.arg_index + 1, info.arg_count, info.param)
         view.run_command("ca_signature_popup",
                          {"got": {"lines": [(signature, True)],
                                   "doc": doc}})
@@ -3232,7 +3289,7 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
     def run(self, edit, sync=False):
         view = self.view
         if not _is_cpp(view):
-            view.set_status("ca_fmt", u"only C/C++ files are supported")
+            view.set_status("ca_fmt", _msg(u"only C/C++ files are supported", u"仅支持 C/C++ 文件"))
             return
         src = view.substr(sublime.Region(0, view.size()))
         if not src.strip():
@@ -3253,7 +3310,7 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
                         new_text, engine_name)
             return
 
-        view.set_status("ca_fmt", u"formatting...")
+        view.set_status("ca_fmt", _msg(u"formatting...", u"正在格式化..."))
 
         def worker():
             try:
@@ -3261,7 +3318,8 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
             except Exception as e:
                 _log_error("format document", e)
                 sublime.set_timeout(
-                    lambda: view.set_status("ca_fmt", u"format failed"),
+                    lambda: view.set_status(
+                        "ca_fmt", _msg(u"format failed", u"格式化失败")),
                     0)
                 return
             sublime.set_timeout(
@@ -3277,11 +3335,14 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
             if not view.is_valid():
                 return
             if view.change_count() != change_count:
-                view.set_status("ca_fmt", u"cancelled: buffer changed")
+                view.set_status("ca_fmt",
+                                _msg(u"cancelled: buffer changed",
+                                     u"已取消：缓冲区已更改"))
                 return
             if new_text == src:
-                view.set_status("ca_fmt",
-                                u"no changes, already jiangly style")
+                view.set_status("ca_fmt", _msg(
+                    u"no changes, already jiangly style",
+                    u"无需修改，已是 jiangly 风格"))
                 return
             view.run_command("ca_format_apply", {"text": new_text})
             last_row = view.rowcol(view.size())[0]
@@ -3290,7 +3351,8 @@ class CaFormatDocumentCommand(sublime_plugin.TextCommand):
             view.sel().add(sublime.Region(pt, pt))
             view.show_at_center(pt)
             view.set_status(
-                "ca_fmt", u"formatted with jiangly style (%s)" % engine_name)
+                "ca_fmt", _msgf(u"formatted with jiangly style (%s)",
+                                u"已按 jiangly 风格格式化（%s）", engine_name))
         except Exception as e:
             _log_error("format apply", e)
 
@@ -3330,7 +3392,7 @@ class CaFormatSelectionCommand(sublime_plugin.TextCommand):
     def run(self, edit, sync=False):
         view = self.view
         if not _is_cpp(view):
-            view.set_status("ca_fmt", u"only C/C++ files are supported")
+            view.set_status("ca_fmt", _msg(u"only C/C++ files are supported", u"仅支持 C/C++ 文件"))
             return
         selections = view.sel()
         if not selections:
@@ -3356,7 +3418,8 @@ class CaFormatSelectionCommand(sublime_plugin.TextCommand):
             self._apply(view, src, change_count, start_pt, end_pt, *result)
             return
 
-        view.set_status("ca_fmt", u"formatting selection...")
+        view.set_status("ca_fmt",
+                        _msg(u"formatting selection...", u"正在格式化选区..."))
 
         def worker():
             try:
@@ -3366,7 +3429,8 @@ class CaFormatSelectionCommand(sublime_plugin.TextCommand):
             except Exception as e:
                 _log_error("format selection", e)
                 sublime.set_timeout(
-                    lambda: view.set_status("ca_fmt", u"format failed"), 0)
+                    lambda: view.set_status(
+                        "ca_fmt", _msg(u"format failed", u"格式化失败")), 0)
                 return
             sublime.set_timeout(
                 lambda: self._apply(view, src, change_count, start_pt,
@@ -3397,10 +3461,11 @@ class CaFormatSelectionCommand(sublime_plugin.TextCommand):
             if not view.is_valid():
                 return
             if view.change_count() != change_count:
-                view.set_status("ca_fmt", u"cancelled: buffer changed")
+                view.set_status("ca_fmt", _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             if new_text == src:
-                view.set_status("ca_fmt", u"no changes in selection")
+                view.set_status("ca_fmt",
+                                _msg(u"no changes in selection", u"选区无需修改"))
                 return
             delta = len(new_text) - len(src)
             view.run_command("ca_format_apply", {"text": new_text})
@@ -3411,7 +3476,8 @@ class CaFormatSelectionCommand(sublime_plugin.TextCommand):
             view.sel().add(sublime.Region(new_start, new_end))
             view.show_at_center(new_start)
             view.set_status(
-                "ca_fmt", u"formatted selection with %s" % engine_name)
+                "ca_fmt", _msgf(u"formatted selection with %s",
+                                u"已用 %s 格式化选区", engine_name))
         except Exception as e:
             _log_error("format selection apply", e)
 
@@ -3483,7 +3549,9 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
             return
         symbol = view.substr(word_region).strip()
         if not re.match(r"^[A-Za-z_]\w*$", symbol):
-            view.set_status("ca_goto", u"no valid identifier under the cursor")
+            view.set_status("ca_goto",
+                            _msg(u"no valid identifier under the cursor",
+                                 u"光标下没有有效的标识符"))
             return
 
         # 优先取整段文本（不超 800KB），便于在全文搜索定义
@@ -3605,9 +3673,10 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
 
         if not candidates:
             window.run_command("goto_definition")
-            view.set_status("ca_goto",
-                            u"definition of '%s' not found "
-                            u"(local files and standard library)" % symbol)
+            view.set_status("ca_goto", _msgf(
+                u"definition of '%s' not found "
+                u"(local files and standard library)",
+                u"未找到“%s”的定义（本文件与标准库）", symbol))
             return
 
         def jump(idx):
@@ -3639,7 +3708,8 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
                                      sublime.ENCODED_POSITION)
                 except Exception:
                     view.set_status("ca_goto",
-                                    u"cannot open '%s'" % path)
+                                    _msgf(u"cannot open '%s'",
+                                          u"无法打开“%s”", path))
                 return
             # 3. 标准库符号提示（无路径可打开）
             if src in ("std_symbol", "std_header"):
@@ -3650,22 +3720,27 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
             jump(0)
             c = candidates[0]
             src_label = {
-                "local": u"This file", "open": u"Open file",
-                "file": u"Local header", "std_symbol": u"Standard library",
-                "std_header": u"System header",
-                "system_header_path": u"System header"
+                "local": _msg(u"This file", u"本文件"),
+                "open": _msg(u"Open file", u"已打开文件"),
+                "file": _msg(u"Local header", u"本地头文件"),
+                "std_symbol": _msg(u"Standard library", u"标准库"),
+                "std_header": _msg(u"System header", u"系统头文件"),
+                "system_header_path": _msg(u"System header", u"系统头文件")
             }.get(c[6], c[6])
             view.set_status("ca_goto",
-                            u"jumped to '%s' (%s)" % (symbol, src_label))
+                            _msgf(u"jumped to '%s' (%s)",
+                                  u"已跳转到“%s”（%s）", symbol, src_label))
             return
 
         shown = []
         for vid, path, line, col, label, preview, src, prio in candidates:
             src_label = {
-                "local": u"This file", "open": u"Open file",
-                "file": u"Local header", "std_symbol": u"Standard library",
-                "std_header": u"System header",
-                "system_header_path": u"System header"
+                "local": _msg(u"This file", u"本文件"),
+                "open": _msg(u"Open file", u"已打开文件"),
+                "file": _msg(u"Local header", u"本地头文件"),
+                "std_symbol": _msg(u"Standard library", u"标准库"),
+                "std_header": _msg(u"System header", u"系统头文件"),
+                "system_header_path": _msg(u"System header", u"系统头文件")
             }.get(src, src)
             if path:
                 where = os.path.basename(path)
@@ -3688,15 +3763,18 @@ class CaGotoDefinitionCommand(sublime_plugin.TextCommand):
 def _clangd_client_for(view, status_key):
     """取得已就绪的 clangd 客户端；不可用时在状态栏说明原因。"""
     if not _clangd_enabled():
-        view.set_status(status_key, u"clangd engine is disabled")
+        view.set_status(status_key,
+                        _msg(u"clangd engine is disabled", u"clangd 引擎未启用"))
         return None
     if not view.file_name():
-        view.set_status(status_key,
-                        u"save the file before using clangd features")
+        view.set_status(status_key, _msg(
+            u"save the file before using clangd features",
+            u"请先保存文件再使用 clangd 功能"))
         return None
     client = _get_clangd_client(view)
     if client is None or not client.is_ready():
-        view.set_status(status_key, u"clangd is not ready")
+        view.set_status(status_key,
+                        _msg(u"clangd is not ready", u"clangd 尚未就绪"))
         return None
     return client
 
@@ -3790,7 +3868,7 @@ def _apply_workspace_edit(view, edit, change_count):
         return (0, 0, u"clangd returned no edits")
     if view is not None and change_count is not None:
         if not view.is_valid() or view.change_count() != change_count:
-            return (0, 0, u"cancelled: buffer changed")
+            return (0, 0, _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
 
     pending_views = []
     pending_files = []
@@ -3853,11 +3931,13 @@ def _apply_edit_status(view, edit, change_count, status_key, title):
         view.set_status(status_key, error)
         return
     if changed == 0:
-        view.set_status(status_key, u"no changes from: %s" % title)
+        view.set_status(status_key,
+                        _msgf(u"no changes from: %s", u"“%s”未产生修改", title))
         return
     view.set_status(
-        status_key, u"applied '%s' (%d file(s), %d edit(s))"
-        % (title, changed, edits))
+        status_key, _msgf(u"applied '%s' (%d file(s), %d edit(s))",
+                          u"已应用“%s”（%d 个文件，%d 处修改）",
+                          title, changed, edits))
 
 
 def _location_start(loc):
@@ -3948,7 +4028,7 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
         view = self.view
         if not _is_cpp(view):
             view.set_status("ca_action",
-                            u"only C/C++ files are supported")
+                            _msg(u"only C/C++ files are supported", u"仅支持 C/C++ 文件"))
             return
         client = _clangd_client_for(view, "ca_action")
         if client is None:
@@ -3959,12 +4039,13 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
         region = selections[0]
         text = view.substr(sublime.Region(0, view.size()))
         if len(text) > _CLANGD_MAX_CHARS:
-            view.set_status("ca_action", u"file is too large for clangd")
+            view.set_status("ca_action", _msg(u"file is too large for clangd", u"文件过大，无法使用 clangd"))
             return
         fname = view.file_name()
         start, end = region.begin(), region.end()
         change_count = view.change_count()
-        view.set_status("ca_action", u"loading code actions...")
+        view.set_status("ca_action",
+                        _msg(u"loading code actions...", u"正在加载代码操作..."))
 
         def worker():
             try:
@@ -3983,7 +4064,7 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
             if not view.is_valid():
                 return
             if view.change_count() != change_count:
-                view.set_status("ca_action", u"cancelled: buffer changed")
+                view.set_status("ca_action", _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             if actions is None:
                 view.set_status(
@@ -3991,7 +4072,8 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
                 return
             if not actions:
                 view.set_status(
-                    "ca_action", u"no code actions at this position")
+                    "ca_action", _msg(u"no code actions at this position",
+                                      u"此位置没有可用的代码操作"))
                 return
             items = []
             for action in actions:
@@ -4028,7 +4110,8 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
         if command:
             self._run_command(view, command, change_count, title, client)
             return
-        view.set_status("ca_action", u"resolving code action...")
+        view.set_status("ca_action",
+                        _msg(u"resolving code action...", u"正在解析代码操作..."))
         raw = action.get("action") or {}
 
         def worker():
@@ -4048,7 +4131,7 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
             if not view.is_valid():
                 return
             if view.change_count() != change_count:
-                view.set_status("ca_action", u"cancelled: buffer changed")
+                view.set_status("ca_action", _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             if not resolved:
                 view.set_status(
@@ -4064,14 +4147,18 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
                 self._run_command(
                     view, command, change_count, title, client)
                 return
-            view.set_status("ca_action", u"this action returned no edits")
+            view.set_status("ca_action",
+                            _msg(u"this action returned no edits",
+                                 u"此操作未返回任何修改"))
         except Exception as e:
             _log_error("apply resolved code action", e)
 
     @staticmethod
     def _run_command(view, command, change_count, title, client):
         if not isinstance(command, dict):
-            view.set_status("ca_action", u"unsupported code action command")
+            view.set_status("ca_action",
+                            _msg(u"unsupported code action command",
+                                 u"不支持的代码操作命令"))
             return
         name = command.get("command") or u""
         arguments = command.get("arguments") or []
@@ -4082,11 +4169,13 @@ class CaCodeActionsCommand(sublime_plugin.TextCommand):
             return
         if not name or client is None:
             view.set_status(
-                "ca_action", u"unsupported clangd command: %s" % name)
+                "ca_action", _msgf(u"unsupported clangd command: %s",
+                                   u"不支持的 clangd 命令：%s", name))
             return
         # clangd.applyTweak 等命令通过 workspace/executeCommand 执行，
         # 编辑由服务端反向请求 workspace/applyEdit 送回。
-        view.set_status("ca_action", u"running %s..." % name)
+        view.set_status("ca_action",
+                        _msgf(u"running %s...", u"正在执行 %s...", name))
 
         def worker():
             try:
@@ -4126,7 +4215,7 @@ class CaRenameCommand(sublime_plugin.TextCommand):
         view = self.view
         if not _is_cpp(view):
             view.set_status("ca_rename",
-                            u"only C/C++ files are supported")
+                            _msg(u"only C/C++ files are supported", u"仅支持 C/C++ 文件"))
             return
         client = _clangd_client_for(view, "ca_rename")
         if client is None:
@@ -4167,9 +4256,9 @@ class CaRenameCommand(sublime_plugin.TextCommand):
         fname = view.file_name()
         text = view.substr(sublime.Region(0, view.size()))
         if len(text) > _CLANGD_MAX_CHARS:
-            view.set_status("ca_rename", u"file is too large for clangd")
+            view.set_status("ca_rename", _msg(u"file is too large for clangd", u"文件过大，无法使用 clangd"))
             return
-        view.set_status("ca_rename", u"renaming...")
+        view.set_status("ca_rename", _msg(u"renaming...", u"正在重命名..."))
 
         def worker():
             try:
@@ -4177,7 +4266,7 @@ class CaRenameCommand(sublime_plugin.TextCommand):
                     fname, text, point, new_name, timeout=3.0)
             except Exception as e:
                 _log_error("rename", e)
-                edit, error = None, u"rename failed"
+                edit, error = None, _msg(u"rename failed", u"重命名失败")
             sublime.set_timeout(
                 lambda: CaRenameCommand._finish(
                     view, edit, error, old_name, new_name, change_count), 0)
@@ -4190,14 +4279,17 @@ class CaRenameCommand(sublime_plugin.TextCommand):
             if not view.is_valid():
                 return
             if view.change_count() != change_count:
-                view.set_status("ca_rename", u"cancelled: buffer changed")
+                view.set_status("ca_rename", _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             if error:
                 view.set_status(
-                    "ca_rename", u"rename failed: %s" % error)
+                    "ca_rename", _msgf(u"rename failed: %s", u"重命名失败：%s",
+                                       error))
                 return
             if not edit:
-                view.set_status("ca_rename", u"clangd returned no edits")
+                view.set_status("ca_rename",
+                                _msg(u"clangd returned no edits",
+                                     u"clangd 未返回任何修改"))
                 return
             window = view.window()
             if window is None:
@@ -4208,8 +4300,9 @@ class CaRenameCommand(sublime_plugin.TextCommand):
                 view.set_status("ca_rename", err)
                 return
             view.set_status(
-                "ca_rename", u"renamed '%s' to '%s' (%d file(s), %d edit(s))"
-                % (old_name, new_name, changed, edits))
+                "ca_rename", _msgf(u"renamed '%s' to '%s' (%d file(s), %d edit(s))",
+                                   u"已将“%s”重命名为“%s”（%d 个文件，%d 处修改）",
+                                   old_name, new_name, changed, edits))
         except Exception as e:
             _log_error("rename apply", e)
 
@@ -4221,7 +4314,7 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
         view = self.view
         if not _is_cpp(view):
             view.set_status("ca_refs",
-                            u"only C/C++ files are supported")
+                            _msg(u"only C/C++ files are supported", u"仅支持 C/C++ 文件"))
             return
         client = _clangd_client_for(view, "ca_refs")
         if client is None:
@@ -4232,11 +4325,11 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
         point = selections[0].begin()
         text = view.substr(sublime.Region(0, view.size()))
         if len(text) > _CLANGD_MAX_CHARS:
-            view.set_status("ca_refs", u"file is too large for clangd")
+            view.set_status("ca_refs", _msg(u"file is too large for clangd", u"文件过大，无法使用 clangd"))
             return
         fname = view.file_name()
         change_count = view.change_count()
-        view.set_status("ca_refs", u"finding references...")
+        view.set_status("ca_refs", _msg(u"finding references...", u"正在查找引用..."))
 
         def worker():
             try:
@@ -4256,11 +4349,12 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
             if not view.is_valid():
                 return
             if view.change_count() != change_count:
-                view.set_status("ca_refs", u"cancelled: buffer changed")
+                view.set_status("ca_refs", _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             if refs is None:
                 view.set_status(
-                    "ca_refs", u"clangd did not return references")
+                    "ca_refs", _msg(u"clangd did not return references",
+                                    u"clangd 未返回引用"))
                 return
             # 去重：同一文件同一位置只显示一次
             seen = set()
@@ -4273,7 +4367,8 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
                 seen.add(key)
                 unique.append(loc)
             if not unique:
-                view.set_status("ca_refs", u"no references found")
+                view.set_status("ca_refs",
+                                _msg(u"no references found", u"未找到引用"))
                 return
             # 按文件分组：先按路径排序，再在每项前面标 [该文件第 n 个/共 m 个]，
             # quick panel 里同一文件的引用会连续出现，也保留了快速过滤。
@@ -4314,9 +4409,10 @@ class CaFindReferencesCommand(sublime_plugin.TextCommand):
                 window.show_quick_panel(
                     items, on_done, sublime.MONOSPACE_FONT)
             suffix = u"" if len(unique) <= len(shown) else \
-                u" (showing first %d)" % len(shown)
+                _msgf(u" (showing first %d)", u"（仅显示前 %d 条）", len(shown))
             view.set_status(
-                "ca_refs", u"%d reference(s)%s" % (len(unique), suffix))
+                "ca_refs", _msgf(u"%d reference(s)%s", u"共 %d 处引用%s",
+                                 len(unique), suffix))
         except Exception as e:
             _log_error("show references", e)
 
@@ -5116,8 +5212,9 @@ class CaCallHierarchyCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         view = self.view
         if not _is_cpp(view):
-            sublime.status_message(
-                "CppAssistant: only C/C++ files are supported")
+            sublime.status_message(_msg(
+                "CppAssistant: only C/C++ files are supported",
+                "CppAssistant：仅支持 C/C++ 文件"))
             return
         client = _clangd_client_for(view, self.STATUS_KEY)
         if client is None:
@@ -5129,7 +5226,7 @@ class CaCallHierarchyCommand(sublime_plugin.TextCommand):
         size = view.size()
         if size > _CLANGD_MAX_CHARS:
             view.set_status(self.STATUS_KEY,
-                            u"file is too large for clangd")
+                            _msg(u"file is too large for clangd", u"文件过大，无法使用 clangd"))
             return
         fname = view.file_name()
         text = view.substr(sublime.Region(0, size))
@@ -5154,7 +5251,7 @@ class CaCallHierarchyCommand(sublime_plugin.TextCommand):
                 return
             if view.change_count() != change_count:
                 view.set_status(self.STATUS_KEY,
-                                u"cancelled: buffer changed")
+                                _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             if not items:
                 view.set_status(self.STATUS_KEY, self.NO_SYMBOL_MESSAGE)
@@ -5198,7 +5295,7 @@ class CaCallHierarchyCommand(sublime_plugin.TextCommand):
                 return
             if view.change_count() != change_count:
                 view.set_status(self.STATUS_KEY,
-                                u"cancelled: buffer changed")
+                                _msg(u"cancelled: buffer changed", u"已取消：缓冲区已更改"))
                 return
             title = self.PREPARE_LABEL
             for direction in self.DIRECTIONS:

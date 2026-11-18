@@ -1012,6 +1012,7 @@ class ClangdClient(object):
                 "version": self._version_for(uri, True),
                 "text": text,
             }})
+        return True
 
     def change_document(self, path, text):
         uri = path_to_uri(path)
@@ -1019,21 +1020,27 @@ class ClangdClient(object):
         # 版本号推高，导致 publishDiagnostics 的 version 对不上，从而
         # 丢失 codeAction 的 diagnostics context。
         if self._doc_texts.get(uri) == text:
-            return
+            return False
         self._doc_texts[uri] = text
         self.notify("textDocument/didChange", {
             "textDocument": {"uri": uri,
                              "version": self._version_for(uri, True)},
             "contentChanges": [{"text": text}],  # 全量同步（客户端声明）
         })
+        return True
 
     def close_document(self, path):
         uri = path_to_uri(path)
         self.notify("textDocument/didClose",
                     {"textDocument": {"uri": uri}})
+        nu = _norm_uri(uri)
         self._doc_versions.pop(uri, None)
         self._doc_texts.pop(uri, None)
-        self._diagnostics_raw.pop(_norm_uri(uri), None)
+        self._diagnostics_raw.pop(nu, None)
+        # 同时清掉旧诊断与 preamble 标记：重开同一文件时若在新诊断到达前
+        # 就被渲染，不应拿到上一会话的陈旧诊断（XC-new-13）。
+        self._diagnostics.pop(nu, None)
+        self._preamble_ready.discard(nu)
 
     def has_document(self, path):
         return path_to_uri(path) in self._doc_versions

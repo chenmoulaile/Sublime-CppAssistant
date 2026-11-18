@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Localized overlay for CppAssistant's own menu entries.
+"""Localized overlay for CppAssistant's own menu and command-palette entries.
 
 Sublime Text has no menu translation API.  Menus from every package are
 merged by ``id``: a later entry with the same ``id`` may override the
-``caption`` of an earlier one.  We use that documented behavior to generate
-a tiny overlay package (``Packages/CppAssistantLocalization``) that only
-contains ids and translated captions.  The package's real ``Main.sublime-menu``
-stays untouched, and so do the user's own menu files.
+``caption`` of an earlier one.  Command-palette entries are merged the same
+way, keyed by ``command`` + ``args`` instead of ``id``.  We use that
+documented behavior to generate a tiny overlay package
+(``Packages/CppAssistantLocalization``) that carries only translated
+captions.  The package's real ``Main.sublime-menu`` and
+``CppAssistant.sublime-commands`` stay untouched, and so do the user's own
+files.
 
-The overlay is written even in English (as an empty list).  Rewriting the
-file makes Sublime reload the menu immediately, which means switching back
-to English does not leave stale Chinese captions behind until a restart.
+The overlay files are written even in English (as empty lists).  Rewriting
+the files makes Sublime reload the menus/palette immediately, which means
+switching back to English does not leave stale Chinese captions behind
+until a restart.
 """
 
 import json
@@ -25,6 +29,7 @@ except ImportError:  # allow unit tests outside Sublime Text
 OVERLAY_PACKAGE = "CppAssistantLocalization"
 MARKER = ".cppassistant-generated"
 MENU_FILE = "Main.sublime-menu"
+COMMANDS_FILE = "CppAssistant.sublime-commands"
 
 # English caption -> Chinese caption.  Unknown captions are left untouched so
 # a newly added menu item is still usable before its translation is added.
@@ -80,6 +85,64 @@ TRANSLATIONS_ZH = {
     "Key Bindings \u2013 User": u"用户快捷键",
 }
 
+# Full command-palette caption -> Chinese caption.  The "CppAssistant:" /
+# "Preferences:" prefixes follow Sublime's own naming convention and are
+# kept so captions stay searchable by package name.  Unknown captions are
+# left untouched so a newly added command is still usable before its
+# translation is added.  Entries keyed by "command" + "args" (e.g. the three
+# "Language - ..." variants) each get their own translated caption.
+COMMAND_TRANSLATIONS_ZH = {
+    u"CppAssistant: Format Document (jiangly style)":
+        u"CppAssistant: 格式化文档（jiangly 风格）",
+    u"CppAssistant: Format Selection": u"CppAssistant: 格式化选中",
+    u"CppAssistant: Go to Definition": u"CppAssistant: 跳转定义",
+    u"CppAssistant: Code Actions": u"CppAssistant: 代码操作",
+    u"CppAssistant: Rename Symbol": u"CppAssistant: 重命名符号",
+    u"CppAssistant: Find References": u"CppAssistant: 查找引用",
+    u"CppAssistant: Call Hierarchy": u"CppAssistant: 调用层级",
+    u"CppAssistant: Type Hierarchy": u"CppAssistant: 类型层级",
+    u"CppAssistant: Fix Full-width Punctuation": u"CppAssistant: 修复全角标点",
+    u"CppAssistant: Show Diagnostics": u"CppAssistant: 显示诊断",
+    u"CppAssistant: Copy Diagnostic": u"CppAssistant: 复制诊断",
+    u"CppAssistant: Browse Templates": u"CppAssistant: 浏览模板",
+    u"CppAssistant: Install Template Pack": u"CppAssistant: 安装模板包",
+    u"CppAssistant: Manage Templates": u"CppAssistant: 管理模板",
+    u"CppAssistant: Create User Snippet": u"CppAssistant: 创建用户片段",
+    u"CppAssistant: Manage User Snippets": u"CppAssistant: 管理用户片段",
+    u"CppAssistant: Edit User Snippets": u"CppAssistant: 编辑用户片段",
+    u"CppAssistant: Import Snippets": u"CppAssistant: 导入片段",
+    u"CppAssistant: Validate Settings": u"CppAssistant: 校验设置",
+    u"CppAssistant: Diagnostic Language - Chinese": u"CppAssistant: 诊断语言 - 中文",
+    u"CppAssistant: Diagnostic Language - English": u"CppAssistant: 诊断语言 - 英文",
+    u"CppAssistant: Diagnostic Language - Both": u"CppAssistant: 诊断语言 - 双语",
+    u"CppAssistant: Completion Mode - LSP-clangd Style":
+        u"CppAssistant: 补全模式 - LSP-clangd 风格",
+    u"CppAssistant: Completion Mode - Strict Prefix":
+        u"CppAssistant: 补全模式 - 严格前缀",
+    u"CppAssistant: Language - English": u"CppAssistant: 语言 - 英文",
+    u"CppAssistant: Language - \u7b80\u4f53\u4e2d\u6587":
+        u"CppAssistant: 语言 - \u7b80\u4f53\u4e2d\u6587",  # already Chinese
+    u"CppAssistant: Language - Bilingual": u"CppAssistant: 语言 - 双语",
+    u"CppAssistant: Completion Engine - clangd":
+        u"CppAssistant: 补全引擎 - clangd",
+    u"CppAssistant: Completion Engine - Auto": u"CppAssistant: 补全引擎 - 自动",
+    u"CppAssistant: Completion Engine - Built-in only (pure Python)":
+        u"CppAssistant: 补全引擎 - 仅内置（纯 Python）",
+    u"CppAssistant: Completion Engine Status": u"CppAssistant: 补全引擎状态",
+    u"CppAssistant: Toggle Inline Error Phantoms":
+        u"CppAssistant: 切换内联错误提示",
+    u"CppAssistant: Toggle Menu Language": u"CppAssistant: 切换菜单语言",
+    u"CppAssistant: Diagnostic Engine - clangd":
+        u"CppAssistant: 诊断引擎 - clangd",
+    u"CppAssistant: Diagnostic Engine - Compiler":
+        u"CppAssistant: 诊断引擎 - 编译器",
+    u"CppAssistant: Diagnostic Engine - libclang (PCH)":
+        u"CppAssistant: 诊断引擎 - libclang（PCH）",
+    u"Preferences: CppAssistant Settings": u"首选项: CppAssistant 设置",
+    u"Preferences: CppAssistant Key Bindings":
+        u"首选项: CppAssistant 快捷键",
+}
+
 
 def translate_caption(caption, lang):
     """Translate one caption; unknown captions are returned unchanged."""
@@ -123,6 +186,39 @@ def build_overlay(menu, lang="zh"):
     return out
 
 
+def translate_command_caption(caption, lang):
+    """Translate one command-palette caption; unknown ones are unchanged."""
+    if lang == "zh":
+        return COMMAND_TRANSLATIONS_ZH.get(caption, caption)
+    return caption
+
+
+def build_commands_overlay(commands, lang="zh"):
+    """Build the translated ``.sublime-commands`` overlay.
+
+    Sublime merges command-palette entries by ``command`` + ``args``: a
+    later-loaded entry with the same key overrides the earlier ``caption``.
+    We copy every field unchanged and replace only ``caption``, so each
+    overlay entry pairs with (and overrides) exactly one entry from the real
+    package file.  The "same command, different args" entries (the
+    ``Language - ...`` / ``... Engine - ...`` families) each keep their own
+    args and therefore stay distinct -- no duplicate entries are introduced.
+    """
+    if not isinstance(commands, list):
+        return []
+    out = []
+    for entry in commands:
+        if not isinstance(entry, dict):
+            continue
+        caption = entry.get("caption")
+        if caption is None:
+            continue
+        node = dict(entry)
+        node["caption"] = translate_command_caption(caption, lang)
+        out.append(node)
+    return out
+
+
 def load_package_menu():
     """Load the package's own Main.sublime-menu (zip or directory install)."""
     if sublime is not None:
@@ -137,6 +233,30 @@ def load_package_menu():
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         MENU_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def load_package_commands():
+    """Load the package's own commands file (zip or directory install)."""
+    if sublime is not None:
+        try:
+            text = sublime.load_resource(
+                "Packages/CppAssistant/" + COMMANDS_FILE)
+            data = json.loads(text)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        COMMANDS_FILE)
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -190,9 +310,9 @@ def _write_json(path, data):
 def apply_menu_language(lang, packages_path=None):
     """Write (or clear) the generated overlay package.
 
-    Returns ``(ok, error_message)``.  In English mode the overlay is an empty
-    list rather than a deleted directory, because rewriting the menu file is
-    what makes Sublime reload captions immediately.
+    Returns ``(ok, error_message)``.  In English mode both overlay files are
+    empty lists rather than a deleted directory, because rewriting the files
+    is what makes Sublime reload captions immediately.
     """
     lang = "zh" if lang == "zh" else "en"
     root = overlay_root(packages_path)
@@ -213,11 +333,17 @@ def apply_menu_language(lang, packages_path=None):
         if lang == "zh":
             menu = load_package_menu()
             if menu is None:
-                return False, "Cannot load CppAssistant/Main.sublime-menu"
+                return False, "Cannot load CppAssistant/" + MENU_FILE
             overlay = build_overlay(menu, "zh")
+            commands = load_package_commands()
+            if commands is None:
+                return False, "Cannot load CppAssistant/" + COMMANDS_FILE
+            command_overlay = build_commands_overlay(commands, "zh")
         else:
             overlay = []
+            command_overlay = []
         _write_json(os.path.join(root, MENU_FILE), overlay)
+        _write_json(os.path.join(root, COMMANDS_FILE), command_overlay)
         return True, ""
     except Exception as e:
         return False, str(e)

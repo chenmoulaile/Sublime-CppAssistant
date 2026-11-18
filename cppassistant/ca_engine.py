@@ -314,12 +314,18 @@ def _advance_line(st, line_text):
 def _linestates(key, ver, text):
     """每个版本只扫一遍全文，记录每行起始时的词法状态。性能关键。"""
     c = _LINESTATE_CACHE
-    # 命中：直接返回缓存的列表
-    if c["key"] == key and c["ver"] == ver and c["states"] is not None:
-        return c["states"]
-    # 命中：相同 text（罕见情况）也复用
-    if c["text"] is text and c["states"] is not None:
-        return c["states"]
+    if c["states"] is not None:
+        # 命中：调用方 (key, ver) 一致
+        if c["key"] == key and c["ver"] == ver:
+            return c["states"]
+        # 命中：文本逐字节相同。补全与即时检查常常在同一次编辑里对同一份
+        # 文本各调用一次，但传进来的 version 语义不同（change_count / crc32）
+        # 且每次按键都会变；按内容复用可以省掉全文 split + 逐行重扫。
+        # 用完整相等判断兜底，文本一旦变化绝不复用过期结果。
+        if c["text"] is text or c["text"] == text:
+            c["key"] = key
+            c["ver"] = ver
+            return c["states"]
     states = [dict(_CLEAN_STATE)]
     cur = dict(_CLEAN_STATE)
     # 单次 split + 单次逐行扫描

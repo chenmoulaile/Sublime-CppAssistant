@@ -145,7 +145,7 @@ class Analysis(object):
         "type_scopes", "includes", "using_std", "diags", "lex_diags",
         "comment_ranges", "line_starts", "line_states", "lex_ms", "parse_ms",
         "total_ms", "completion_cache", "text_len", "incremental",
-        "reused_tokens", "auto_types",
+        "reused_tokens", "auto_types", "parser_checkpoint",
     )
 
     def __init__(self):
@@ -175,6 +175,8 @@ class Analysis(object):
         self.incremental = False
         self.reused_tokens = 0
         self.auto_types = None
+        # Prefix parser snapshot used to resume parsing after a small edit.
+        self.parser_checkpoint = None
 
     def scope_at(self, offset):
         """Innermost scope containing ``offset`` (best effort)."""
@@ -963,6 +965,51 @@ def _pp_diags(text, tokens):
 # Parser
 # ---------------------------------------------------------------------------
 
+def _clone_scope(scope, memo):
+    """Copy a Scope (and everything reachable from it) using ``memo``.
+
+    A hand-written clone is dramatically cheaper than ``copy.deepcopy`` on
+    the thousands of small ``__slots__`` objects in a parser snapshot, while
+    the memo keeps shared references (global scope, symbol scopes, type
+    scopes, token scopes) aliased exactly as in the original graph.
+    """
+    key = id(scope)
+    hit = memo.get(key)
+    if hit is not None:
+        return hit
+    new = Scope(scope.kind, scope.name, scope.start, scope.end, None)
+    memo[key] = new
+    new.parent = _clone_scope(scope.parent, memo) if \
+        scope.parent is not None else None
+    new.children = [_clone_scope(c, memo) for c in scope.children]
+    new.symbols = [_clone_symbol(s, memo) for s in scope.symbols]
+    by_name = {}
+    for name, syms in scope.by_name.items():
+        by_name[name] = [_clone_symbol(s, memo) for s in syms]
+    new.by_name = by_name
+    new.open_index = scope.open_index
+    new.close_index = scope.close_index
+    new.base_types = list(scope.base_types)
+    return new
+
+
+def _clone_symbol(sym, memo):
+    key = id(sym)
+    hit = memo.get(key)
+    if hit is not None:
+        return hit
+    new = Symbol(sym.name, sym.kind, sym.type, sym.signature, sym.offset,
+                 sym.name_offset, sym.line, sym.col, None, sym.is_definition,
+                 None, None, sym.end_offset, sym.array_size, sym.array_sizes)
+    memo[key] = new
+    new.scope = _clone_scope(sym.scope, memo) if \
+        sym.scope is not None else None
+    new.params = [_clone_symbol(p, memo) for p in sym.params]
+    new.target_scope = (_clone_scope(sym.target_scope, memo)
+                        if sym.target_scope is not None else None)
+    return new
+
+
 class _Parser(object):
     """Tolerant structural parser over the FastEngine token stream."""
 
@@ -988,6 +1035,7 @@ class _Parser(object):
         self.using_std = False
         self.diags = []
         self._pp_if_stack = []
+        self.checkpoint = None
         self._compute_matches()
 
     # -- small helpers -----------------------------------------------------
@@ -1101,12 +1149,108 @@ class _Parser(object):
 
     # -- main build --------------------------------------------------------
 
-    def build(self):
-        stack = [self.global_scope]
-        stmt_start = 0
-        paren_depth = 0
-        i = 0
+    def build(self, capture_at=None):
+        """Parse the whole token stream.
+
+        ``capture_at`` optionally records a *deep-copied* snapshot of the
+        parser state just before token ``capture_at`` is consumed.  The
+        snapshot lets a later, slightly edited buffer resume parsing from
+        that token instead of rebuilding the entire symbol table.
+        """
+        self.checkpoint = None
+        return self._build(0, [self.global_scope], 0, 0, capture_at)
+
+    def build_from(self, start, stack, stmt_start, paren_depth,
+                   capture_at=None):
+        """Continue parsing at ``start`` from a captured prefix state."""
+        self.checkpoint = None
+        return self._build(start, list(stack), stmt_start, paren_depth,
+                           capture_at)
+
+    def _capture(self, index, stack, stmt_start, paren_depth):
+        """Snapshot the state after consuming tokens ``0 .. index - 1``.
+
+        Only the parser's symbol/scope graph is copied.  ``text`` and
+        ``tokens`` stay shared (the caller passes the new ones when the
+        snapshot is resumed).  A memoised hand-written clone keeps aliasing
+        between scopes, symbols and the lookup tables intact, so resuming
+        can never mutate the analysis the snapshot came from -- without the
+        huge cost of a generic ``copy.deepcopy``.
+        """
+        memo = {}
+        global_scope = _clone_scope(self.global_scope, memo)
+        new_stack = tuple(_clone_scope(s, memo) for s in stack)
+        new_scopes = [_clone_scope(s, memo) for s in self.scopes]
+        new_symbols = [_clone_symbol(s, memo) for s in self.symbols]
+        new_by_name = {}
+        for name, syms in self.by_name.items():
+            new_by_name[name] = [_clone_symbol(s, memo) for s in syms]
+        new_type_scopes = {}
+        for name, sc in self.type_scopes.items():
+            new_type_scopes[name] = _clone_scope(sc, memo)
+        new_token_scope = [
+            _clone_scope(s, memo) if s is not None else None
+            for s in self.token_scope[:index]]
+        self.checkpoint = {
+            "index": index,
+            "stack": new_stack,
+            "stmt_start": stmt_start,
+            "paren_depth": paren_depth,
+            "global_scope": global_scope,
+            "scopes": new_scopes,
+            "symbols": new_symbols,
+            "by_name": new_by_name,
+            "type_scopes": new_type_scopes,
+            "type_names": set(self.type_names),
+            "macro_names": set(self.macro_names),
+            "includes": list(self.includes),
+            "using_std": self.using_std,
+            # Diagnostic objects are immutable once created; copying the
+            # list is enough to keep later appends out of the snapshot.
+            "diags": list(self.diags),
+            "array_decl_brackets": set(self.array_decl_brackets),
+            "token_scope": new_token_scope,
+            "pp_if_stack": list(self._pp_if_stack),
+        }
+
+    @classmethod
+    def from_checkpoint(cls, text, tokens, line_starts, cp):
+        """Create a parser initialised from a captured prefix snapshot."""
+        p = cls.__new__(cls)
+        p.text = text
+        p.tokens = tokens
+        p.n = len(tokens)
+        p.line_starts = line_starts
+        p.match = {}
+        p.checkpoint = None
+        p.array_decl_brackets = cp["array_decl_brackets"]
+        prefix_scope = cp["token_scope"]
+        p.token_scope = list(prefix_scope) + [None] * (p.n - len(prefix_scope))
+        p.scopes = cp["scopes"]
+        p.global_scope = cp["global_scope"]
+        # 克隆出的 global_scope.end 仍是旧文本长度；全量路径在 __init__ 里
+        # 用 len(text) 构造 global scope，而 _build 收尾只更新 stack[1:]，
+        # 所以这里必须显式按新文本刷新，否则全局符号 end_offset 陈旧，
+        # _array_symbol_at 会因为 use_offset > scope.end 漏掉全局数组。
+        p.global_scope.end = len(text)
+        p.symbols = cp["symbols"]
+        p.by_name = cp["by_name"]
+        p.type_scopes = cp["type_scopes"]
+        p.type_names = cp["type_names"]
+        p.macro_names = cp["macro_names"]
+        p.includes = cp["includes"]
+        p.using_std = cp["using_std"]
+        p.diags = cp["diags"]
+        p._pp_if_stack = cp["pp_if_stack"]
+        # Bracket pairs are cheap to recompute and depend on the *new* token
+        # stream (matches spanning the edit boundary may have changed).
+        p._compute_matches()
+        return p, cp["stack"], cp["stmt_start"], cp["paren_depth"], cp["index"]
+
+    def _build(self, i, stack, stmt_start, paren_depth, capture_at=None):
         while i < self.n:
+            if capture_at is not None and i == capture_at:
+                self._capture(i, stack, stmt_start, paren_depth)
             tok = self.tokens[i]
             s = self.text[tok.start:tok.end]
             scope = stack[-1]
@@ -2318,10 +2462,17 @@ def _decl_pattern(name):
 class FastEngine(object):
     """Incremental, zero-dependency C++ indexer."""
 
-    def __init__(self, cache_limit=6):
+    def __init__(self, cache_limit=16):
         self.cache_limit = cache_limit
         self._cache = {}
         self._order = []
+        # Secondary cache keyed by (length, hash) of the text.  Completion
+        # and diagnostics pass different cache_key/version semantics even
+        # though they analyse the very same buffer; this cache lets them
+        # share one analysis.  Entries are verified by full text equality,
+        # so a changed buffer can never reuse a stale result.
+        self._text_cache = {}
+        self._text_order = []
         self._check_cache = {}
         self._check_order = []
         self.stats = {
@@ -2340,6 +2491,8 @@ class FastEngine(object):
     def clear(self):
         self._cache.clear()
         self._order = []
+        self._text_cache.clear()
+        self._text_order = []
         self._check_cache.clear()
         self._check_order = []
 
@@ -2359,17 +2512,41 @@ class FastEngine(object):
             old = self._order.pop(0)
             self._cache.pop(old, None)
 
+    def _store_text(self, sig, analysis):
+        if sig in self._text_cache:
+            try:
+                self._text_order.remove(sig)
+            except ValueError:
+                pass
+        self._text_cache[sig] = analysis
+        self._text_order.append(sig)
+        while len(self._text_order) > self.cache_limit:
+            old = self._text_order.pop(0)
+            self._text_cache.pop(old, None)
+
     # -- analysis ----------------------------------------------------------
 
+    def _text_sig(self, text):
+        return (len(text), hash(text))
+
     def analyze(self, text, cache_key=None, version=None):
+        # Text-content cache first: completion and diagnostics analyse the
+        # same buffer with unrelated cache_key/version values.  Reuse the
+        # latest analysis whenever the text is byte-for-byte identical.
+        sig = self._text_sig(text)
+        cached = self._text_cache.get(sig)
+        if cached is not None and \
+                (cached.text is text or cached.text == text):
+            cached.version = version
+            if cache_key is not None and self._cache.get(cache_key) is not cached:
+                self._store(cache_key, cached)
+            return cached
+
         if cache_key is None:
             return self._full(text, None, version)
         old = self._cache.get(cache_key)
         if old is not None:
-            if old.text is text:
-                old.version = version
-                return old
-            if old.text_len == len(text) and old.text == text:
+            if old.text is text or old.text == text:
                 old.version = version
                 return old
             if old.version == version:
@@ -2377,12 +2554,14 @@ class FastEngine(object):
                 old.text = text
                 old.text_len = len(text)
                 return old
-            return self._incremental(old, text, cache_key, version)
-        analysis = self._full(text, cache_key, version)
+            analysis = self._incremental(old, text, cache_key, version)
+        else:
+            analysis = self._full(text, cache_key, version)
         self._store(cache_key, analysis)
+        self._store_text(sig, analysis)
         return analysis
 
-    def _full(self, text, key, version):
+    def _full(self, text, key, version, capture_at=None):
         t0 = time.perf_counter()
         starts = _line_starts(text)
         states = [_NORMAL_STATE] * (len(starts) + 1)
@@ -2392,7 +2571,7 @@ class FastEngine(object):
         t1 = time.perf_counter()
         bracket = _bracket_diags(text, tokens)
         parser = _Parser(text, tokens, starts)
-        parser.build()
+        parser.build(capture_at=capture_at)
         t2 = time.perf_counter()
         a = Analysis()
         a.text = text
@@ -2417,6 +2596,7 @@ class FastEngine(object):
         a.includes = parser.includes
         a.using_std = parser.using_std
         a.token_scope = parser.token_scope
+        a.parser_checkpoint = parser.checkpoint
         a.lex_ms = (t1 - t0) * 1000.0
         a.parse_ms = (t2 - t1) * 1000.0
         a.total_ms = (t2 - t0) * 1000.0
@@ -2482,8 +2662,22 @@ class FastEngine(object):
         lex_diags = kept_lex + new_diags
         comments = kept_comments + new_comments
         bracket = _bracket_diags(text, tokens)
-        parser = _Parser(text, tokens, new_starts)
-        parser.build()
+
+        # Resume the parser from the previous analysis' prefix snapshot when
+        # the edit starts at the very same token boundary.  Consecutive
+        # keystrokes at one cursor almost always do, so only the handful of
+        # tokens after the edit get re-parsed.  A snapshot is always captured
+        # at this boundary so the next keystroke can resume again.
+        kept_count = len(kept_tokens)
+        cp = getattr(old, "parser_checkpoint", None)
+        if cp is not None and cp["index"] == kept_count:
+            parser, stack, stmt_start, paren_depth, resume_at = \
+                _Parser.from_checkpoint(text, tokens, new_starts, cp)
+            parser.build_from(resume_at, stack, stmt_start, paren_depth,
+                              capture_at=resume_at)
+        else:
+            parser = _Parser(text, tokens, new_starts)
+            parser.build(capture_at=kept_count)
         t1 = time.perf_counter()
 
         a = Analysis()
@@ -2509,6 +2703,7 @@ class FastEngine(object):
         a.includes = parser.includes
         a.using_std = parser.using_std
         a.token_scope = parser.token_scope
+        a.parser_checkpoint = parser.checkpoint
         a.incremental = True
         a.reused_tokens = len(kept_tokens)
         a.lex_ms = (t1 - t0) * 1000.0
@@ -2518,7 +2713,6 @@ class FastEngine(object):
         self.stats["incremental"] += 1
         self.stats["last_ms"] = a.total_ms
         self.stats["reused_tokens"] = len(kept_tokens)
-        self._store(key, a)
         return a
 
     # -- completion --------------------------------------------------------
