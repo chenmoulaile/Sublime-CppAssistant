@@ -1006,16 +1006,21 @@ class ClangdClient(object):
                 # last diagnostics snapshot. Some servers omit version; keep
                 # accepting those for compatibility while the document is open.
                 if incoming_version is not None:
-                    try:
-                        incoming_version = int(incoming_version)
-                        if (current_version is not None and
-                                incoming_version < current_version):
-                            return
-                        if (previous_version is not None and
-                                incoming_version < previous_version):
-                            return
-                    except (TypeError, ValueError):
-                        incoming_version = None
+                    # LSP document versions are integers. Do not silently
+                    # treat malformed version metadata as an unversioned
+                    # notification, since that would bypass stale-result
+                    # protection.
+                    if (isinstance(incoming_version, bool) or
+                            not isinstance(incoming_version, int)):
+                        return
+                    # Diagnostics must describe the exact open revision.
+                    # A future version is invalid too: accepting it can
+                    # poison the cache and reject subsequent valid updates.
+                    if incoming_version != current_version:
+                        return
+                    if (previous_version is not None and
+                            incoming_version < previous_version):
+                        return
                 self._preamble_ready.add(nu)
                 self._diagnostics[nu] = items
                 raw = [d for d in (params.get("diagnostics") or [])
