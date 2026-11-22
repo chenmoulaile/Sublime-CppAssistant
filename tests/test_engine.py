@@ -246,6 +246,42 @@ class ClangdHelperTests(unittest.TestCase):
             client.diagnostics_for(path)[0][3],
             "diagnostic for reopened document")
 
+    def test_publish_diagnostics_rejects_future_and_invalid_versions(self):
+        client = ca_clangd.ClangdClient("", [], None)
+        path = os.path.join(tempfile.gettempdir(), "ca-invalid-version.cpp")
+        uri = ca_clangd.path_to_uri(path)
+        client.open_document(path, "int current;")
+        current_version = client._doc_versions[uri]
+
+        def publish(version, message):
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "version": version,
+                    "diagnostics": [{
+                        "range": {"start": {"line": 0, "character": 0},
+                                  "end": {"line": 0, "character": 1}},
+                        "severity": 1,
+                        "message": message,
+                    }],
+                },
+            }
+            client._dispatch(json.dumps(payload).encode("utf-8"))
+
+        # A future version must not be allowed to poison the diagnostics cache.
+        publish(current_version + 1, "future error")
+        self.assertIsNone(client.diagnostics_for(path))
+
+        # Malformed version metadata must not be downgraded to "no version".
+        publish("not-an-integer", "malformed version error")
+        self.assertIsNone(client.diagnostics_for(path))
+
+        # The valid result for the current revision must still be accepted.
+        publish(current_version, "current error")
+        self.assertEqual(client.diagnostics_for(path)[0][3], "current error")
+
     def test_parse_publish_diagnostics_uses_top_level_uri(self):
         uri, items = ca_clangd.parse_publish_diagnostics({
             "uri": "file:///a.cpp",
