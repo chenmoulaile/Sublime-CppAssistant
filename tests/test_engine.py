@@ -206,20 +206,6 @@ class ClangdHelperTests(unittest.TestCase):
         client = ca_clangd.ClangdClient("", [], None)
         path = os.path.join(tempfile.gettempdir(), "ca-reopen.cpp")
         uri = ca_clangd.path_to_uri(path)
-        client.open_document(path, "int old;")
-        first_version = client._doc_versions[uri]
-        client.change_document(path, "int current;")
-        second_version = client._doc_versions[uri]
-        self.assertGreater(second_version, first_version)
-
-        client.close_document(path)
-        self.assertNotIn(uri, client._doc_versions)
-        publish(second_version, "diagnostic arriving after didClose")
-        self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
-
-        client.open_document(path, "int reopened;")
-        reopened_version = client._doc_versions[uri]
-        self.assertGreater(reopened_version, second_version)
 
         def publish(version, message):
             payload = {
@@ -237,6 +223,21 @@ class ClangdHelperTests(unittest.TestCase):
                 },
             }
             client._dispatch(json.dumps(payload).encode("utf-8"))
+
+        client.open_document(path, "int old;")
+        first_version = client._doc_versions[uri]
+        client.change_document(path, "int current;")
+        second_version = client._doc_versions[uri]
+        self.assertGreater(second_version, first_version)
+
+        client.close_document(path)
+        self.assertNotIn(uri, client._doc_versions)
+        publish(second_version, "diagnostic arriving after didClose")
+        self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
+
+        client.open_document(path, "int reopened;")
+        reopened_version = client._doc_versions[uri]
+        self.assertGreater(reopened_version, second_version)
 
         publish(second_version, "late diagnostic from previous session")
         self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
