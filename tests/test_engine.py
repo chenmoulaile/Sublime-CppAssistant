@@ -214,6 +214,9 @@ class ClangdHelperTests(unittest.TestCase):
 
         client.close_document(path)
         self.assertNotIn(uri, client._doc_versions)
+        publish(second_version, "diagnostic arriving after didClose")
+        self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
+
         client.open_document(path, "int reopened;")
         reopened_version = client._doc_versions[uri]
         self.assertGreater(reopened_version, second_version)
