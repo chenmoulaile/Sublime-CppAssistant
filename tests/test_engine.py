@@ -6,6 +6,7 @@ Run from the repository root:
     python -m unittest discover -s tests -v
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -163,6 +164,123 @@ class ClangdHelperTests(unittest.TestCase):
         self.assertTrue(actions[0]["preferred"])
         self.assertEqual(actions[0]["kind"], "quickfix")
         self.assertEqual(actions[1]["disabled"], "no symbol")
+
+    def test_publish_diagnostics_discards_stale_document_versions(self):
+        client = ca_clangd.ClangdClient("", [], None)
+        uri = ca_clangd.path_to_uri(os.path.join(tempfile.gettempdir(),
+                                                 "ca-stale.cpp"))
+        client._doc_versions[uri] = 2
+
+        def publish(version, message):
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "version": version,
+                    "diagnostics": [{
+                        "range": {"start": {"line": 0, "character": 0},
+                                  "end": {"line": 0, "character": 1}},
+                        "severity": 1,
+                        "message": message,
+                    }],
+                },
+            }
+            client._dispatch(json.dumps(payload).encode("utf-8"))
+
+        # A result for the previous buffer revision must not be displayed.
+        publish(1, "old error")
+        self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
+
+        publish(2, "current error")
+        self.assertEqual(client.diagnostics_for(os.path.join(
+            tempfile.gettempdir(), "ca-stale.cpp"))[0][3], "current error")
+
+        # Even if the document version has moved on, a late older result
+        # must not overwrite the current diagnostics snapshot.
+        publish(1, "resurrected old error")
+        self.assertEqual(client.diagnostics_for(os.path.join(
+            tempfile.gettempdir(), "ca-stale.cpp"))[0][3], "current error")
+
+    def test_document_version_remains_monotonic_after_reopen(self):
+        client = ca_clangd.ClangdClient("", [], None)
+        path = os.path.join(tempfile.gettempdir(), "ca-reopen.cpp")
+        uri = ca_clangd.path_to_uri(path)
+
+        def publish(version, message):
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "version": version,
+                    "diagnostics": [{
+                        "range": {"start": {"line": 0, "character": 0},
+                                  "end": {"line": 0, "character": 1}},
+                        "severity": 1,
+                        "message": message,
+                    }],
+                },
+            }
+            client._dispatch(json.dumps(payload).encode("utf-8"))
+
+        client.open_document(path, "int old;")
+        first_version = client._doc_versions[uri]
+        client.change_document(path, "int current;")
+        second_version = client._doc_versions[uri]
+        self.assertGreater(second_version, first_version)
+
+        client.close_document(path)
+        self.assertNotIn(uri, client._doc_versions)
+        publish(second_version, "diagnostic arriving after didClose")
+        self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
+
+        client.open_document(path, "int reopened;")
+        reopened_version = client._doc_versions[uri]
+        self.assertGreater(reopened_version, second_version)
+
+        publish(second_version, "late diagnostic from previous session")
+        self.assertNotIn(ca_clangd._norm_uri(uri), client._diagnostics)
+        publish(reopened_version, "diagnostic for reopened document")
+        self.assertEqual(
+            client.diagnostics_for(path)[0][3],
+            "diagnostic for reopened document")
+
+    def test_publish_diagnostics_rejects_future_and_invalid_versions(self):
+        client = ca_clangd.ClangdClient("", [], None)
+        path = os.path.join(tempfile.gettempdir(), "ca-invalid-version.cpp")
+        uri = ca_clangd.path_to_uri(path)
+        client.open_document(path, "int current;")
+        current_version = client._doc_versions[uri]
+
+        def publish(version, message):
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "version": version,
+                    "diagnostics": [{
+                        "range": {"start": {"line": 0, "character": 0},
+                                  "end": {"line": 0, "character": 1}},
+                        "severity": 1,
+                        "message": message,
+                    }],
+                },
+            }
+            client._dispatch(json.dumps(payload).encode("utf-8"))
+
+        # A future version must not be allowed to poison the diagnostics cache.
+        publish(current_version + 1, "future error")
+        self.assertIsNone(client.diagnostics_for(path))
+
+        # Malformed version metadata must not be downgraded to "no version".
+        publish("not-an-integer", "malformed version error")
+        self.assertIsNone(client.diagnostics_for(path))
+
+        # The valid result for the current revision must still be accepted.
+        publish(current_version, "current error")
+        self.assertEqual(client.diagnostics_for(path)[0][3], "current error")
 
     def test_parse_publish_diagnostics_uses_top_level_uri(self):
         uri, items = ca_clangd.parse_publish_diagnostics({

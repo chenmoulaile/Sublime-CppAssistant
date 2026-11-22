@@ -670,7 +670,10 @@ class ClangdClient(object):
         self._wlock = threading.Lock()
         self._pending = {}      # id -> {"event": Event, "resp": dict|None}
         self._idgen = [0]
-        self._doc_versions = {}  # uri -> int
+        self._doc_versions = {}  # uri -> 当前打开文档的版本
+        # 关闭再打开同一 URI 时也保持单调递增，避免旧会话的异步诊断
+        # 与新会话重置到 version=1 后发生版本号碰撞。
+        self._doc_version_counters = {}  # uri -> 最近分配的版本（跨 close 保留）
         self._doc_texts = {}     # uri -> 最近一次同步的全文
         # 已收到 publishDiagnostics 的 uri 集合：首次诊断到达 ≈ 该文件的
         # preamble 构建完成（大标准 + bits/stdc++.h 冷启动可达 10s+，
@@ -983,11 +986,46 @@ class ClangdClient(object):
             uri, items = parse_publish_diagnostics(params)
             if uri:
                 nu = _norm_uri(uri)
+                incoming_version = params.get("version")
+                current_version = None
+                for doc_uri, doc_version in self._doc_versions.items():
+                    if _norm_uri(doc_uri) == nu:
+                        current_version = doc_version
+                        break
+                # Diagnostics for a closed document must not repopulate
+                # the cache after didClose. URI normalization above allows
+                # clangd's canonicalized file URI to match the active buffer.
+                if current_version is None:
+                    return
+                previous = self._diagnostics_raw.get(nu)
+                previous_version = previous[0] if previous else None
+                # LSP notifications can be queued while clangd is parsing. An
+                # older publishDiagnostics may arrive after didChange for a
+                # newer buffer revision and resurrect an error the user fixed.
+                # Reject versions older than either the open document or the
+                # last diagnostics snapshot. Some servers omit version; keep
+                # accepting those for compatibility while the document is open.
+                if incoming_version is not None:
+                    # LSP document versions are integers. Do not silently
+                    # treat malformed version metadata as an unversioned
+                    # notification, since that would bypass stale-result
+                    # protection.
+                    if (isinstance(incoming_version, bool) or
+                            not isinstance(incoming_version, int)):
+                        return
+                    # Diagnostics must describe the exact open revision.
+                    # A future version is invalid too: accepting it can
+                    # poison the cache and reject subsequent valid updates.
+                    if incoming_version != current_version:
+                        return
+                    if (previous_version is not None and
+                            incoming_version < previous_version):
+                        return
                 self._preamble_ready.add(nu)
                 self._diagnostics[nu] = items
                 raw = [d for d in (params.get("diagnostics") or [])
                        if isinstance(d, dict)]
-                self._diagnostics_raw[nu] = (params.get("version"), raw)
+                self._diagnostics_raw[nu] = (incoming_version, raw)
         if method and self.on_notify is not None:
             try:
                 self.on_notify(method, msg.get("params"))
@@ -997,8 +1035,10 @@ class ClangdClient(object):
     # ---- 文档同步 ----
 
     def _version_for(self, uri, bump):
-        cur = self._doc_versions.get(uri, 0)
+        cur = self._doc_version_counters.get(
+            uri, self._doc_versions.get(uri, 0))
         nxt = cur + 1 if bump else cur
+        self._doc_version_counters[uri] = nxt
         self._doc_versions[uri] = nxt
         return nxt
 
