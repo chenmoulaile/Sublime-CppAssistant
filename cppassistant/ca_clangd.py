@@ -992,6 +992,11 @@ class ClangdClient(object):
                     if _norm_uri(doc_uri) == nu:
                         current_version = doc_version
                         break
+                # Diagnostics for a closed document must not repopulate
+                # the cache after didClose. URI normalization above allows
+                # clangd's canonicalized file URI to match the active buffer.
+                if current_version is None:
+                    return
                 previous = self._diagnostics_raw.get(nu)
                 previous_version = previous[0] if previous else None
                 # LSP notifications can be queued while clangd is parsing. An
@@ -999,7 +1004,7 @@ class ClangdClient(object):
                 # newer buffer revision and resurrect an error the user fixed.
                 # Reject versions older than either the open document or the
                 # last diagnostics snapshot. Some servers omit version; keep
-                # accepting those for compatibility.
+                # accepting those for compatibility while the document is open.
                 if incoming_version is not None:
                     try:
                         incoming_version = int(incoming_version)
