@@ -670,7 +670,10 @@ class ClangdClient(object):
         self._wlock = threading.Lock()
         self._pending = {}      # id -> {"event": Event, "resp": dict|None}
         self._idgen = [0]
-        self._doc_versions = {}  # uri -> int
+        self._doc_versions = {}  # uri -> 当前打开文档的版本
+        # 关闭再打开同一 URI 时也保持单调递增，避免旧会话的异步诊断
+        # 与新会话重置到 version=1 后发生版本号碰撞。
+        self._doc_version_counters = {}  # uri -> 最近分配的版本（跨 close 保留）
         self._doc_texts = {}     # uri -> 最近一次同步的全文
         # 已收到 publishDiagnostics 的 uri 集合：首次诊断到达 ≈ 该文件的
         # preamble 构建完成（大标准 + bits/stdc++.h 冷启动可达 10s+，
@@ -1022,8 +1025,10 @@ class ClangdClient(object):
     # ---- 文档同步 ----
 
     def _version_for(self, uri, bump):
-        cur = self._doc_versions.get(uri, 0)
+        cur = self._doc_version_counters.get(
+            uri, self._doc_versions.get(uri, 0))
         nxt = cur + 1 if bump else cur
+        self._doc_version_counters[uri] = nxt
         self._doc_versions[uri] = nxt
         return nxt
 
