@@ -3,6 +3,41 @@
 All notable changes to CppAssistant are documented here. The project follows
 semantic versioning; Package Control installs the newest tag.
 
+## v2.3.6 — 2026-11-22
+
+### Fixed
+
+- **Stale diagnostics after deleting an error.** In compiler mode, a cache hit
+  no longer skips invalidating the in-flight compile, so a late old build
+  cannot bring a deleted error back. In clangd mode, edits now push a debounced
+  `didChange` and clear stale diagnostics only when the text really changed.
+  Closing a file now drops cached clangd diagnostics too.
+- **Correctness hardening across the plugin:** case-only snippet renames no
+  longer delete files on Windows; F12 works in unsaved buffers; the
+  `#include` auto-insert runs on the UI thread; macro goto-definition,
+  chained-subscript and multi-level-alias completion, template/comparison
+  argument parsing, hexadecimal-float formatting, CRLF continuations and four
+  bundled C++ templates (KMP, Aho-Corasick, Manacher, min-cost flow) were fixed.
+
+### Performance
+
+- **Noticeably smoother typing.** Incremental analysis now reuses a parser
+  prefix checkpoint instead of rebuilding the whole parser each keystroke, and
+  completion/diagnostics share one analysis cache — roughly 5x faster at 30 KB
+  and 9x at 80 KB per keystroke. The instant check debounce is 60 ms for quick
+  feedback while the full compiler check is 0.5 s to avoid g++ CPU spikes.
+
+### Changed
+
+- More UI hints (format / rename / references / code actions / goto / clangd
+  / argument hints) now follow `display_language`; command-palette captions are
+  translated through an overlay package.
+- Added a template compile smoke test, runtime regressions and a Windows CI job.
+
+### Tests
+
+- 257 tests pass.
+
 ## v2.3.5 — 2026-11-16
 
 ### Performance

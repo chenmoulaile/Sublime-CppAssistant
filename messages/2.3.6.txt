@@ -1,0 +1,17 @@
+CppAssistant 2.3.6
+
+- Fixed stale error markers: deleting a wrong line now clears its diagnostics
+  right away, in both compiler and clangd modes. No more red squiggles that
+  linger after the error is gone.
+- Typing is noticeably smoother: the parser now resumes from a prefix snapshot
+  instead of re-parsing the whole file on every keystroke, and completion and
+  diagnostics share one analysis (~5x faster at 30 KB, ~9x at 80 KB).
+- Full compiler checks run after 0.5s idle and the instant check reacts in 60ms,
+  so you get quick feedback without a g++ process starting on every key.
+- More Chinese UI hints (format/rename/references/code actions/goto/clangd and
+  argument tips), including translated command-palette captions.
+- Many correctness fixes: Windows case-only snippet renames, F12 in unsaved
+  buffers, macro goto-definition, chained-subscript/completion, array-bound and
+  template parsing, hex-float formatting, and four bundled C++ templates.
+
+See CHANGELOG.md for details.
