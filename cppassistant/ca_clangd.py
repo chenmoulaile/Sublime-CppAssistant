@@ -983,11 +983,36 @@ class ClangdClient(object):
             uri, items = parse_publish_diagnostics(params)
             if uri:
                 nu = _norm_uri(uri)
+                incoming_version = params.get("version")
+                current_version = None
+                for doc_uri, doc_version in self._doc_versions.items():
+                    if _norm_uri(doc_uri) == nu:
+                        current_version = doc_version
+                        break
+                previous = self._diagnostics_raw.get(nu)
+                previous_version = previous[0] if previous else None
+                # LSP notifications can be queued while clangd is parsing. An
+                # older publishDiagnostics may arrive after didChange for a
+                # newer buffer revision and resurrect an error the user fixed.
+                # Reject versions older than either the open document or the
+                # last diagnostics snapshot. Some servers omit version; keep
+                # accepting those for compatibility.
+                if incoming_version is not None:
+                    try:
+                        incoming_version = int(incoming_version)
+                        if (current_version is not None and
+                                incoming_version < current_version):
+                            return
+                        if (previous_version is not None and
+                                incoming_version < previous_version):
+                            return
+                    except (TypeError, ValueError):
+                        incoming_version = None
                 self._preamble_ready.add(nu)
                 self._diagnostics[nu] = items
                 raw = [d for d in (params.get("diagnostics") or [])
                        if isinstance(d, dict)]
-                self._diagnostics_raw[nu] = (params.get("version"), raw)
+                self._diagnostics_raw[nu] = (incoming_version, raw)
         if method and self.on_notify is not None:
             try:
                 self.on_notify(method, msg.get("params"))
